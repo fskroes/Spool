@@ -73,6 +73,8 @@ test in `Tests/`.
 ### F11 Drag to reorder
 - Drag a window with the mouse onto another column. On release, the column of the dragged
   window moves to that position and the strip lays out again. It can be switched off.
+- A resize from a window edge sets the column width. A press up to 8 pt outside the edge counts, because macOS
+  starts a resize there. Any other move while the button is down is put back after the release.
 
 ### F12 Multi-monitor and per-display on/off
 - Each display has its own strip, focus and scroll position.
@@ -101,6 +103,7 @@ test in `Tests/`.
 - Updates through Sparkle (`Check for Updates…` in the menu).
 - An engine log file that the app can show in Finder.
 - If part of the engine fails (event tap disabled, observer lost) it restarts that part and logs why.
+  An app that does not answer keeps its old observer until a new one works.
   If the process crashes, launchd starts it again.
 
 ### F18 Native fullscreen

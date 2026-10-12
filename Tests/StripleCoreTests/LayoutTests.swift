@@ -293,6 +293,38 @@ func layoutSettings(_ mode: CenterMode = .onOverflow) -> LayoutSettings {
         a.setTargets([1: r], at: 0, animate: true, velocityX: 3000)
         #expect(a.frame(1, at: 0.02)!.minX > 10)
     }
+
+    // Round 3 finding: the Duration setting changed only windows added after the change.
+    @Test func aNewDurationChangesWindowsAlreadyOnScreen() {
+        let r0 = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let r1 = CGRect(x: 1000, y: 0, width: 100, height: 100)
+        var slow = FrameAnimator(response: 0.22)
+        slow.setTargets([1: r0], at: 0, animate: true)
+        slow.setResponse(0.5, at: 0.5)
+        slow.setTargets([1: r1], at: 1, animate: true)
+        // A spring made with response 0.5 is the reference.
+        var x = Spring(value: 0, response: 0.5)
+        x.retarget(1000, at: 1)
+        #expect(abs(Double(slow.frame(1, at: 1.1)!.minX) - x.value(at: 1.1)) < 0.001)
+        #expect(slow.response == 0.5)
+    }
+
+    @Test func aNewDurationDuringMotionDoesNotJump() {
+        let r0 = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let r1 = CGRect(x: 1000, y: 0, width: 100, height: 100)
+        var a = FrameAnimator(response: 0.22)
+        a.setTargets([1: r0], at: 0, animate: true)
+        a.setTargets([1: r1], at: 1, animate: true)
+        let before = a.frame(1, at: 1.05)!
+        a.setResponse(0.6, at: 1.05)
+        #expect(abs(a.frame(1, at: 1.05)!.minX - before.minX) < 0.001)
+        // Slower now: less distance in the next 50 ms than the old spring would cover.
+        var old = Spring(value: 0, response: 0.22)
+        old.retarget(1000, at: 1)
+        #expect(Double(a.frame(1, at: 1.10)!.minX) < old.value(at: 1.10))
+        #expect(!a.isSettled(at: 1.6))
+        #expect(a.isSettled(at: 4))
+    }
 }
 
 @Suite struct LayoutBenchmarkTests {

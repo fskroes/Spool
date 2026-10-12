@@ -60,7 +60,8 @@ public struct FrameAnimator: Sendable {
     }
 
     private var entries: [WindowID: Entry] = [:]
-    public var response: Double
+    /// Set it with `setResponse`, so windows that are on screen change speed too.
+    public private(set) var response: Double
     public var enabled: Bool
 
     public init(response: Double = 0.22, enabled: Bool = true) {
@@ -69,6 +70,21 @@ public struct FrameAnimator: Sendable {
     }
 
     public var windowIDs: [WindowID] { Array(entries.keys) }
+
+    /// Changes the speed of every window, also of motion in progress. Each spring continues from its position
+    /// and velocity at `t`, so nothing jumps.
+    public mutating func setResponse(_ newResponse: Double, at t: Double) {
+        response = newResponse
+        let omega = Spring(value: 0, response: newResponse).omega
+        for id in entries.keys {
+            guard var e = entries[id] else { continue }
+            for path in [\Entry.x, \Entry.y, \Entry.w, \Entry.h] as [WritableKeyPath<Entry, Spring>] {
+                e[keyPath: path].retarget(e[keyPath: path].target, at: t)
+                e[keyPath: path].omega = omega
+            }
+            entries[id] = e
+        }
+    }
 
     /// Sets new targets.
     /// - Parameters:

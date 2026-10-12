@@ -112,8 +112,6 @@ enum Policy {
         return (known[display] ?? known["Main"] ?? []).contains(space)
     }
 
-    /// A left-button drag that moved more than `threshold` points. A click that does not move is not a drag,
-    /// even when Striple's own animation moves the window under the mouse.
     /// After an app is watched again: every managed window must be observed again, with the fresh element when
     /// AXWindows lists the window and with the old one otherwise (a window on another Space is not listed).
     static func healPlan<E>(managed: [WindowID: E], fresh: [WindowID: E]) -> (observe: [WindowID: E], renewed: Set<WindowID>) {
@@ -137,6 +135,25 @@ enum Policy {
         return currentDrag == nil || currentDrag == window
     }
 
+    /// A move while the button is down that is not a drag and not Striple's own write (for example a resize
+    /// that started outside the hit test, or an app that moved itself). It is checked again after the release:
+    /// put back, so the window cannot stay over its neighbour with a size Striple does not know.
+    static func correctAfterRelease(isUserDrag: Bool, ownFrame: Bool) -> Bool { !isUserDrag && !ownFrame }
+
+    /// The window under the mouse at mouse-down: the frontmost one whose bounds, widened by `slop`, contain the
+    /// point. macOS starts a resize a few points outside the window edge (on macOS 26 mostly outside the
+    /// corner), so an exact hit test misses those presses. `frontToBack` is in window-server order.
+    static func pressedWindow(at p: CGPoint, frontToBack: [(id: WindowID, bounds: CGRect)], slop: CGFloat) -> WindowID? {
+        frontToBack.first { $0.bounds.insetBy(dx: -slop, dy: -slop).contains(p) }?.id
+    }
+
+    /// Tiled windows of hidden apps, in a stable order.
+    static func windowsToHide(tiled: [WindowID: pid_t], hiddenApps: Set<pid_t>) -> [WindowID] {
+        tiled.filter { hiddenApps.contains($0.value) }.keys.sorted()
+    }
+
+    /// A left-button drag that moved more than `threshold` points. A click that does not move is not a drag,
+    /// even when Striple's own animation moves the window under the mouse.
     static func isDrag(from down: CGPoint?, to now: CGPoint, threshold: CGFloat = 4) -> Bool {
         guard let down else { return false }
         return hypot(now.x - down.x, now.y - down.y) > threshold

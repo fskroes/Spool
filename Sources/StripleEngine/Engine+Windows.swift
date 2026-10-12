@@ -25,6 +25,8 @@ extension Engine {
     /// Finds every window of every app. With a session, puts known windows back in their saved places.
     /// Without one, restores the saved strips that were waiting for their Space (or for the screen to unlock).
     func scanAll(session explicit: Session?) {
+        // Every caller lays out all strips after the scan.
+        defer { takeOffWindowsOfHiddenApps(relayoutNow: false) }
         var session = explicit
         if session == nil, !laterStrips.isEmpty || !laterFloating.isEmpty {
             session = Session(strips: laterStrips, floating: laterFloating)
@@ -103,10 +105,23 @@ extension Engine {
     func scanApp(_ pid: pid_t) {
         guard pid != getpid() else { return }
         tracker?.watch(pid)
+        // An observer that came up late (a retry after a hang) has no window notifications yet. observe skips
+        // windows it already has.
+        for w in windows.values where w.info.pid == pid { tracker?.observe(window: w.element, pid: pid) }
         for element in AX.elements(AX.app(pid), kAXWindowsAttribute) {
             guard let c = classify(element, pid: pid), windows[c.info.id] == nil else { continue }
             adopt(c, isNew: true)
         }
+        takeOffWindowsOfHiddenApps(pid: pid, relayoutNow: true)
+    }
+
+    /// AX lists the windows of a hidden (⌘H) app, but they are not on screen. Take them off the strip, as the
+    /// appHidden event does, so they get no empty column. appShown puts them back in the same place.
+    func takeOffWindowsOfHiddenApps(pid: pid_t? = nil, relayoutNow: Bool) {
+        var tiled: [WindowID: pid_t] = [:]
+        for (id, w) in windows where w.state == .tiled && (pid == nil || w.info.pid == pid) { tiled[id] = w.info.pid }
+        let hidden = Set(Set(tiled.values).filter { NSRunningApplication(processIdentifier: $0)?.isHidden == true })
+        for id in Policy.windowsToHide(tiled: tiled, hiddenApps: hidden) { takeOff(id, as: .hidden, relayoutNow: relayoutNow) }
     }
 
     /// The strip a window belongs to: its display (by its centre, or the saved one) and its Space.
@@ -187,9 +202,13 @@ extension Engine {
     }
 
     /// Watches an app again and takes fresh AX elements for its windows. Used when all writes to it fail.
+    /// An app that does not answer (hung) keeps its observer and elements: they still work when it comes back.
     func healApp(_ pid: pid_t) {
         guard NSRunningApplication(processIdentifier: pid) != nil else { return removeApp(pid) }
-        tracker?.rewatch(pid)
+        guard let tracker, tracker.rewatch(pid) else {
+            log.log("tracker: pid \(pid) does not answer, keeping its observer")
+            return
+        }
         var fresh: [WindowID: AXUIElement] = [:]
         for e in AX.elements(AX.app(pid), kAXWindowsAttribute) {
             if let id = AX.windowID(e) { fresh[id] = e }
@@ -199,7 +218,7 @@ extension Engine {
         // rewatch dropped every window notification, so all managed windows are observed again. A window that
         // AXWindows does not list may be on another Space; it keeps its old element.
         for (id, e) in plan.observe {
-            tracker?.observe(window: e, pid: pid)
+            tracker.observe(window: e, pid: pid)
             guard plan.renewed.contains(id) else { continue }
             windows[id]?.element = e
             writer.register(id, element: e, pid: pid)
@@ -359,7 +378,7 @@ extension Engine {
     // MARK: Leaving and joining the strip
 
     /// Takes a tiled window off its strip (minimized, hidden, fullscreen or floated) and remembers its place.
-    func takeOff(_ id: WindowID, as state: ManagedWindow.State) {
+    func takeOff(_ id: WindowID, as state: ManagedWindow.State, relayoutNow: Bool = true) {
         guard var w = windows[id], w.state == .tiled else { return }
         if let key = w.key, var strip = strips[key], let (c, _) = strip.locate(id) {
             w.slot = c + 1
@@ -371,7 +390,7 @@ extension Engine {
             if let p = placements[id], p.hidden { w.parkedFrame = p.frame }
             windows[id] = w
             placements[id] = nil
-            relayout(key)
+            if relayoutNow { relayout(key) }
         } else {
             w.state = state
             windows[id] = w

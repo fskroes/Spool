@@ -111,6 +111,8 @@ public final class Engine: ObservableObject {
     var mouseDragging = false
     /// The window under the cursor at the last left mouse-down. Only this window can be dragged.
     var mouseDownWindow: WindowID?
+    /// Tiled windows that moved while the button was down without being a drag. Corrected after the release.
+    var buttonMoves: Set<WindowID> = []
     /// Saved strips of Spaces that are not on screen, and saved floating windows not found yet.
     /// Restored when they appear; included in every save so they are not lost.
     var laterStrips: [SessionStrip] = []
@@ -272,6 +274,7 @@ public final class Engine: ObservableObject {
         mouseDownAt = nil
         mouseDragging = false
         mouseDownWindow = nil
+        buttonMoves.removeAll()
         laterStrips.removeAll()
         laterFloating.removeAll()
         healedAt.removeAll()

@@ -161,6 +161,44 @@ import Testing
         #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: 9))
     }
 
+    // Round 3 finding: a resize that started outside the window edge was neither adopted nor corrected.
+    @Test func aPressJustOutsideTheEdgeBelongsToTheWindow() {
+        let a = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let b = CGRect(x: 404, y: 0, width: 400, height: 300)
+        let order: [(id: WindowID, bounds: CGRect)] = [(1, a), (2, b)]
+        // 3 pt right of A's edge, in the gap.
+        #expect(Policy.pressedWindow(at: CGPoint(x: 403, y: 100), frontToBack: order, slop: 0) == nil)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 403, y: 100), frontToBack: order, slop: 8) == 1)
+        // Inside B but within A's margin: the front window wins, as in the window server.
+        #expect(Policy.pressedWindow(at: CGPoint(x: 406, y: 100), frontToBack: order, slop: 8) == 1)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 406, y: 100), frontToBack: [(2, b), (1, a)], slop: 8) == 2)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 900, y: 100), frontToBack: order, slop: 8) == nil)
+    }
+
+    @Test func aMoveWhileTheButtonIsDownIsCorrectedUnlessItIsADragOrOurs() {
+        #expect(Policy.correctAfterRelease(isUserDrag: false, ownFrame: false))
+        #expect(!Policy.correctAfterRelease(isUserDrag: true, ownFrame: false))
+        #expect(!Policy.correctAfterRelease(isUserDrag: false, ownFrame: true))
+    }
+
+    // Round 3 finding: windows of a hidden app got columns that show nothing.
+    @Test func windowsOfHiddenAppsLeaveTheStrip() {
+        let tiled: [WindowID: pid_t] = [10: 100, 11: 100, 20: 200, 30: 300]
+        #expect(Policy.windowsToHide(tiled: tiled, hiddenApps: [100, 300]) == [10, 11, 30])
+        #expect(Policy.windowsToHide(tiled: tiled, hiddenApps: []) == [])
+    }
+
+    // Round 3 finding: healing a hung app dropped its working observer before the new one existed.
+    @Test func aRewatchKeepsTheOldObserverWhenTheNewOneFails() {
+        #expect(WindowTracker.replace(old: "old", make: { nil as String? }) == nil)
+        let plan = WindowTracker.replace(old: "old", make: { "new" })
+        #expect(plan?.install == "new")
+        #expect(plan?.drop == "old")
+        var made = 0
+        _ = WindowTracker.replace(old: nil as String?, make: { made += 1; return "first" })
+        #expect(made == 1)
+    }
+
     @Test func spaceOfARemovedDisplay() {
         let known: [String: Set<UInt64>] = ["A": [1, 2], "B": [5]]
         #expect(Policy.spaceExists(2, onDisplay: "A", known: known))

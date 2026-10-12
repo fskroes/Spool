@@ -121,36 +121,66 @@ final class WindowTracker {
     /// Creates the observer for an app. Apps that just launched often do not answer AX yet: try again a few times.
     func watch(_ pid: pid_t) {
         guard watches[pid] == nil else { return }
+        switch makeWatch(pid) {
+        case .success(let w): install(w)
+        case .failure(let why): scheduleRetry(pid, reason: why.reason)
+        }
+    }
+
+    struct WatchFailure: Error { let reason: String }
+
+    /// An observer with the app notifications registered, not yet on the run loop.
+    private func makeWatch(_ pid: pid_t) -> Result<AppWatch, WatchFailure> {
         var observer: AXObserver?
         guard AXObserverCreate(pid, Self.callback, &observer) == .success, let observer else {
-            scheduleRetry(pid, reason: "AXObserverCreate failed")
-            return
+            return .failure(WatchFailure(reason: "AXObserverCreate failed"))
         }
         let app = AX.app(pid)
-        let watch = AppWatch(pid: pid, observer: observer, app: app)
         let refcon = UnsafeMutableRawPointer(bitPattern: Int(pid))
         var registered = 0
         for n in Self.appNotifications where AXObserverAddNotification(observer, app, n as CFString, refcon) == .success {
             registered += 1
         }
-        guard registered > 0 else {
-            scheduleRetry(pid, reason: "app does not answer Accessibility yet")
-            return
-        }
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        watches[pid] = watch
-        retries[pid] = nil
+        guard registered > 0 else { return .failure(WatchFailure(reason: "app does not answer Accessibility yet")) }
+        return .success(AppWatch(pid: pid, observer: observer, app: app))
+    }
+
+    private func install(_ w: AppWatch) {
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(w.observer), .defaultMode)
+        watches[w.pid] = w
+        retries[w.pid] = nil
     }
 
     func unwatch(_ pid: pid_t) {
         guard let w = watches.removeValue(forKey: pid) else { return }
+        drop(w)
+    }
+
+    private func drop(_ w: AppWatch) {
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(w.observer), .defaultMode)
     }
 
-    /// Re-creates the observer, for example after AX errors that suggest it died.
-    func rewatch(_ pid: pid_t) {
-        unwatch(pid)
-        watch(pid)
+    /// Re-creates the observer, for example after AX errors that suggest it died. False when the app does not
+    /// answer: then the old observer stays, because a hung app also refuses the new one, and dropping the old one
+    /// first would leave its windows without notifications. The caller observes the windows again on true.
+    @discardableResult
+    func rewatch(_ pid: pid_t) -> Bool {
+        guard watches[pid] != nil else {
+            watch(pid)
+            return watches[pid] != nil
+        }
+        guard let plan = Self.replace(old: watches[pid], make: { try? makeWatch(pid).get() }) else { return false }
+        watches[pid] = nil
+        if let old = plan.drop { drop(old) }
+        install(plan.install)
+        return true
+    }
+
+    /// The new watch is made first. nil (keep the old one) when it cannot be made; else the watch to install
+    /// and the old one to drop.
+    nonisolated static func replace<W>(old: W?, make: () -> W?) -> (install: W, drop: W?)? {
+        guard let fresh = make() else { return nil }
+        return (fresh, old)
     }
 
     /// Adds the per-window notifications (moved, resized, destroyed...).

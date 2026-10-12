@@ -139,9 +139,15 @@ extension Engine {
                 // Only a real drag of the pressed window counts. While Striple animates, every window moves and
                 // the button can be down for a click or a text selection; taking that for a drag would reorder
                 // the strip.
-                guard let f = AX.frame(element),
-                      Policy.isUserDrag(window: id, mouseMoved: mouseDragging, pressedWindow: mouseDownWindow,
-                                        ownFrame: applier.isOwnFrame(id, f), currentDrag: drag?.id) else { return }
+                guard let f = AX.frame(element) else { return }
+                let own = applier.isOwnFrame(id, f)
+                let isDrag = Policy.isUserDrag(window: id, mouseMoved: mouseDragging, pressedWindow: mouseDownWindow,
+                                               ownFrame: own, currentDrag: drag?.id)
+                guard isDrag else {
+                    if Policy.correctAfterRelease(isUserDrag: isDrag, ownFrame: own) { buttonMoves.insert(id) }
+                    return
+                }
+                buttonMoves.remove(id)
                 if drag == nil { drag = DragState(id: id, resize: false) }
                 if let last = applier.lastWritten(id), abs(f.width - last.width) > 2 || abs(f.height - last.height) > 2 {
                     drag?.resize = true
@@ -164,7 +170,7 @@ extension Engine {
     }
 
     /// An app moved or resized a tiled window by itself. Put it back, unless it keeps refusing (a minimum size).
-    private func scheduleCorrection(_ id: WindowID) {
+    func scheduleCorrection(_ id: WindowID) {
         correctionWork[id]?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.correct(id) }
@@ -247,10 +253,13 @@ extension Engine {
         if mouseUpMonitor == nil {
             mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.mouseUp()
-                    self?.mouseDownAt = nil
-                    self?.mouseDragging = false
-                    self?.mouseDownWindow = nil
+                    guard let self else { return }
+                    self.mouseUp()
+                    self.mouseDownAt = nil
+                    self.mouseDragging = false
+                    self.mouseDownWindow = nil
+                    for id in self.buttonMoves { self.scheduleCorrection(id) }
+                    self.buttonMoves.removeAll()
                 }
             }
         }
@@ -260,7 +269,8 @@ extension Engine {
                     guard let self else { return }
                     self.mouseDownAt = NSEvent.mouseLocation
                     self.mouseDragging = false
-                    self.mouseDownWindow = self.topWindow(at: self.mouseLocation())
+                    self.mouseDownWindow = self.topWindow(at: self.mouseLocation(), slop: Self.pressSlop)
+                    self.buttonMoves.removeAll()
                 }
             }
         }
@@ -306,22 +316,27 @@ extension Engine {
         focusWindow(id, scroll: false, fromCommand: false)
     }
 
+    /// How far outside its edge a press still belongs to a window (the resize area of macOS 26 windows).
+    nonisolated static let pressSlop: CGFloat = 8
+
     /// The front-most normal window under a point, from the window server's list (front to back).
-    private func topWindow(at p: CGPoint) -> WindowID? {
+    /// `slop` widens every window, for presses on the resize area just outside the edge.
+    private func topWindow(at p: CGPoint, slop: CGFloat = 0) -> WindowID? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
         let own = getpid()
+        var candidates: [(id: WindowID, bounds: CGRect)] = []
         for info in list {
             guard (info[kCGWindowLayer as String] as? Int) == 0,
                   (info[kCGWindowOwnerPID as String] as? Int32) != own,
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let b = info[kCGWindowBounds as String] as? NSDictionary,
-                  let r = CGRect(dictionaryRepresentation: b), r.contains(p),
+                  let r = CGRect(dictionaryRepresentation: b),
                   let n = info[kCGWindowNumber as String] as? UInt32 else { continue }
-            return n
+            candidates.append((n, r))
         }
-        return nil
+        return Policy.pressedWindow(at: p, frontToBack: candidates, slop: slop)
     }
 
     // MARK: Swipes
@@ -433,7 +448,7 @@ extension Engine {
         }
         if old.animation != new.animation {
             for key in animators.keys {
-                animators[key]?.response = new.animation.response
+                animators[key]?.setResponse(new.animation.response, at: CACurrentMediaTime())
                 animators[key]?.enabled = new.animation.enabled
             }
         }
