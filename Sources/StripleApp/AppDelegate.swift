@@ -7,6 +7,7 @@ import StripleEngine
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel!
     private var statusMenu: StatusMenu?
+    private var ipc: IPCServer?
     private var didLaunch = false
     /// URL commands that arrive before launch is complete run after auto-start.
     private var pending: [Command] = []
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                             name: SingleInstance.reopenNotification, object: nil,
                                                             suspensionBehavior: .deliverImmediately)
 
+        startIPC()
         if model.store.config.behavior.autoStart { model.engine.start() }
         didLaunch = true
         pending.forEach(model.engine.perform)
@@ -46,7 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.recorder.stop()
+        ipc?.stop()
         model.engine.stop()
+    }
+
+    /// The `striple` CLI and Raycast scripts talk to this socket. A failure only turns off the CLI.
+    private func startIPC() {
+        let engine = model.engine
+        let server = IPCServer(socketURL: StriplePaths.socket) { engine.handle($0) }
+        do {
+            try server.start()
+            ipc = server
+        } catch {
+            EngineLog.shared.log("IPC server did not start: \(error.localizedDescription)")
+        }
     }
 
     @objc private func openSettings() { model.openSettings() }
