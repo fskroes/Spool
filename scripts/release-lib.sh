@@ -125,6 +125,63 @@ striple_private_strings() {
     esac
 }
 
+# The verdict of striple_private_strings for release.sh: status 0 when DIR is clean. Else status 1 and
+# a message for LABEL on stdout. A check that could not run is a failure, never "clean".
+striple_release_private_check() {
+    local dir=$1 label=$2 leaks status=0
+    shift 2
+    leaks=$(striple_private_strings "$dir" "$@") || status=$?
+    case $status in
+        0) return 0 ;;
+        1) printf 'files in %s contain your home path, user name or Git email:\n%s\n' "$label" "$leaks" ;;
+        *) printf 'cannot check %s for your home path, user name or Git email (see the error above)\n' "$label" ;;
+    esac
+    return 1
+}
+
+# Status 0 when the releases repository REPO has no release TAG (also when REPO does not exist).
+# Status 1 with advice on stdout for a draft or a published release; status 2 when gh cannot tell.
+striple_release_existing() {
+    local tag=$1 repo=$2 out err status=0
+    err=$(mktemp "${TMPDIR:-/tmp}/striple-gh.XXXXXX") || return 2
+    out=$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft 2>"$err") || status=$?
+    local msg
+    msg=$(<"$err")
+    rm -f "$err"
+    if [[ $status -ne 0 ]]; then
+        [[ "$msg" == *"release not found"* ]] && return 0
+        printf 'cannot check for the release %s in %s: %s\n' "$tag" "$repo" "$msg"
+        return 2
+    fi
+    case "$out" in
+        true)
+            printf 'a draft release %s exists in %s, from a run that stopped before the publish. Delete it, then run again:\n' "$tag" "$repo"
+            printf 'gh release delete %s --repo %s --yes\n' "$tag" "$repo" ;;
+        false)
+            printf '%s is published in %s. Do not delete it. If its run stopped before the tag, run on the commit\n' "$tag" "$repo"
+            printf 'of that run: make publish-finish. If the tag exists, increase VERSION.\n' ;;
+        *)
+            printf 'unexpected answer from gh release view %s: %s\n' "$tag" "$out"
+            return 2 ;;
+    esac
+    return 1
+}
+
+# Status 0 when HEAD is COMMIT. With "clean" as the second argument, the working tree must also have
+# no changes. release.sh checks this after the build: the files must come from COMMIT.
+striple_release_head_is() {
+    local commit=$1 head
+    head=$(git rev-parse HEAD) || return 1
+    [[ "$head" == "$commit" ]] || { echo "HEAD moved from $commit to $head during the release" >&2; return 1; }
+    if [[ "${2:-}" == clean && -n "$(git status --porcelain)" ]]; then
+        echo "the working tree changed during the release" >&2
+        return 1
+    fi
+}
+
+# Tags COMMIT (not HEAD) with an annotated tag TAG and MESSAGE.
+striple_release_tag() { git tag -a "$1" -m "$3" "$2"; }
+
 # Status 0 when the files in DIR were built from the commit HEAD. The release writes
 # DIR/commit.txt; the build number alone does not identify a commit (two branches can have the same count).
 striple_release_commit_check() {

@@ -96,8 +96,52 @@ WARN
     exit 0
 fi
 
+# The private key is written here for a moment. Delete it on every exit path.
+case "$WORK" in */.build/signing-cert) ;; *) die "unexpected work directory: $WORK" ;; esac
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+rm -rf "$WORK"
+mkdir -p "$WORK"
+chmod 700 "$WORK"
+
+sha1_of_cert() { "$OPENSSL" x509 -in "$1" -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g' | tr 'a-f' 'A-F'; }
+
+# Signs a test file with HASH and checks that the designated requirement names that certificate.
+verify_identity() {
+    cp /usr/bin/true "$WORK/probe"
+    codesign --force --sign "$1" --identifier com.fskroes.Striple.probe "$WORK/probe" 2>/dev/null \
+        || die "codesign could not sign with the identity $1"
+    [[ "$(codesign -d -r - "$WORK/probe" 2>&1)" == *"certificate leaf = H\"$(tr 'A-F' 'a-f' <<<"$1")\""* ]] \
+        || die "the designated requirement does not name the certificate $1"
+}
+
+NEW_HASH=""
+if [[ $MODE == import ]]; then
+    [[ -f "$IMPORT" ]] || die "no such file: $IMPORT"
+    if [[ -z "${STRIPLE_SIGNING_P12_PASSWORD:-}" ]]; then
+        [[ -r /dev/tty ]] || die "no terminal: set STRIPLE_SIGNING_P12_PASSWORD"
+        printf 'Passphrase of %s: ' "$IMPORT" > /dev/tty
+        IFS= read -rs STRIPLE_SIGNING_P12_PASSWORD < /dev/tty
+        printf '\n' > /dev/tty
+    fi
+    export STRIPLE_SIGNING_P12_PASSWORD
+    "$OPENSSL" pkcs12 -in "$IMPORT" -passin env:STRIPLE_SIGNING_P12_PASSWORD -nokeys -out "$WORK/cert.pem" 2>/dev/null \
+        || die "cannot read $IMPORT: wrong passphrase, or not a PKCS#12 file"
+    SUBJECT=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -subject)
+    [[ "$SUBJECT" == *"CN=$STRIPLE_SIGNING_NAME"* || "$SUBJECT" == *"CN = $STRIPLE_SIGNING_NAME"* ]] \
+        || die "$IMPORT is not a \"$STRIPLE_SIGNING_NAME\" identity ($SUBJECT)"
+    NEW_HASH=$(sha1_of_cert "$WORK/cert.pem")
+fi
+
 if HASH=$(striple_signing_identity 2>/dev/null); then
-    say "The identity \"$STRIPLE_SIGNING_NAME\" is ready in $STRIPLE_SIGNING_KEYCHAIN ($HASH). Nothing to do."
+    # An import must not report success when the keychain keeps another identity.
+    if [[ $MODE == import && "$(tr 'a-f' 'A-F' <<<"$HASH")" != "$NEW_HASH" ]]; then
+        die "the keychain has another identity ($HASH) than $IMPORT ($NEW_HASH).
+To use the backup: scripts/make-signing-cert.sh --remove --yes, then --import $IMPORT
+Back up the current identity first if a release is signed with it."
+    fi
+    verify_identity "$HASH"
+    say "The identity \"$STRIPLE_SIGNING_NAME\" is ready in $STRIPLE_SIGNING_KEYCHAIN ($HASH) and signs. Nothing to do."
     exit 0
 fi
 if [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]]; then
@@ -113,28 +157,7 @@ if [[ $MODE == make ]]; then
         || die "cannot write the backup to $(dirname "$BACKUP"). Set STRIPLE_SIGNING_BACKUP to a file in a folder you can write."
 fi
 
-# The private key is written here for a moment. Delete it on every exit path.
-case "$WORK" in */.build/signing-cert) ;; *) die "unexpected work directory: $WORK" ;; esac
-cleanup() { rm -rf "$WORK"; }
-trap cleanup EXIT
-rm -rf "$WORK"
-mkdir -p "$WORK"
-chmod 700 "$WORK"
-
 if [[ $MODE == import ]]; then
-    [[ -f "$IMPORT" ]] || die "no such file: $IMPORT"
-    if [[ -z "${STRIPLE_SIGNING_P12_PASSWORD:-}" ]]; then
-        [[ -r /dev/tty ]] || die "no terminal: set STRIPLE_SIGNING_P12_PASSWORD"
-        printf 'Passphrase of %s: ' "$IMPORT" > /dev/tty
-        IFS= read -rs STRIPLE_SIGNING_P12_PASSWORD < /dev/tty
-        printf '\n' > /dev/tty
-    fi
-    export STRIPLE_SIGNING_P12_PASSWORD
-    "$OPENSSL" pkcs12 -in "$IMPORT" -passin env:STRIPLE_SIGNING_P12_PASSWORD -nokeys -out "$WORK/cert.pem" 2>/dev/null \
-        || die "cannot read $IMPORT: wrong passphrase, or not a PKCS#12 file"
-    SUBJECT=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -subject)
-    [[ "$SUBJECT" == *"CN=$STRIPLE_SIGNING_NAME"* || "$SUBJECT" == *"CN = $STRIPLE_SIGNING_NAME"* ]] \
-        || die "$IMPORT is not a \"$STRIPLE_SIGNING_NAME\" identity ($SUBJECT)"
     cp "$IMPORT" "$WORK/identity.p12"
 else
     cat > "$WORK/openssl.cnf" <<CNF
@@ -162,7 +185,7 @@ CNF
         -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
         -passout env:STRIPLE_SIGNING_P12_PASSWORD -out "$WORK/identity.p12"
     # The backup comes before any keychain change: if a later step fails, the key is not lost.
-    NEW_HASH=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g')
+    NEW_HASH=$(sha1_of_cert "$WORK/cert.pem")
     (umask 077 && cp "$WORK/identity.p12" "$BACKUP") || die "cannot write the backup $BACKUP"
     cat <<BACKUP_NOTE
 
@@ -180,26 +203,28 @@ P12_PASS=$STRIPLE_SIGNING_P12_PASSWORD
 
 say "Making the keychain $STRIPLE_SIGNING_KEYCHAIN"
 KC_PASS=$("$OPENSSL" rand -hex 24)
+# Quote in assignments: a failed quote then stops the script (set -e). Inside a string it would not.
 KC=$(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN")
+Q_ITEM=$(striple_security_quote "$STRIPLE_SIGNING_PASSWORD_ITEM")
+Q_USER=$(striple_security_quote "$USER")
+Q_NOTE=$(striple_security_quote "Unlocks $STRIPLE_SIGNING_KEYCHAIN for Striple builds")
+Q_P12=$(striple_security_quote "$WORK/identity.p12")
+Q_P12_PASS=$(striple_security_quote "$P12_PASS")
 striple_security_secret "create-keychain -p $KC_PASS $KC"
 security set-keychain-settings "$STRIPLE_SIGNING_KEYCHAIN"
 striple_security_secret "unlock-keychain -p $KC_PASS $KC"
-striple_security_secret "add-generic-password -U -s $(striple_security_quote "$STRIPLE_SIGNING_PASSWORD_ITEM") -a $(striple_security_quote "$USER") -w $KC_PASS -T /usr/bin/security -j $(striple_security_quote "Unlocks $STRIPLE_SIGNING_KEYCHAIN for Striple builds")"
+striple_security_secret "add-generic-password -U -s $Q_ITEM -a $Q_USER -w $KC_PASS -T /usr/bin/security -j $Q_NOTE"
 
 say "Adding the identity (codesign only)"
-striple_security_secret "import $(striple_security_quote "$WORK/identity.p12") -k $KC -f pkcs12 -P $(striple_security_quote "$P12_PASS") -T /usr/bin/codesign" >/dev/null
+striple_security_secret "import $Q_P12 -k $KC -f pkcs12 -P $Q_P12_PASS -T /usr/bin/codesign" >/dev/null
 striple_security_secret "set-key-partition-list -S apple-tool:,apple:,codesign: -s -k $KC_PASS $KC" >/dev/null
 striple_signing_add_to_search_list
 
 HASH=$(striple_signing_identity) || die "the identity is not usable after the import"
-cp /usr/bin/true "$WORK/probe"
-codesign --force --sign "$HASH" --identifier com.fskroes.Striple.probe "$WORK/probe" 2>/dev/null \
-    || die "codesign could not sign with the new identity"
-[[ "$(codesign -d -r - "$WORK/probe" 2>&1)" == *"certificate leaf = H\"$(tr 'A-F' 'a-f' <<<"$HASH")\""* ]] \
-    || die "the designated requirement does not name the certificate"
+verify_identity "$HASH"
 say "The identity \"$STRIPLE_SIGNING_NAME\" ($HASH) signs with no prompt."
 
-if [[ $MODE == make && "$HASH" != "$NEW_HASH" ]]; then
+if [[ "$(tr 'a-f' 'A-F' <<<"$HASH")" != "$NEW_HASH" ]]; then
     die "the keychain identity ($HASH) is not the certificate in the backup ($NEW_HASH)"
 fi
 

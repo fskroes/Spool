@@ -2,18 +2,20 @@
 # Publishes a Striple release on GitHub, in the public repository from Packaging/updates.env.
 # Used by `make publish` and `make publish-dry`. See docs/RELEASING.md.
 #
-#   1. Checks: a clean tree on main, a VERSION higher than the published one, a CHANGELOG.md
-#      section for VERSION, the Sparkle private key matches Packaging/updates.env, and the local
-#      signing identity is the one Packaging/updates.env pins (STRIPLE_SIGNING_CERT_SHA1).
+#   1. Checks: a clean tree on main, a VERSION higher than the published one, no release
+#      v<version> in the releases repository (also no draft), a CHANGELOG.md section for
+#      VERSION, the Sparkle private key matches Packaging/updates.env, and the local signing
+#      identity is the one Packaging/updates.env pins (STRIPLE_SIGNING_CERT_SHA1).
 #      The published archive must have the same signing identity and update key.
 #   2. Builds dist/Striple.app (universal, updates on) and checks its Info.plist and signature.
-#   3. Makes dist/release/<version>/: Striple-<version>.zip (the Sparkle archive), Striple.dmg,
-#      appcast.xml (one item, EdDSA signed), SHA256SUMS.txt and notes.md.
+#   3. Makes dist/release/<version>/ (a dry run: dist/release/dry-run/<version>/):
+#      Striple-<version>.zip (the Sparkle archive), Striple.dmg, appcast.xml (one item, EdDSA
+#      signed), SHA256SUMS.txt, notes.md and commit.txt (the commit of the build).
 #   4. Verifies the EdDSA signature of the archive, and that no file in the zip or the DMG has
 #      your home path, user name or Git email in it.
 #   5. Not with --dry-run: makes the releases repository if it is missing, uploads a draft
 #      release, publishes it, downloads the feed and the archive again and compares them,
-#      then tags HEAD v<version> in this repository (local tag, nothing is pushed).
+#      then tags the commit of the build v<version> in this repository (local tag, nothing is pushed).
 #
 # Usage: scripts/release.sh [--dry-run | --finish]
 #   --finish  only step 5 after the publish: when a run published the release but stopped
@@ -41,7 +43,7 @@ case "${1:-}" in
     "") ;;
     --dry-run) DRY=1 ;;
     --finish) FINISH=1 ;;
-    -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
 esac
 
@@ -77,6 +79,8 @@ must() { if [[ $DRY -eq 1 ]]; then printf 'warning (dry run): %s\n' "$*" >&2; el
 [[ -z "$(git status --porcelain)" ]] || must "the working tree has changes. Commit them first."
 [[ "$(git branch --show-current)" == main ]] || must "release from main (now on '$(git branch --show-current)')"
 BUILD=$(git rev-list --count HEAD)
+# The release is this commit. The build, commit.txt and the tag all use it.
+COMMIT=$(git rev-parse HEAD)
 TAG="v$VERSION"
 ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || die "the tag $TAG exists. Increase VERSION."
 
@@ -96,7 +100,8 @@ Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then -
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/striple-release.XXXXXX")
 trap 'striple_release_cleanup "$TMP"' EXIT
-OUT="$ROOT/dist/release/$VERSION"
+# A dry run never replaces the files of a real run: --finish needs them.
+if [[ $DRY -eq 1 ]]; then OUT="$ROOT/dist/release/dry-run/$VERSION"; else OUT="$ROOT/dist/release/$VERSION"; fi
 ZIP_NAME="Striple-$VERSION.zip"
 PREFIX=$(striple_download_prefix "$REPO" "$VERSION")
 
@@ -115,7 +120,7 @@ verify_published_and_tag() {
 then run: scripts/release.sh --finish"
     curl -fsSL --max-time 300 -o "$TMP/$ZIP_NAME" "$PREFIX$ZIP_NAME" || die "cannot download $PREFIX$ZIP_NAME"
     cmp -s "$TMP/$ZIP_NAME" "$OUT/$ZIP_NAME" || die "the downloaded $ZIP_NAME is not the same as the uploaded one"
-    git tag -a "$TAG" -m "Striple $VERSION (build $BUILD)"
+    striple_release_tag "$TAG" "$COMMIT" "Striple $VERSION (build $BUILD)" || die "cannot tag $COMMIT as $TAG"
     log "Published Striple $VERSION: https://github.com/$REPO/releases/tag/$TAG"
     log "Feed: $FEED"
 }
@@ -170,6 +175,10 @@ Installed copies would refuse this update. Use the key of the published release.
         ;;
     *) die "unexpected HTTP $CODE from $FEED" ;;
 esac
+# Before the build: a second run must not delete the files that --finish needs.
+if [[ $DRY -eq 0 ]]; then
+    EXISTING=$(striple_release_existing "$TAG" "$REPO") || die "$EXISTING"
+fi
 
 # --- 2. Build --------------------------------------------------------------------------------
 log "Building the app"
@@ -189,6 +198,10 @@ striple_dr_is_local "$(codesign -d -r - "$APP" 2>&1)" "$BUNDLE_ID" "$HASH" \
 for arch in arm64 x86_64; do
     [[ " $(lipo -archs "$APP/Contents/MacOS/Striple") " == *" $arch "* ]] || die "the app has no $arch slice"
 done
+striple_release_head_is "$COMMIT" || die "the app is not a build of $COMMIT. Run again."
+if [[ $DRY -eq 0 ]]; then
+    striple_release_head_is "$COMMIT" clean || die "the app is not a build of $COMMIT. Run again."
+fi
 
 # --- 3. Files ---------------------------------------------------------------------------------
 case "$OUT" in */dist/release/*) rm -rf "$OUT" ;; *) die "unexpected output path: $OUT" ;; esac
@@ -224,16 +237,9 @@ striple_dr_is_local "$(codesign -d -r - "$TMP/unpacked/Striple.app" 2>&1)" "$BUN
 # The files are public: nothing may name this Mac's user.
 log "Checking the zip and the DMG for your home path, user name and Git email"
 PRIVATE=("$HOME" "$USER" "$(git config user.email || true)")
-# Status 1 is a leak; any other failure must also stop the release, never pass as "clean".
 check_private() {
-    local leaks status=0
-    leaks=$(striple_private_strings "$1" "${PRIVATE[@]}") || status=$?
-    case $status in
-        0) ;;
-        1) die "files in $2 contain your home path, user name or Git email:
-$leaks" ;;
-        *) die "cannot check $2 for your home path, user name or Git email (see the error above)" ;;
-    esac
+    local msg
+    msg=$(striple_release_private_check "$1" "$2" "${PRIVATE[@]}") || die "$msg"
 }
 check_private "$TMP/unpacked" "$ZIP_NAME"
 hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$TMP/dmg" "$OUT/Striple.dmg" >/dev/null \
@@ -244,7 +250,7 @@ check_private "$TMP/dmg" Striple.dmg
 hdiutil detach "$TMP/dmg" -quiet
 (cd "$OUT" && shasum -a 256 "$ZIP_NAME" Striple.dmg appcast.xml > SHA256SUMS.txt)
 # Not uploaded. --finish uses it to put the tag on this commit.
-git rev-parse HEAD > "$OUT/commit.txt"
+printf '%s\n' "$COMMIT" > "$OUT/commit.txt"
 log "Files in $OUT:"
 (cd "$OUT" && ls -l "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt notes.md | awk '{ printf "    %10s  %s\n", $5, $9 }')
 
@@ -268,9 +274,8 @@ if ! gh repo view "$REPO" >/dev/null 2>&1; then
         -f "committer[name]=$LOGIN" -f "committer[email]=$NOREPLY" \
         -f "author[name]=$LOGIN" -f "author[email]=$NOREPLY" >/dev/null
 fi
-if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-    die "the release $TAG exists in $REPO. If it is a failed draft, delete it: gh release delete $TAG --repo $REPO --yes"
-fi
+# Checked in step 1 too. Again here: another run can have made the release during this build.
+EXISTING=$(striple_release_existing "$TAG" "$REPO") || die "$EXISTING"
 
 {
     printf '# Striple %s, build %s\n\n%s\n\n' "$VERSION" "$BUILD" "$NOTES"

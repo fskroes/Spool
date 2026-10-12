@@ -76,6 +76,7 @@ Releases need both keys. With another code signing identity, the designated requ
 |---|---|
 | The working tree is clean and the branch is `main` | The release is a commit you can find again. |
 | `VERSION` looks like `1.2.3`, the tag `v<version>` does not exist | One release per version. |
+| The releases repository has no release `v<version>`, also no draft. This check comes before the build | A second run does not delete the files that `make publish-finish` needs. |
 | `VERSION` and the build number are higher than the ones in the published feed | Sparkle offers only a higher build. |
 | `CHANGELOG.md` has a section for `VERSION` | The update window shows these notes. |
 | The private key in the keychain matches `STRIPLE_ED_PUBLIC_KEY` | Else every installed app refuses the update. |
@@ -88,7 +89,9 @@ Releases need both keys. With another code signing identity, the designated requ
 
 Then it uploads the files to a **draft** release, publishes it, downloads the feed and the archive again and compares them byte for byte, and tags the commit `v<version>` (local tag only).
 
-The files stay in `dist/release/<version>/`. `commit.txt` there names the commit of the build. It is not uploaded.
+The script reads the commit once, at the start. The build must come from that commit: if HEAD moves or the working tree changes during the build, the release stops before the upload. The tag goes on that commit, not on HEAD.
+
+The files stay in `dist/release/<version>/`. `commit.txt` there names the commit of the build. It is not uploaded. `make publish-dry` writes to `dist/release/dry-run/<version>/`, so it never replaces the files of a real run.
 
 If the script stops while the DMG is open, its exit handler detaches the DMG before it deletes its temporary folder.
 
@@ -96,7 +99,8 @@ If the script stops while the DMG is open, its exit handler detaches the DMG bef
 
 | Problem | Fix |
 |---|---|
-| "the release vX exists" after a failed run | The draft is still there. `gh release delete vX --repo fskroes/striple-releases --yes`, then run again. |
+| "a draft release vX exists" after a failed run | The upload stopped before the publish. `gh release delete vX --repo fskroes/striple-releases --yes`, then run again. |
+| "vX is published" | Do not delete it. The run stopped after the publish: see the next row. |
 | "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
 | "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
 | "the local signing identity is …, but Packaging/updates.env pins …" | Restore the pinned identity: `./scripts/make-signing-cert.sh --remove --yes`, then `--import <backup file>`. |

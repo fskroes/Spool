@@ -47,7 +47,7 @@ install: app
 uninstall:
 	./scripts/install.sh --uninstall
 
-# Builds and checks a release in dist/release/<version>/. Uploads nothing. See docs/RELEASING.md.
+# Builds and checks a release in dist/release/dry-run/<version>/. Uploads nothing. See docs/RELEASING.md.
 publish-dry:
 	./scripts/release.sh --dry-run
 

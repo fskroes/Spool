@@ -1,9 +1,10 @@
 import Foundation
 import Testing
 
-/// Runs scripts/make-signing-cert.sh with a fake `security` tool first on PATH and a temporary keychain path,
-/// so the keychains of this Mac are never read or changed. The fake logs each call to `calls.log`: argv as is,
-/// and a command read by `security -i` from stdin as `stdin: <command>`.
+/// Runs scripts/make-signing-cert.sh with fake `security` and `codesign` tools first on PATH and a temporary
+/// keychain path, so the keychains of this Mac are never read or changed. The fakes log each call to `calls.log`:
+/// argv as is, a command read by `security -i` from stdin as `stdin: <command>`, and codesign as `codesign <args>`.
+/// The fake `security` keeps state in its folder: with `acceptMake`, a full make or import runs to the end.
 @Suite(.serialized) struct SigningScriptTests {
     static let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -16,6 +17,10 @@ import Testing
         var identity: Bool         // the identity is in the Striple keychain
         var listed = false         // the Striple keychain is on the search list
         var emptyList = false      // the user search list is empty
+        var identityHash = "ABCD1234"  // the SHA-1 that find-identity shows for `identity`
+        var acceptMake = false     // create-keychain, import and the other make steps succeed
+        var badDR = false          // codesign shows a requirement with another certificate
+        var importShows: String? = nil  // after an import, find-identity shows this SHA-1, not the file's
     }
 
     struct Result { var output: String; var status: Int32; var calls: [String] }
@@ -32,25 +37,49 @@ import Testing
         #!/bin/sh
         if [ "$1" = "-i" ]; then
           read -r line
-          echo "stdin: $line" >> '\(log.path)'
-          set -- $line
+          printf 'stdin: %s\\n' "$line" >> '\(log.path)'
+          set -f; set -- $line; set +f
         else
-          echo "$*" >> '\(log.path)'
+          printf '%s\\n' "$*" >> '\(log.path)'
         fi
+        make() { \(k.acceptMake ? "true" : "echo \"unexpected: $*\" >&2; exit 1") ; }
         case "$1" in
-          find-generic-password) \(k.password ? "echo 5ec7e7" : "exit 44") ;;
+          find-generic-password)
+            if \(k.password ? "true" : "false") || [ -f '\(dir.path)/password' ]; then echo 5ec7e7; else exit 44; fi ;;
           unlock-keychain) exit 0 ;;
           list-keychains)
-            if [ "$3" = "-s" ]; then exit 0; fi
+            if [ "$4" = "-s" ]; then exit 0; fi
             \(k.emptyList ? "exit 0" : "echo '    \"/Users/x/Library/Keychains/login.keychain-db\"'")
             \(k.listed ? "echo '    \"\(keychain.path)\"'" : "") ;;
           find-identity)
-            \(k.identity ? "echo '  1) ABCD1234 \(name) (CSSMERR_TP_NOT_TRUSTED)'" : "")
+            if [ -s '\(dir.path)/imported' ]; then printf '  1) %s %s (CSSMERR_TP_NOT_TRUSTED)\\n' "$(cat '\(dir.path)/imported')" '\(name)'
+            \(k.identity ? "else echo '  1) \(k.identityHash) \(name) (CSSMERR_TP_NOT_TRUSTED)'" : "")
+            fi
             echo '     1 identities found' ;;
+          create-keychain) make "$@"; : > '\(keychain.path)' ;;
+          set-keychain-settings|set-key-partition-list) make "$@" ;;
+          add-generic-password) make "$@"; : > '\(dir.path)/password' ;;
+          import)
+            make "$@"
+            f=$(printf '%s' "$2" | tr -d '"')
+            /usr/bin/openssl pkcs12 -in "$f" -nokeys -passin env:STRIPLE_SIGNING_P12_PASSWORD 2>/dev/null \\
+              | /usr/bin/openssl x509 -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g' > '\(dir.path)/imported'
+            \(k.importShows.map { "echo \($0) > '\(dir.path)/imported'" } ?? "") ;;
           delete-keychain|delete-generic-password) exit 0 ;;
           *) echo "unexpected: $*" >&2; exit 1 ;;
         esac
         """
+        let codesign = """
+        #!/bin/sh
+        printf 'codesign %s\\n' "$*" >> '\(log.path)'
+        if [ "$1" = "--force" ]; then printf '%s' "$3" > '\(dir.path)/signed'; exit 0; fi
+        h=$(tr 'A-F' 'a-f' < '\(dir.path)/signed')
+        \(k.badDR ? "h=0000" : "")
+        echo "designated => identifier \\"com.fskroes.Striple.probe\\" and certificate leaf = H\\"$h\\"" >&2
+        """
+        let codesignTool = dir.appendingPathComponent("codesign")
+        try Data(codesign.utf8).write(to: codesignTool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codesignTool.path)
         let tool = dir.appendingPathComponent("security")
         try Data(fake.utf8).write(to: tool)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
@@ -77,8 +106,20 @@ import Testing
     @Test func aReadyIdentityNeedsNothing() throws {
         let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true), [])
         #expect(r.status == 0)
-        #expect(r.output.contains("(ABCD1234). Nothing to do."))
+        #expect(r.output.contains("(ABCD1234) and signs. Nothing to do."))
         #expect(!r.calls.contains { $0.hasPrefix("list-keychains -d user -s") })
+        // "Ready" is proven by a signature, not assumed from the keychain listing.
+        #expect(r.calls.contains { $0.hasPrefix("codesign --force --sign ABCD1234 ") }, "\(r.calls)")
+        #expect(r.calls.contains { $0.hasPrefix("codesign -d -r - ") })
+    }
+
+    @Test func aReadyIdentityWhoseRequirementNamesAnotherCertificateFails() throws {
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.badDR = true
+        let r = try Self.run(k, [])
+        #expect(r.status == 1)
+        #expect(r.output.contains("the designated requirement does not name the certificate ABCD1234"), "\(r.output)")
+        #expect(!r.output.contains("Nothing to do"))
     }
 
     // codesign finds an identity only in a keychain on the search list; a list reset by another tool must not
@@ -200,5 +241,165 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false).dropLast() == [
             #""plain""#, #""a b""#, #""x\\y""#, #""q\"t""#, #""e\\\"""#, #""""#,
         ])
+    }
+
+    // MARK: full runs: no secret is ever an argument
+
+    /// A PKCS#12 "Striple Local Signing" identity like the backup of make-signing-cert.sh, and its SHA-1.
+    static func makeP12(in dir: URL, passphrase: String) throws -> (file: URL, sha1: String) {
+        let key = dir.appendingPathComponent("k.pem"), cert = dir.appendingPathComponent("c.pem")
+        let p12 = dir.appendingPathComponent("backup.p12")
+        func openssl(_ args: [String], env: [String: String] = [:]) throws -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+            p.arguments = args
+            p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 }
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+            return String(decoding: data, as: UTF8.self)
+        }
+        _ = try openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1",
+                         "-subj", "/CN=Striple Local Signing", "-keyout", key.path, "-out", cert.path])
+        _ = try openssl(["pkcs12", "-export", "-name", "Striple Local Signing", "-inkey", key.path, "-in", cert.path,
+                         "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-macalg", "sha1",
+                         "-passout", "env:P", "-out", p12.path], env: ["P": passphrase])
+        let fp = try openssl(["x509", "-in", cert.path, "-noout", "-fingerprint", "-sha1"])
+        let sha1 = fp.split(separator: "=").last.map { $0.replacingOccurrences(of: ":", with: "") }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (p12, sha1)
+    }
+
+    static func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-p12-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func aFullMakeKeepsEverySecretOutOfTheArgumentList() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let r = try Self.run(k, [], env: ["STRIPLE_SIGNING_BACKUP": dir.appendingPathComponent("b.p12").path])
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("signs with no prompt"))
+        let kcPass = r.calls.first { $0.hasPrefix("stdin: create-keychain -p ") }
+            .map { String($0.split(separator: " ")[3]) } ?? ""
+        let p12Pass = r.output.firstMatch(of: #/Passphrase: ([0-9a-f]{32})\n/#).map { String($0.1) } ?? ""
+        #expect(kcPass.count == 48 && p12Pass.count == 32, "\(r.calls)")
+        // Each secret reaches security, on stdin.
+        #expect(r.calls.contains { $0.hasPrefix("stdin: unlock-keychain -p \(kcPass) ") })
+        #expect(r.calls.contains { $0.hasPrefix("stdin: add-generic-password ") && $0.contains(" -w \(kcPass) ") })
+        #expect(r.calls.contains { $0.hasPrefix("stdin: import ") && $0.contains(" -P \"\(p12Pass)\" ") })
+        #expect(r.calls.contains { $0.hasPrefix("stdin: set-key-partition-list ") && $0.contains(" -k \(kcPass) ") })
+        let argv = r.calls.filter { !$0.hasPrefix("stdin: ") }
+        #expect(!argv.isEmpty)
+        #expect(!argv.contains { $0.contains(kcPass) || $0.contains(p12Pass) }, "\(argv)")
+    }
+
+    // The passphrase has the characters that `security -i` needs escaped, and a space.
+    @Test func aFullImportKeepsThePassphraseOutOfTheArgumentList() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pass = #"pa ss"w\rd"#
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: pass)
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let r = try Self.run(k, ["--import", p12.path], env: ["STRIPLE_SIGNING_P12_PASSWORD": pass])
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("(\(sha1)) signs with no prompt"), "\(r.output)")
+        #expect(r.calls.contains { $0.hasPrefix("stdin: import ") && $0.contains(#" -P "pa ss\"w\\rd" "#) }, "\(r.calls)")
+        #expect(!r.calls.contains { !$0.hasPrefix("stdin: ") && ($0.contains("pa ss") || $0.contains(#"w\rd"#)) }, "\(r.calls)")
+    }
+
+    // The import reports success only when the keychain then has the certificate of the backup.
+    @Test func anImportThatLeavesAnotherCertificateFails() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        k.importShows = "FEDC9876"
+        let r = try Self.run(k, ["--import", p12.path], env: ["STRIPLE_SIGNING_P12_PASSWORD": "secret"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("the keychain identity (FEDC9876) is not the certificate in the backup (\(sha1))"), "\(r.output)")
+    }
+
+    @Test func importOverAnotherIdentityStopsAndChangesNothing() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true),
+                             ["--import", p12.path], env: ["STRIPLE_SIGNING_P12_PASSWORD": "secret"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("the keychain has another identity (ABCD1234) than \(p12.path) (\(sha1))"), "\(r.output)")
+        #expect(!r.output.contains("Nothing to do"))
+        #expect(!r.calls.contains { $0.contains("import ") || $0.contains("create-keychain") || $0.hasPrefix("codesign") })
+    }
+
+    @Test func importOfTheIdentityThatIsThereIsReady() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = sha1
+        let r = try Self.run(k, ["--import", p12.path], env: ["STRIPLE_SIGNING_P12_PASSWORD": "secret"])
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("(\(sha1)) and signs. Nothing to do."))
+        #expect(r.calls.contains { $0.hasPrefix("codesign --force --sign \(sha1) ") })
+    }
+
+    // MARK: security -i lines
+
+    static func shell(_ script: String, path: String? = nil) throws -> (out: String, err: String, status: Int32) {
+        let env = Self.script.deletingLastPathComponent().appendingPathComponent("signing-env.sh").path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", "source \"$0\"; " + script, env]
+        if let path { p.environment = ProcessInfo.processInfo.environment.merging(["PATH": path]) { $1 } }
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        let o = out.fileHandleForReading.readDataToEndOfFile(), e = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (String(decoding: o, as: UTF8.self), String(decoding: e, as: UTF8.self), p.terminationStatus)
+    }
+
+    @Test func securityQuoteRefusesALineBreak() throws {
+        for v in [#"$'a\nb'"#, #"$'a\rb'"#] {
+            let r = try Self.shell("striple_security_quote \(v)")
+            #expect(r.status == 2, "\(v)")
+            #expect(r.out.isEmpty)
+            #expect(r.err.contains("cannot have a line break"))
+        }
+    }
+
+    // `security -i` reads 4096 bytes at a time and runs the rest of a longer line as a second command.
+    @Test func securitySecretRunsOnlyOneLineBelowTheLimit() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("calls.log")
+        let fake = "#!/bin/sh\ncat >> '\(log.path)'\n"
+        try Data(fake.utf8).write(to: dir.appendingPathComponent("security"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent("security").path)
+        let path = dir.path + ":/usr/bin:/bin"
+        func lines() -> Int { ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").count }
+
+        #expect(try Self.shell(#"striple_security_secret "x$(printf 'y%.0s' $(seq 1 3998))""#, path: path).status == 0)
+        #expect(lines() == 1)
+        for refused in [#""x$(printf 'y%.0s' $(seq 1 3999))""#,     // 4000 bytes
+                        #""$(printf '\303\251%.0s' $(seq 1 2000))""#, // 2000 characters, 4000 bytes
+                        #"$'a\nb'"#, #"$'a\rb'"#] {
+            let r = try Self.shell("striple_security_secret \(refused)", path: path)
+            #expect(r.status == 2, "\(refused)")
+            #expect(r.err.contains("striple: a security command must be"), "\(r.err)")
+        }
+        #expect(lines() == 1, "a refused line must never reach security")
     }
 }

@@ -338,6 +338,233 @@ import Testing
         return String(decoding: data, as: UTF8.self).contains(" on \(real) (")
     }
 
+    // MARK: Fakes on PATH, a temporary repository
+
+    /// Like `call`, but in the folder `cwd`, with `bin` first on PATH and with the extra `env`.
+    static func call(in cwd: URL, bin: URL? = nil, env: [String: String] = [:],
+                     _ function: String, _ args: String...) throws -> Result {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", "set -u; source \"$0\"; \"$@\"", lib.path, function] + args
+        p.currentDirectoryURL = cwd
+        var e = ProcessInfo.processInfo.environment
+        if let bin { e["PATH"] = bin.path + ":" + (e["PATH"] ?? "/usr/bin:/bin") }
+        e.merge(env) { $1 }
+        p.environment = e
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        let o = out.fileHandleForReading.readDataToEndOfFile()
+        let er = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return Result(output: String(decoding: o, as: UTF8.self).trimmingCharacters(in: .newlines),
+                      error: String(decoding: er, as: UTF8.self), status: p.terminationStatus)
+    }
+
+    static func tempDir(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-\(name)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Writes an executable /bin/sh script `name` into `bin`.
+    static func tool(_ bin: URL, _ name: String, _ body: String) throws {
+        let url = bin.appendingPathComponent(name)
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    /// A fake gh. FAKE_GH picks the answer; every call is logged to bin/gh.log.
+    static func fakeGh() throws -> URL {
+        let bin = try tempDir("gh")
+        try tool(bin, "gh", """
+        printf '%s\\n' "$*" >> '\(bin.path)/gh.log'
+        case "$FAKE_GH" in
+          notfound) echo "release not found" >&2; exit 1 ;;
+          draft) echo true ;;
+          published) echo false ;;
+          network) echo "error connecting to api.github.com" >&2; exit 1 ;;
+          notice) echo "A new release of gh is available: 2.102.0 -> 2.103.0" >&2; echo false ;;
+          odd) echo maybe ;;
+        esac
+        """)
+        return bin
+    }
+
+    @Test func noReleaseAndNoRepositoryAreBothFree() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        let r = try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": "notfound"], "striple_release_existing", "v1.2.3", "o/r")
+        #expect(r.status == 0 && r.output.isEmpty, "\(r)")
+        let log = try String(contentsOf: bin.appendingPathComponent("gh.log"), encoding: .utf8)
+        #expect(log == "release view v1.2.3 --repo o/r --json isDraft --jq .isDraft\n")
+    }
+
+    @Test func aDraftReleaseStopsTheRunWithTheDeleteCommand() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        let r = try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": "draft"], "striple_release_existing", "v1.2.3", "o/r")
+        #expect(r.status == 1)
+        #expect(r.output.contains("a draft release v1.2.3 exists in o/r"))
+        #expect(r.output.contains("gh release delete v1.2.3 --repo o/r --yes"))
+    }
+
+    // Users already download a published release: never advise to delete it.
+    @Test func aPublishedReleaseStopsTheRunAndIsNeverDeleted() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        for mode in ["published", "notice"] {
+            let r = try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": mode], "striple_release_existing", "v1.2.3", "o/r")
+            #expect(r.status == 1, "\(mode)")
+            #expect(r.output.contains("v1.2.3 is published in o/r. Do not delete it."), "\(mode): \(r.output)")
+            #expect(r.output.contains("make publish-finish"))
+            #expect(!r.output.contains("gh release delete"))
+        }
+    }
+
+    // "Cannot tell" is never "free": the run must stop, not build and publish over a release.
+    @Test func aReleaseCheckThatCannotTellStopsTheRun() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        let net = try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": "network"], "striple_release_existing", "v1.2.3", "o/r")
+        #expect(net.status == 2)
+        #expect(net.output.contains("cannot check for the release v1.2.3 in o/r: error connecting to api.github.com"))
+        let odd = try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": "odd"], "striple_release_existing", "v1.2.3", "o/r")
+        #expect(odd.status == 2)
+        #expect(odd.output.contains("unexpected answer from gh release view v1.2.3: maybe"))
+    }
+
+    static let gitEnv = ["GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+                         "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
+
+    /// A repository with two commits; returns the folder and both commit IDs.
+    static func repo() throws -> (dir: URL, first: String, second: String) {
+        let dir = try tempDir("repo")
+        func sh(_ cmd: String) throws -> String {
+            try call(in: dir, env: gitEnv, "eval", cmd).output
+        }
+        _ = try sh("git init -q && echo a > f && git add f && git commit -qm one")
+        let first = try sh("git rev-parse HEAD")
+        _ = try sh("echo b > f && git commit -qam two")
+        let second = try sh("git rev-parse HEAD")
+        return (dir, first, second)
+    }
+
+    @Test func headCheckFindsAMovedHeadAndAChangedTree() throws {
+        let (dir, first, second) = try Self.repo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "striple_release_head_is", second).status == 0)
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "striple_release_head_is", second, "clean").status == 0)
+
+        let moved = try Self.call(in: dir, env: Self.gitEnv, "striple_release_head_is", first)
+        #expect(moved.status == 1)
+        #expect(moved.error.contains("HEAD moved from \(first) to \(second)"))
+
+        try Data("c".utf8).write(to: dir.appendingPathComponent("f"))
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "striple_release_head_is", second).status == 0)
+        let dirty = try Self.call(in: dir, env: Self.gitEnv, "striple_release_head_is", second, "clean")
+        #expect(dirty.status == 1)
+        #expect(dirty.error.contains("the working tree changed"))
+    }
+
+    // The tag names the commit the release was built from, also when HEAD is somewhere else.
+    @Test func theTagGoesOnTheBuiltCommitNotOnHead() throws {
+        let (dir, first, _) = try Self.repo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = try Self.call(in: dir, env: Self.gitEnv, "striple_release_tag", "v1.0.0", first, "Striple 1.0.0")
+        #expect(r.status == 0, "\(r.error)")
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "rev-parse", "v1.0.0^{commit}").output == first)
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "cat-file", "-t", "v1.0.0").output == "tag")
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "tag", "-l", "--format=%(contents:subject)", "v1.0.0").output == "Striple 1.0.0")
+        // An existing tag is not moved.
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "striple_release_tag", "v1.0.0", "HEAD", "x").status != 0)
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "rev-parse", "v1.0.0^{commit}").output == first)
+    }
+
+    @Test func privateCheckVerdictIsCleanLeakOrCannotCheck() throws {
+        let dir = try Self.tempDir("private")
+        let locked = dir.appendingPathComponent("locked")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try Data("/Users/someone/x".utf8).write(to: dir.appendingPathComponent("Info.plist"))
+        let clean = try Self.call("striple_release_private_check", dir.path, "the app", "/Users/nobody", "")
+        #expect(clean.status == 0 && clean.output.isEmpty)
+
+        let leak = try Self.call("striple_release_private_check", dir.path, "the app", "/Users/someone")
+        #expect(leak.status == 1)
+        #expect(leak.output.contains("files in the app contain your home path"))
+        #expect(leak.output.hasSuffix("/Info.plist"))
+
+        try Data("x".utf8).write(to: locked)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        let cannot = try Self.call("striple_release_private_check", dir.path, "the app", "/Users/nobody")
+        #expect(cannot.status == 1)
+        #expect(cannot.output.contains("cannot check the app"))
+        let missing = try Self.call("striple_release_private_check", dir.appendingPathComponent("nope").path, "the DMG", "x")
+        #expect(missing.status == 1)
+        #expect(missing.output.contains("cannot check the DMG"))
+    }
+
+    // A DMG that does not detach keeps the folder: rm -rf into a mounted volume deletes its files.
+    @Test func cleanupKeepsTheFolderWhenTheDMGDoesNotDetach() throws {
+        let dir = try Self.tempDir("cleanup")
+        let bin = try Self.tempDir("bin")
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: bin)
+        }
+        guard let c = realpath(dir.path, nil) else { Issue.record("realpath"); return }
+        let real = String(cString: c)
+        free(c)
+        try Self.tool(bin, "mount", "echo '/dev/disk9s1 on \(real)/dmg (hfs, local, nodev, nosuid, read-only)'")
+        try Self.tool(bin, "hdiutil", "printf '%s\\n' \"$*\" > '\(bin.path)/hdiutil.log'; exit 1")
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("dmg"), withIntermediateDirectories: true)
+
+        let r = try Self.call(in: Self.root, bin: bin, "striple_release_cleanup", dir.path)
+        #expect(r.status == 1)
+        #expect(r.error.contains("cannot detach \(dir.path)/dmg"))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("dmg").path))
+        let log = try String(contentsOf: bin.appendingPathComponent("hdiutil.log"), encoding: .utf8)
+        #expect(log == "detach -force \(dir.path)/dmg -quiet\n")
+    }
+
+    // A real run of release.sh needs a build, keys and GitHub. This test pins the order of its checks
+    // in the text: a check after the step it guards does not guard it.
+    @Test func releaseScriptRunsItsChecksBeforeTheStepsTheyGuard() throws {
+        let text = try String(contentsOf: Self.root.appendingPathComponent("scripts/release.sh"), encoding: .utf8)
+        let lines = text.components(separatedBy: "\n")
+        func line(_ needle: String, after start: Int = 0) -> Int? {
+            lines.indices.first { $0 >= start && lines[$0].contains(needle) }
+        }
+        let commit = try #require(line("COMMIT=$(git rev-parse HEAD)"))
+        let build = try #require(line("BUILD=$(git rev-list --count HEAD)"))
+        #expect(commit == build + 2, "COMMIT is read with BUILD, before anything can move HEAD")
+
+        let runBuild = try #require(line("\"$ROOT/scripts/build-app.sh\""))
+        let existing = try #require(line("EXISTING=$(striple_release_existing \"$TAG\" \"$REPO\") || die"))
+        #expect(existing < runBuild, "a draft or published release stops the run before the build")
+        #expect(lines[existing - 1].contains("if [[ $DRY -eq 0 ]]; then"))
+        let upload = try #require(line("gh release create \"$TAG\""))
+        let again = try #require(line("EXISTING=$(striple_release_existing \"$TAG\" \"$REPO\") || die", after: existing + 1))
+        #expect(again < upload)
+
+        let head = try #require(line("striple_release_head_is \"$COMMIT\" ||", after: runBuild))
+        let clean = try #require(line("striple_release_head_is \"$COMMIT\" clean ||", after: runBuild))
+        let wipe = try #require(line("rm -rf \"$OUT\""))
+        #expect(head < wipe && clean < wipe, "the files of a run are kept until the new build is known good")
+        #expect(line("rm -rf \"$OUT\"", after: wipe + 1) == nil)
+
+        #expect(line("printf '%s\\n' \"$COMMIT\" > \"$OUT/commit.txt\"") != nil)
+        #expect(line("striple_release_tag \"$TAG\" \"$COMMIT\"") != nil)
+        #expect(line("git tag") == nil, "only striple_release_tag makes the tag")
+        #expect(line("git rev-parse HEAD", after: commit + 1) == nil, "HEAD is read once")
+        #expect(line("OUT=\"$ROOT/dist/release/dry-run/$VERSION\"") != nil, "a dry run does not replace a real run")
+    }
+
     @Test func downloadPrefixIsPerTag() throws {
         #expect(try Self.call("striple_download_prefix", "o/r", "1.2.3").output == "https://github.com/o/r/releases/download/v1.2.3/")
     }

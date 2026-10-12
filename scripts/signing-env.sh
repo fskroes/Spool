@@ -7,15 +7,35 @@ STRIPLE_SIGNING_KEYCHAIN="${STRIPLE_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/st
 STRIPLE_SIGNING_PASSWORD_ITEM="${STRIPLE_SIGNING_PASSWORD_ITEM:-Striple Local Signing keychain}"
 STRIPLE_LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
+# `security -i` reads its input in blocks of 4096 bytes: the rest of a longer line runs as a second
+# command. Lines stay below this limit.
+STRIPLE_SECURITY_LINE_MAX=4000
+
 # Runs one `security` command that has a secret in it. The command goes to `security -i` on stdin,
 # so the secret is not in the argument list of any process (ps, process accounting, EDR).
 # Put every value through striple_security_quote. The status is the status of the command.
-striple_security_secret() { printf '%s\n' "$1" | security -i; }
+# A line with a line break, or of STRIPLE_SECURITY_LINE_MAX bytes or more, would split into two
+# commands: it is refused with status 2 and not run.
+striple_security_secret() {
+    local LC_ALL=C
+    case "$1" in
+        *$'\n'*|*$'\r'*) echo "striple: a security command must be one line" >&2; return 2 ;;
+    esac
+    if (( ${#1} >= STRIPLE_SECURITY_LINE_MAX )); then
+        echo "striple: a security command must be shorter than $STRIPLE_SECURITY_LINE_MAX bytes" >&2
+        return 2
+    fi
+    printf '%s\n' "$1" | security -i
+}
 
 # One argument for a `security -i` line: in double quotes, with \ and " escaped. `security -i` treats a
-# backslash as an escape also inside quotes, so "a\b" would arrive as "ab".
+# backslash as an escape also inside quotes, so "a\b" would arrive as "ab". A line break cannot be
+# escaped: such a value is refused with status 2. (Bash strings cannot hold a NUL byte.)
 striple_security_quote() {
     local v=$1
+    case "$v" in
+        *$'\n'*|*$'\r'*) echo "striple: a value for security cannot have a line break" >&2; return 2 ;;
+    esac
     v=${v//\\/\\\\}
     v=${v//\"/\\\"}
     printf '"%s"' "$v"
@@ -60,10 +80,11 @@ striple_signing_remove_from_search_list() {
 # Fails (status 1, no output) when the keychain, its password item or the identity is missing.
 striple_signing_identity() {
     [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]] || return 1
-    local pass
+    local pass kc
     pass=$(security find-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" -w 2>/dev/null) || return 1
     [[ "$pass" =~ ^[0-9a-f]+$ ]] || return 1
-    striple_security_secret "unlock-keychain -p $pass $(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN")" >/dev/null 2>&1 || return 1
+    kc=$(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN") || return 1
+    striple_security_secret "unlock-keychain -p $pass $kc" >/dev/null 2>&1 || return 1
     striple_signing_add_to_search_list || return 1
     # Not "-v": the certificate is self-signed and not trusted, which codesign does not need.
     security find-identity -p codesigning "$STRIPLE_SIGNING_KEYCHAIN" 2>/dev/null \

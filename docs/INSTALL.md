@@ -71,14 +71,42 @@ make install                                    # build, then install
 Releases are at [fskroes/striple-releases](https://github.com/fskroes/striple-releases/releases). Download with `curl`, not with a browser:
 
 ```sh
-curl -fsSL -o /tmp/Striple.dmg https://github.com/fskroes/striple-releases/releases/latest/download/Striple.dmg
-hdiutil attach -nobrowse -readonly -mountpoint /tmp/striple-dmg /tmp/Striple.dmg
-ditto /tmp/striple-dmg/Striple.app /Applications/Striple.app
-hdiutil detach /tmp/striple-dmg && rm /tmp/Striple.dmg
+(
+set -e
+D=$(mktemp -d)
+trap 'cd /; hdiutil detach -quiet "$D/dmg" 2>/dev/null || true; rm -rf "$D"' EXIT
+cd "$D"
+U=https://github.com/fskroes/striple-releases/releases/latest/download
+curl -fsSLO "$U/Striple.dmg"
+curl -fsSLO "$U/SHA256SUMS.txt"
+shasum -a 256 -c --ignore-missing SHA256SUMS.txt
+if pgrep -xq Striple; then osascript -e 'quit app id "com.fskroes.Striple"'; fi
+while pgrep -xq Striple; do sleep 0.5; done
+rm -rf /Applications/Striple.app
+hdiutil attach -nobrowse -readonly -mountpoint "$D/dmg" Striple.dmg
+ditto "$D/dmg/Striple.app" /Applications/Striple.app
+hdiutil detach "$D/dmg"
+mkdir -p ~/.local/bin
 ln -sf /Applications/Striple.app/Contents/Helpers/striple ~/.local/bin/striple
+)
 ```
 
+Paste the block as one piece. It runs in a subshell with `set -e`: the first command that fails stops it, and your terminal stays open. The steps:
+
+1. Download `Striple.dmg` and `SHA256SUMS.txt` to a new temporary folder.
+2. Check the DMG. `shasum` prints `Striple.dmg: OK`. If it does not, the block stops before it changes anything: the download is not the published file. `shasum` fails also when `SHA256SUMS.txt` has no line for `Striple.dmg`.
+3. Quit Striple if it runs, and wait until it quit.
+4. Remove the old `/Applications/Striple.app`: `ditto` merges into an old copy.
+5. Copy the app from the DMG and detach the DMG.
+6. Make the link `~/.local/bin/striple`.
+
+On every exit, also after a stop, the `trap` line detaches the DMG and deletes the temporary folder.
+
+The block has no `#` comments: zsh, the default shell of macOS, does not accept comments at the prompt unless `setopt interactivecomments` is on.
+
 Why: a browser adds the quarantine flag (`com.apple.quarantine`) to a download. For an app with that flag, Gatekeeper accepts only Apple and Developer ID signatures. Striple is signed with the local certificate, so `spctl -a -t exec` says `rejected` and macOS does not open it. `curl` does not add the flag. Gatekeeper checks only apps with the flag, so the app opens. If you downloaded with a browser: System Settings > Privacy & Security > "Open Anyway" (needs an admin password), or `xattr -dr com.apple.quarantine /Applications/Striple.app`.
+
+The Accessibility permission stays after you replace the app: macOS stores it with the bundle ID and the signing certificate, not with the files.
 
 Sparkle updates do not have this problem: Sparkle removes the quarantine flag from the update before it installs it.
 
@@ -128,7 +156,7 @@ The script:
 8. Signs a test file and checks that its designated requirement names the certificate hash, and that this hash is the one in the backup.
 9. Deletes the key files from `.build/signing-cert`.
 
-The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see. A passphrase can contain any character, also `"` and `\`: the script escapes them for `security -i`.
+The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see. A passphrase can contain `"` and `\`: the script escapes them for `security -i`. It cannot contain a line break, and each `security -i` command must be shorter than 4000 bytes: `security -i` reads 4096 bytes at a time and runs the rest of a longer line as a second command. The script refuses such a value and runs nothing with it.
 
 **Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete the file. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
 
@@ -138,7 +166,7 @@ Restore the identity from the backup (on a new Mac, or after `--remove`):
 ./scripts/make-signing-cert.sh --import ~/Striple-signing-identity.p12   # asks for the passphrase
 ```
 
-When you run the script again and the identity works, the script does nothing. If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove --yes` first, then `--import` your backup.
+When you run the script again and the identity works, the script signs a test file to check it and changes nothing. With `--import`, the identity in the keychain must be the one in the file. If it is another one, the script stops and changes nothing: run `--remove --yes` first (back up the current identity first if a release uses it). If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove --yes` first, then `--import` your backup.
 
 After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
 
