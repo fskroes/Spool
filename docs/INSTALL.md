@@ -155,7 +155,9 @@ What this means: an ad hoc build can probably register the agent, but macOS can 
 
 ### After an update
 
-SMAppService.h says: "If an app updates either the plist or the executable for a LaunchAgent or LaunchDaemon, the SMAppService must be re-registered or it may not launch. It is recommended to also call unregister before re-registering if the executable has been changed." Striple does this itself. At launch it compares `CFBundleVersion` with the build it registered last (the `LoginItemRegisteredBuild` default). If they differ and the agent is on, it unregisters and registers the agent again. It does not do this when the agent started the process, because unregistering would stop that process. The next manual start does it.
+SMAppService.h says: "If an app updates either the plist or the executable for a LaunchAgent or LaunchDaemon, the SMAppService must be re-registered or it may not launch. It is recommended to also call unregister before re-registering if the executable has been changed." Striple does this itself. At launch it compares the build stamp with the stamp it registered last (the `LoginItemRegisteredBuild` default). The stamp is `CFBundleVersion` plus the modification time of the executable, so a rebuild without a new commit also counts as a change. If the stamps differ and the agent is on, Striple unregisters and registers the agent again. It does not do this when the agent started the process, because unregistering would stop that process. The next manual start does it.
+
+The same header says: "If the service corresponds to a LoginItem, LaunchAgent, or LaunchDaemon and the service is currently running it will be killed." So when the agent started Striple and you turn off "Open Striple when you log in", Striple keeps running. It removes the agent when you quit it (the `LoginItemOffAtQuit` default). If Striple stops in a different way, the next manual start removes the agent.
 
 Striple uses the plain login item only when the agent is `notRegistered` or `notFound`. When the agent waits for your approval (`requiresApproval`), Striple does not add a second item, because both would start Striple after you approve.
 
@@ -222,7 +224,7 @@ make uninstall                            # or: ./scripts/install.sh --uninstall
 ./scripts/install.sh --uninstall --dry-run
 ```
 
-The script first runs `Striple --unregister-login`, which removes the login agent and the login item. Then it quits Striple, removes the app and removes the `~/.local/bin/striple` link. It does not remove your settings and logs. It shows the commands to remove them yourself:
+The script first quits Striple. Then it runs `Striple --unregister-login`, which removes the login agent and the login item. This order is necessary: if the agent started Striple, removing the agent first would stop Striple without a clean quit. Then the script removes the app and the `~/.local/bin/striple` link. It does not remove your settings and logs. It shows the commands to remove them yourself:
 
 ```sh
 rm -r ~/Library/Application\ Support/Striple    # settings

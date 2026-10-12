@@ -135,6 +135,9 @@ struct LaunchAtLoginRow: View {
         if state == .unavailable {
             Note("Available in the app bundle.")
         }
+        if state == .disabled, LoginItem.isOffAtQuit {
+            Note("Striple stops opening at login when you quit it.")
+        }
         if state == .requiresApproval {
             HStack {
                 Note("macOS needs your approval. Allow Striple in Login Items.")

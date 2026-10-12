@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.recorder.stop()
         ipc?.stop()
         model.engine.stop()
+        // Last: if the agent started this process, unregistering it makes launchd stop the process.
+        LoginItem.finishOffAtQuit(atQuit: true)
     }
 
     /// launchd (logout, `launchctl bootout`) and `kill` send signals, which skip `applicationWillTerminate`.

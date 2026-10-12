@@ -55,6 +55,30 @@ import StripleCore
         #expect(!LoginItem.shouldRefresh(agentStatus: .notRegistered, registeredBuild: "11", currentBuild: "12", startedByAgent: false))
         #expect(!LoginItem.shouldRefresh(agentStatus: .requiresApproval, registeredBuild: "11", currentBuild: "12", startedByAgent: false))
     }
+
+    @Test func rebuildWithoutANewCommitChangesTheStamp() {
+        let first = LoginItem.buildStamp(version: "16", executableModified: Date(timeIntervalSince1970: 1_000))
+        let rebuild = LoginItem.buildStamp(version: "16", executableModified: Date(timeIntervalSince1970: 1_060))
+        #expect(first != rebuild)
+        #expect(LoginItem.shouldRefresh(agentStatus: .enabled, registeredBuild: first, currentBuild: rebuild, startedByAgent: false))
+        #expect(LoginItem.buildStamp(version: "16", executableModified: nil) == "16")
+    }
+
+    // SMAppService.h: unregistering a running LaunchAgent kills it.
+    @Test func turningOffInAProcessTheAgentStartedWaitsForQuit() {
+        #expect(LoginItem.mustWaitForQuit(startedByAgent: true, agentStatus: .enabled))
+        #expect(!LoginItem.mustWaitForQuit(startedByAgent: false, agentStatus: .enabled))
+        #expect(!LoginItem.mustWaitForQuit(startedByAgent: true, agentStatus: .notRegistered))
+
+        #expect(LoginItem.shouldFinishOff(pending: true, atQuit: true, startedByAgent: true))
+        #expect(LoginItem.shouldFinishOff(pending: true, atQuit: false, startedByAgent: false))
+        #expect(!LoginItem.shouldFinishOff(pending: true, atQuit: false, startedByAgent: true))
+        #expect(!LoginItem.shouldFinishOff(pending: false, atQuit: true, startedByAgent: false))
+
+        #expect(LoginItem.state(statuses: [.enabled, .notRegistered], offAtQuit: true) == .disabled)
+        #expect(LoginItem.state(statuses: [.enabled, .notRegistered], offAtQuit: false) == .enabled)
+        #expect(LoginItem.state(statuses: [.notRegistered, .requiresApproval], offAtQuit: false) == .requiresApproval)
+    }
 }
 
 @Suite struct SingleInstanceTests {

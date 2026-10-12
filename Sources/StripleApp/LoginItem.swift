@@ -14,24 +14,57 @@ enum LoginItem {
     }
 
     static let agentPlistName = "com.fskroes.Striple.agent.plist"
-    /// The build (CFBundleVersion) that registered the agent last.
+    /// The build stamp (see `currentBuild`) that registered the agent last.
     static let registeredBuildKey = "LoginItemRegisteredBuild"
+    /// Set when the user turned launch at login off in a process that the agent started.
+    static let offAtQuitKey = "LoginItemOffAtQuit"
 
     static var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
 
     private static var agent: SMAppService { SMAppService.agent(plistName: agentPlistName) }
     private static var services: [SMAppService] { [agent, SMAppService.mainApp] }
-    private static var currentBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+
+    /// CFBundleVersion is the commit count, which stays the same for a rebuild without a new commit.
+    /// The modification time of the executable changes with every build.
+    private static var currentBuild: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let path = Bundle.main.executableURL?.path ?? ""
+        let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? nil
+        return buildStamp(version: version, executableModified: modified)
+    }
+
+    static func buildStamp(version: String, executableModified: Date?) -> String {
+        guard let executableModified else { return version }
+        return "\(version)-\(Int(executableModified.timeIntervalSince1970))"
+    }
+
+    /// True when launch at login is off for the user but the agent is removed only when Striple quits.
+    static var isOffAtQuit: Bool { UserDefaults.standard.bool(forKey: offAtQuitKey) }
 
     static var state: State {
         guard isAvailable else { return .unavailable }
-        let statuses = services.map(\.status)
+        return state(statuses: services.map(\.status), offAtQuit: isOffAtQuit)
+    }
+
+    static func state(statuses: [SMAppService.Status], offAtQuit: Bool) -> State {
+        if offAtQuit { return .disabled }
         if statuses.contains(.enabled) { return .enabled }
         if statuses.contains(.requiresApproval) { return .requiresApproval }
         return .disabled
     }
 
     static var isEnabled: Bool { state == .enabled }
+
+    /// SMAppService.h: unregistering a LaunchAgent that is running kills it. So a process that the agent
+    /// started must not unregister the agent while it runs; it does so when it quits.
+    static func mustWaitForQuit(startedByAgent: Bool, agentStatus: SMAppService.Status) -> Bool {
+        startedByAgent && (agentStatus == .enabled || agentStatus == .requiresApproval)
+    }
+
+    /// The pending "off" is done when Striple quits, or at a launch that the agent did not start.
+    static func shouldFinishOff(pending: Bool, atQuit: Bool, startedByAgent: Bool) -> Bool {
+        pending && (atQuit || !startedByAgent)
+    }
 
     /// Use the plain login item only when the agent is not registered at all. When the agent waits for approval,
     /// the user must approve it; registering the login item too would start Striple twice at every login.
@@ -41,6 +74,11 @@ enum LoginItem {
 
     static func set(_ on: Bool) throws {
         guard isAvailable else { return }
+        if on, isOffAtQuit {
+            // The agent was never removed, so only the pending "off" goes away.
+            UserDefaults.standard.removeObject(forKey: offAtQuitKey)
+            if agent.status == .enabled { return }
+        }
         if on {
             do {
                 try agent.register()
@@ -52,10 +90,31 @@ enum LoginItem {
                 try SMAppService.mainApp.register()
             }
         } else {
-            for service in services where service.status == .enabled || service.status == .requiresApproval {
-                try service.unregister()
+            let wait = mustWaitForQuit(startedByAgent: SingleInstance.startedByLaunchAgent, agentStatus: agent.status)
+            let app = SMAppService.mainApp
+            if app.status == .enabled || app.status == .requiresApproval { try app.unregister() }
+            if wait {
+                UserDefaults.standard.set(true, forKey: offAtQuitKey)
+            } else {
+                let agent = agent
+                if agent.status == .enabled || agent.status == .requiresApproval { try agent.unregister() }
+                UserDefaults.standard.removeObject(forKey: registeredBuildKey)
             }
+        }
+    }
+
+    /// Removes the agent if the user turned launch at login off while the agent ran Striple.
+    /// At quit this stops the process, which is quitting already.
+    static func finishOffAtQuit(atQuit: Bool) {
+        guard isAvailable,
+              shouldFinishOff(pending: isOffAtQuit, atQuit: atQuit, startedByAgent: SingleInstance.startedByLaunchAgent)
+        else { return }
+        do {
+            if agent.status == .enabled || agent.status == .requiresApproval { try agent.unregister() }
+            UserDefaults.standard.removeObject(forKey: offAtQuitKey)
             UserDefaults.standard.removeObject(forKey: registeredBuildKey)
+        } catch {
+            NSLog("Striple: could not turn off the LaunchAgent: %@", error.localizedDescription)
         }
     }
 
@@ -69,6 +128,8 @@ enum LoginItem {
 
     static func refreshAfterUpdate() {
         guard isAvailable else { return }
+        finishOffAtQuit(atQuit: false)
+        if isOffAtQuit { return }
         let registered = UserDefaults.standard.string(forKey: registeredBuildKey)
         guard shouldRefresh(agentStatus: agent.status, registeredBuild: registered, currentBuild: currentBuild,
                             startedByAgent: SingleInstance.startedByLaunchAgent) else { return }
@@ -88,6 +149,7 @@ enum LoginItem {
             try? service.unregister()
         }
         UserDefaults.standard.removeObject(forKey: registeredBuildKey)
+        UserDefaults.standard.removeObject(forKey: offAtQuitKey)
     }
 
     static func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }

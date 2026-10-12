@@ -100,10 +100,23 @@ extension Hotkeys {
             guard (item[kHISymbolicHotKeyEnabled as String] as? Bool) ?? false,
                   let code = (item[kHISymbolicHotKeyCode as String] as? NSNumber)?.intValue, code >= 0, code < 0xFFFF,
                   let mods = (item[kHISymbolicHotKeyModifiers as String] as? NSNumber)?.uint32Value else { continue }
+            // Arrows and other function keys always carry the fn flag, so there it says nothing.
+            // On any other key (fn ⌃ F for window tiling) the user must press Fn, which Striple never binds.
+            if mods & fnMask != 0, !keysWithImplicitFn.contains(code) { continue }
             out.insert(KeyCombo(UInt16(code), keyModifiers(carbon: mods)))
         }
         return out
     }
+
+    /// `kEventKeyModifierFnMask`.
+    nonisolated static let fnMask: UInt32 = 1 << 17
+
+    nonisolated static let keysWithImplicitFn: Set<Int> = [
+        kVK_LeftArrow, kVK_RightArrow, kVK_DownArrow, kVK_UpArrow,
+        kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown, kVK_ForwardDelete, kVK_Help,
+        kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20,
+    ]
 
     nonisolated static func keyModifiers(carbon m: UInt32) -> KeyModifiers {
         var out: KeyModifiers = []

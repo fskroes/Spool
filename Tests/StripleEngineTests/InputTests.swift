@@ -114,4 +114,19 @@ import Testing
         #expect(Hotkeys.systemShortcuts(from: list) == [KeyCombo(KeyCode.space, [.command])])
         #expect(Hotkeys.keyModifiers(carbon: UInt32(controlKey | shiftKey)) == [.control, .shift])
     }
+
+    // Values as CopySymbolicHotKeys returns them on macOS 26: fn ⌃ F (tiling Fill), fn ⌃ ← (Spaces),
+    // fn ⌃⌥⇧ ← (tiling Left & Quarters). Only the Fill shortcut needs the Fn key.
+    @Test func fnFlagCountsOnlyOnKeysThatCarryItAnyway() {
+        func entry(_ code: UInt16, _ mods: UInt32) -> [String: Any] {
+            [kHISymbolicHotKeyCode as String: NSNumber(value: Int(code)), kHISymbolicHotKeyModifiers as String: NSNumber(value: mods),
+             kHISymbolicHotKeyEnabled as String: true]
+        }
+        let list = [entry(KeyCode.f, 0x21000), entry(KeyCode.left, 0x21000), entry(KeyCode.right, 0x21a00), entry(80 /* F19 */, 0x20000)]
+        #expect(Hotkeys.systemShortcuts(from: list) == [
+            KeyCombo(KeyCode.left, [.control]),
+            KeyCombo(KeyCode.right, [.control, .option, .shift]),
+            KeyCombo(80, []),
+        ])
+    }
 }
