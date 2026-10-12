@@ -24,6 +24,8 @@ test in `Tests/`.
 - A new window opens directly to the right of the focused column.
 - A new window never changes the width of an existing column.
 - One strip per (display, Space) pair.
+  - A window always goes to the strip of the display that has its Space, also when it is moved in Mission
+    Control to a Space of another display. On a display Striple does not manage, it floats.
 
 ### F2 Spring animation and instant shortcuts
 - Window moves use a critically damped spring. The spring is analytic, so the

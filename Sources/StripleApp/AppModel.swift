@@ -50,8 +50,10 @@ final class AppModel: ObservableObject {
     /// Opens config.json in the default editor for JSON, or in TextEdit when there is none.
     func openConfigFile() {
         let url = store.fileURL
-        if !FileManager.default.fileExists(atPath: url.path), let data = try? store.config.encoded() {
-            try? data.write(to: url, options: .atomic)
+        // A link to a folder that does not exist: show the link, never replace it with a plain file.
+        guard store.createFileIfMissing() else {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
         }
         if NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
             NSWorkspace.shared.open(url)

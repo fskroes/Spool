@@ -606,8 +606,10 @@ extension Engine {
         guard var w = windows[id], w.state != .tiled else { return }
         let key: StripKey
         if let old = w.key, let d = display(old.display), !isDisabled(d.uuid) {
-            let space = Policy.putBackSpace(old: old.space, windowSpaces: Spaces.spaces(of: id), active: activeSpaces[d.uuid] ?? 0)
-            key = StripKey(display: d.uuid, space: space)
+            let k = Policy.putBackKey(old: StripKey(display: d.uuid, space: old.space), windowSpaces: Spaces.spaces(of: id),
+                                      activeSpaces: activeSpaces, allSpaces: Spaces.all)
+            guard !isDisabled(k.display) else { return }
+            key = k
         } else if let k = stripKey(for: id, element: w.element) {
             key = k
         } else {
@@ -769,10 +771,14 @@ extension Engine {
     /// Moves windows whose Space changed (for example dragged in Mission Control) to the right strip.
     private func reconcileSpaces() {
         for (id, w) in windows where w.state == .tiled {
-            guard let key = w.key, let active = activeSpaces[key.display], active != 0 else { continue }
-            let spaces = Spaces.spaces(of: id)
-            guard !spaces.isEmpty, !spaces.contains(key.space) else { continue }
-            let target = StripKey(display: key.display, space: spaces.contains(active) ? active : spaces[0])
+            guard let key = w.key, (activeSpaces[key.display] ?? 0) != 0,
+                  let target = Policy.respacedKey(old: key, windowSpaces: Spaces.spaces(of: id),
+                                                  activeSpaces: activeSpaces, allSpaces: Spaces.all) else { continue }
+            // Moved to the Space of a display Striple does not manage: the window floats there.
+            if isDisabled(target.display) {
+                takeOff(id, as: .floating, relayoutNow: false)
+                continue
+            }
             var source = strips[key] ?? Strip()
             let width = source.locate(id).map { source.columns[$0.column].width }
             source.remove(id)

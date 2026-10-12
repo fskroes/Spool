@@ -304,6 +304,44 @@ import Testing
         #expect(!fm.fileExists(atPath: root.appendingPathComponent("home/hosts").path))
     }
 
+    // Round 11 finding: with config.json a link to a folder that does not exist yet, "Open File" replaced the link
+    // with a plain file. The link must stay, and the error must name the missing folder.
+    @Test func aLinkToAMissingFolderStaysALink() throws {
+        let url = tempFile()
+        let fm = FileManager.default
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let dest = "../dotfiles-\(UUID().uuidString)/striple/config.json"
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: dest)
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 13 }
+        #expect(store.hasProblem)
+        #expect(store.loadError?.contains("does not exist") == true)
+        #expect(store.loadError?.contains("striple") == true)
+
+        #expect(!store.createFileIfMissing())
+        #expect(try fm.destinationOfSymbolicLink(atPath: url.path) == dest)
+
+        // When the folder exists, the file is made at the link target and the link stays.
+        let target = ConfigStore.writeTarget(of: url)
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: target.deletingLastPathComponent().deletingLastPathComponent()) }
+        #expect(store.createFileIfMissing())
+        #expect(try fm.destinationOfSymbolicLink(atPath: url.path) == dest)
+        #expect(try Config.decode(Data(contentsOf: target)).layout.innerGap == 13)
+    }
+
+    @Test func createFileIfMissingMakesStriplesOwnFileAndKeepsAnExistingOne() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        try? FileManager.default.removeItem(at: url)
+        #expect(store.createFileIfMissing())
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        let mine = Data("{}".utf8)
+        try mine.write(to: url)
+        #expect(store.createFileIfMissing())
+        #expect(try Data(contentsOf: url) == mine)
+    }
+
     // Round 10 finding: an atomic save replaced a read-only file in a writable folder without a message.
     @Test func aReadOnlyFileIsNotReplaced() throws {
         let url = tempFile()

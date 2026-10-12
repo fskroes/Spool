@@ -154,13 +154,47 @@ public final class ConfigStore: ObservableObject {
         return out
     }
 
+    /// A save to a link whose target folder does not exist. Striple does not make the user's folders.
+    struct LinkTargetFolderMissing: LocalizedError {
+        let target: URL
+        var errorDescription: String? {
+            "it is a link to \(target.path), and the folder \(target.deletingLastPathComponent().path) does not exist"
+        }
+    }
+
+    /// Makes the folder for `target` when it is Striple's own file, else checks that the user's folder exists.
+    private func prepareFolder(of target: URL) throws {
+        let dir = target.deletingLastPathComponent()
+        if target == fileURL {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } else {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+                throw LinkTargetFolderMissing(target: target)
+            }
+        }
+    }
+
+    /// Writes the current settings when there is no file, so that an editor can open it. A link stays a link:
+    /// the file is written at the link target. Returns false when it cannot write (the folder of the link
+    /// target does not exist); the caller then shows the link in Finder.
+    @discardableResult
+    public func createFileIfMissing() -> Bool {
+        let target = Self.writeTarget(of: fileURL)
+        if FileManager.default.fileExists(atPath: target.path) { return true }
+        do {
+            try prepareFolder(of: target)
+            try config.encoded().write(to: target, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func save() {
         do {
             let target = Self.writeTarget(of: fileURL)
-            // Only Striple's own folder is made. The folder of a link target is the user's.
-            if target == fileURL {
-                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            }
+            try prepareFolder(of: target)
             // An atomic write replaces a read-only file when its folder is writable. The user made it read-only.
             if FileManager.default.fileExists(atPath: target.path), !FileManager.default.isWritableFile(atPath: target.path) {
                 throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: target.path])

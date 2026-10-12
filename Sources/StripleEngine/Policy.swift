@@ -219,6 +219,22 @@ enum Policy {
         return Engine.StripKey(display: display, space: space)
     }
 
+    /// The new strip of a tiled window whose Space changed (moved in Mission Control), or nil when it did not
+    /// change. A Space of another display moves the window to that display, as in `stripKey`.
+    static func respacedKey(old: Engine.StripKey, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                            allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey? {
+        guard (activeSpaces[old.display] ?? 0) != 0, !windowSpaces.isEmpty, !windowSpaces.contains(old.space) else { return nil }
+        return stripKey(display: old.display, activeSpaces: activeSpaces, windowSpaces: windowSpaces, allSpaces: allSpaces)
+    }
+
+    /// The strip a window that comes back (unminimized, shown, unfloated) goes to: its old strip, else the Space it
+    /// is on now, on the display that has that Space.
+    static func putBackKey(old: Engine.StripKey, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                           allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey {
+        let space = putBackSpace(old: old.space, windowSpaces: windowSpaces, active: activeSpaces[old.display] ?? 0)
+        return stripKey(display: old.display, activeSpaces: activeSpaces, windowSpaces: space == 0 ? [] : [space], allSpaces: allSpaces)
+    }
+
     /// Whether a live window can take a held slot without the same ID: it is on the held window's Space. Without
     /// Space information it can.
     static func heldWindowFits(heldSpace: UInt64, floats: Bool, windowSpaces: [UInt64]) -> Bool {

@@ -103,7 +103,9 @@ Edits load automatically, also from editors and tools that write the file in pla
 `jq … > config.json`). A change in Settings first reads an edit that was not loaded yet, so it never replaces it.
 `config.json` can be a symlink into a dotfiles repo. Striple saves to the file the link points to, so the link stays,
 and edits to that file load too. If that file is read-only (for example managed by Nix), a change in Settings shows
-"Could not save config.json" and stays in use until Striple quits.
+"Could not save config.json" and stays in use until Striple quits. Striple does not make the folder a link points to:
+if that folder does not exist yet (the dotfiles repo is not cloned), the message names the folder, and "Open File"
+shows the link in Finder. Striple never replaces the link with a plain file.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 

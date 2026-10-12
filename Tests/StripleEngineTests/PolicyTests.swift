@@ -387,6 +387,30 @@ import Testing
         #expect(Policy.heldWindowFits(heldSpace: 1, floats: true, windowSpaces: [2]))
     }
 
+    // Round 11 finding: a window moved in Mission Control to a Space of another display (or put back while it was
+    // there) kept its old display, so its strip was never shown.
+    @Test func aWindowMovedToASpaceOfAnotherDisplayGoesToThatDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2]
+        let all: () -> [String: Set<UInt64>] = { ["D1": [1, 8], "D2": [2, 9]] }
+        let old = K(display: "D1", space: 1)
+        #expect(Policy.respacedKey(old: old, windowSpaces: [2], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 2))
+        #expect(Policy.respacedKey(old: old, windowSpaces: [9], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.respacedKey(old: old, windowSpaces: [8], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 8))
+        // Not moved, no Space information, or one Space for all displays: no change.
+        #expect(Policy.respacedKey(old: old, windowSpaces: [1, 2], activeSpaces: active, allSpaces: all) == nil)
+        #expect(Policy.respacedKey(old: old, windowSpaces: [], activeSpaces: active, allSpaces: all) == nil)
+        #expect(Policy.respacedKey(old: K(display: "D1", space: 0), windowSpaces: [2], activeSpaces: [:]) == nil)
+
+        // Put back: the old Space when the window is still there, else the Space it is on now, on its display.
+        #expect(Policy.putBackKey(old: old, windowSpaces: [1], activeSpaces: active, allSpaces: all) == old)
+        #expect(Policy.putBackKey(old: K(display: "D1", space: 8), windowSpaces: [8], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 8))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [9], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [2], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 2))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 1))
+        #expect(Policy.putBackKey(old: K(display: "D1", space: 0), windowSpaces: [9], activeSpaces: [:]) == K(display: "D1", space: 0))
+    }
+
     @Test func anActivatedAppIsScannedAgainWhenStripleGaveUpOrHoldsItsWindows() {
         func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
             Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)
