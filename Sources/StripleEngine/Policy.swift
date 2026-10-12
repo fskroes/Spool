@@ -201,6 +201,30 @@ enum Policy {
         return !watching || gaveUp || holdsWindows
     }
 
+    /// The strip of a window on `display`. Its Space is the active one of the display when the window is on it,
+    /// else the first Space of the window. A Space that is on screen on another display belongs to that display,
+    /// so the key is never a display with a Space of another display (a strip that is never shown). For a Space
+    /// not on screen, `allSpaces` (every Space by display, read only then) names its display.
+    static func stripKey(display: String, activeSpaces: [String: UInt64], windowSpaces: [UInt64],
+                         allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey {
+        let active = activeSpaces[display] ?? 0
+        // Without Space information (private calls missing, or one Space for all displays) use one strip per display.
+        guard active != 0 else { return Engine.StripKey(display: display, space: 0) }
+        let space = windowSpaces.contains(active) ? active : (windowSpaces.first ?? active)
+        guard space != active else { return Engine.StripKey(display: display, space: space) }
+        if let owner = activeSpaces.first(where: { $0.value == space })?.key
+            ?? allSpaces().first(where: { $0.value.contains(space) && activeSpaces[$0.key] != nil })?.key {
+            return Engine.StripKey(display: owner, space: space)
+        }
+        return Engine.StripKey(display: display, space: space)
+    }
+
+    /// Whether a live window can take a held slot without the same ID: it is on the held window's Space. Without
+    /// Space information it can.
+    static func heldWindowFits(heldSpace: UInt64, floats: Bool, windowSpaces: [UInt64]) -> Bool {
+        floats || heldSpace == 0 || windowSpaces.isEmpty || windowSpaces.contains(heldSpace)
+    }
+
     /// How long held windows of an app that answered wait for windows the app makes late (Chrome, Electron apps).
     static let heldGraceDelay = 5.0
 

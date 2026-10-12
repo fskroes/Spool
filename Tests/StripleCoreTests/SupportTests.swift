@@ -123,6 +123,36 @@ import Testing
         #expect(held.map(\.after) == [[22]])
     }
 
+    // Round 10 finding: a match by app ignored the Space, so a window could go to a strip that is never shown.
+    @Test func aHeldWindowIsTakenOnlyByAWindowThatFits() {
+        let h = { (id: WindowID, space: UInt64) in HeldWindow(info: w(id, "x"), displayID: "D", spaceID: space, after: [], width: .proportion(0.5)) }
+        var held = [h(1, 1), h(2, 2)]
+        // Live window 22 is on Space 2, 21 on Space 1. Saved order alone would pair 22 with held 1.
+        let spaceOf: [WindowID: UInt64] = [21: 1, 22: 2]
+        let pairs = HeldWindow.take(&held, for: [w(22, "x"), w(21, "x")], byApp: true) { h, live in spaceOf[live.id] == h.spaceID }
+        #expect(pairs.map { [$0.held.info.id, $0.live.id] } == [[1, 21], [2, 22]])
+        // The same ID always matches.
+        var again = [h(5, 1)]
+        #expect(HeldWindow.take(&again, for: [w(5, "x")], byApp: false) { _, _ in false }.count == 1)
+    }
+
+    // Round 10 finding: a floating window of an app that did not answer was tiled when the app answered.
+    @Test func aFloatingWindowOfAnAppThatDoesNotAnswerIsHeldAndComesBackFloating() {
+        let s = Session(strips: [oneStrip([w(1, "a")])], floating: [w(7, "x", "Palette"), w(8, "b")])
+        let r = s.restore(live: [w(1, "a")], waitingFor: ["x"])
+        #expect(r.held.map(\.info.id) == [7])
+        #expect(r.held.first?.floats == true)
+        #expect(r.unmatchedFloating.map(\.id) == [8])
+        // A save keeps it out of the strips.
+        #expect(HeldWindow.placed(r.held, into: [1: r.strips[0].strip]) { _ in 1 }[1]?.allWindows.map(\.id) == [1])
+
+        // It comes back by title (a new ID), not by a guess by app.
+        var held = r.held
+        #expect(HeldWindow.take(&held, for: [w(30, "x")], byApp: true).isEmpty)
+        #expect(HeldWindow.take(&held, for: [w(30, "x"), w(31, "x", "Palette")], byApp: true).map(\.live.id) == [31])
+        #expect(held.isEmpty)
+    }
+
     // Round 8 finding: a quit copy of an app dropped held windows that the other running copy can still show.
     @Test func heldWindowsOfAQuitAppGoToAnotherCopy() {
         let h = { (id: WindowID, pid: Int32) -> HeldWindow in

@@ -94,6 +94,8 @@ test in `Tests/`.
     app takes a waiting place. Then Striple looks once more and drops the places that no window took.
   - A waiting window does not move the focused window on screen.
   - A waiting window goes with its strip when that strip is restored to another Space or display.
+  - A new window takes a waiting place only when it is on the Space of that place.
+  - A window the user floated waits too, and comes back floating when it has the same ID or title.
   - With two copies of one app, the places wait while one copy does not answer. When a copy quits, the
     places go to the other copy.
 

@@ -88,7 +88,7 @@ extension LoginItem {
         // A save while config.json has errors replaces the user's file. Only the user may cause that.
         guard isAvailable, !store.fileHasError else { return }
         let on = showsOn(state)
-        store.update { $0.behavior.launchAtLogin = on }
+        store.update(automatic: true) { $0.behavior.launchAtLogin = on }
     }
 }
 

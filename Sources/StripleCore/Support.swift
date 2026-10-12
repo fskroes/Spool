@@ -26,13 +26,16 @@ public struct HeldWindow: Equatable, Sendable {
     /// of held windows. A position number would go wrong when a restore drops columns (closed windows).
     public var after: [WindowID]
     public var width: ColumnWidth
+    /// A window the user floated. It comes back floating, not in a slot (display, Space, after and width unused).
+    public var floats: Bool
 
-    public init(info: WindowInfo, displayID: String, spaceID: UInt64, after: [WindowID], width: ColumnWidth) {
+    public init(info: WindowInfo, displayID: String, spaceID: UInt64, after: [WindowID], width: ColumnWidth, floats: Bool = false) {
         self.info = info
         self.displayID = displayID
         self.spaceID = spaceID
         self.after = after
         self.width = width
+        self.floats = floats
     }
 
     /// The 1-based slot in `strip`: right after the column of the nearest window before it that is on the strip.
@@ -45,18 +48,22 @@ public struct HeldWindow: Equatable, Sendable {
     /// title for all windows, so a loose match never steals an exact one; then (with `byApp`) the remaining
     /// held windows of the same app, in saved order. The result is in the order of `held`, so placing the pairs
     /// in that order finds the anchors of later ones.
-    public static func take(_ held: inout [HeldWindow], for live: [WindowInfo], byApp: Bool) -> [(live: WindowInfo, held: HeldWindow)] {
+    /// `fits`: whether a live window can be a held one when the ID is not the same (for example: it is on the
+    /// held window's Space). A window on another Space would go to a strip that is not on screen.
+    public static func take(_ held: inout [HeldWindow], for live: [WindowInfo], byApp: Bool,
+                            fits: (HeldWindow, WindowInfo) -> Bool = { _, _ in true }) -> [(live: WindowInfo, held: HeldWindow)] {
         var pool = live
         var pick: [Int: WindowInfo] = [:]
         for (i, h) in held.enumerated() {
             if let j = pool.firstIndex(where: { $0.id == h.info.id && $0.bundleID == h.info.bundleID })
-                ?? (h.info.title.isEmpty ? nil : pool.firstIndex { $0.bundleID == h.info.bundleID && $0.title == h.info.title }) {
+                ?? (h.info.title.isEmpty ? nil : pool.firstIndex { $0.bundleID == h.info.bundleID && $0.title == h.info.title && fits(h, $0) }) {
                 pick[i] = pool.remove(at: j)
             }
         }
         if byApp {
-            for (i, h) in held.enumerated() where pick[i] == nil {
-                if let j = pool.firstIndex(where: { $0.bundleID == h.info.bundleID }) { pick[i] = pool.remove(at: j) }
+            // A floating window comes back only by ID or title: a guess would float a window the user tiled.
+            for (i, h) in held.enumerated() where pick[i] == nil && !h.floats {
+                if let j = pool.firstIndex(where: { $0.bundleID == h.info.bundleID && fits(h, $0) }) { pick[i] = pool.remove(at: j) }
             }
         }
         let out = held.indices.compactMap { i in pick[i].map { (live: $0, held: held[i]) } }
@@ -97,7 +104,7 @@ public struct HeldWindow: Equatable, Sendable {
     /// The strips with the held windows put in their places, in order. For a session save.
     public static func placed<K: Hashable>(_ held: [HeldWindow], into strips: [K: Strip], key: (HeldWindow) -> K) -> [K: Strip] {
         var out = strips
-        for h in held {
+        for h in held where !h.floats {
             var strip = out[key(h)] ?? Strip()
             strip.insert(h.info, width: h.width, slot: h.slot(in: strip), focus: false)
             out[key(h)] = strip
@@ -200,7 +207,11 @@ public struct Session: Codable, Equatable, Sendable {
             strip.focusedColumn = min(newFocus ?? min(saved.strip.focusedColumn, columns.count - 1), columns.count - 1)
             out.append(SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip))
         }
-        let lostFloating = floating.indices.filter { floatingResolved[$0] == nil }.map { floating[$0] }
+        // Floating windows of apps that do not answer wait too, so they come back floating.
+        for w in floating where waitingFor.contains(w.bundleID) {
+            held.append(HeldWindow(info: w, displayID: "", spaceID: 0, after: [], width: .proportion(0.5), floats: true))
+        }
+        let lostFloating = floating.indices.filter { floatingResolved[$0] == nil && !waitingFor.contains(floating[$0].bundleID) }.map { floating[$0] }
         return (out, floatingIDs, pool, lostFloating, held)
     }
 

@@ -277,6 +277,63 @@ import Testing
         #expect(ConfigStore.writeTarget(of: url).standardizedFileURL.path == target.standardizedFileURL.path)
     }
 
+    // Round 10 finding: `..` in a relative link was resolved as text, so with a folder reached through a link
+    // (~/.config -> ~/dotfiles/config) the save went to a stray file and the next change undid the last one.
+    @Test func aRelativeLinkInALinkedFolderSavesToTheRealFile() throws {
+        let root = tempFile().deletingLastPathComponent()
+        let fm = FileManager.default
+        try fm.createDirectory(at: root.appendingPathComponent("dotfiles/config/striple"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("dotfiles/hosts"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("home"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("home/.config").path, withDestinationPath: "../dotfiles/config")
+        let real = root.appendingPathComponent("dotfiles/hosts/striple.json")
+        var c = Config()
+        c.layout.innerGap = 21
+        try c.encoded().write(to: real)
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("dotfiles/config/striple/config.json").path,
+                                  withDestinationPath: "../../hosts/striple.json")
+
+        let url = root.appendingPathComponent("home/.config/striple/config.json")
+        let store = ConfigStore(fileURL: url, watch: false)
+        #expect(store.config.layout.innerGap == 21)
+        store.update { $0.layout.innerGap = 30 }
+        store.update { $0.behavior.focusFollowsMouse = true }
+        #expect(store.config.layout.innerGap == 30)
+        let saved = try Config.decode(Data(contentsOf: real))
+        #expect(saved.layout.innerGap == 30 && saved.behavior.focusFollowsMouse)
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("home/hosts").path))
+    }
+
+    // Round 10 finding: an atomic save replaced a read-only file in a writable folder without a message.
+    @Test func aReadOnlyFileIsNotReplaced() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 11 }
+        let before = try Data(contentsOf: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+
+        store.update { $0.layout.innerGap = 12 }
+        #expect(try Data(contentsOf: url) == before)
+        #expect(store.hasProblem)
+        #expect(store.loadError?.hasPrefix("Could not save config.json") == true)
+        #expect(store.config.layout.innerGap == 12)
+    }
+
+    // Round 10 finding: an automatic change checked for a broken file before the read that found it.
+    @Test func anAutomaticChangeDoesNotSaveOverABrokenEditNotLoadedYet() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        let broken = Data(#"{"version":2,"bindings":{"focus-left":[{"key":4,"mods":["hyper"]}]}}"#.utf8)
+        try broken.write(to: url)
+        #expect(!store.fileHasError)
+
+        store.update(automatic: true) { $0.behavior.launchAtLogin.toggle() }
+        #expect(try Data(contentsOf: url) == broken)
+        #expect(store.fileHasError)
+        #expect(!FileManager.default.fileExists(atPath: store.brokenCopyURL.path))
+    }
+
     // Round 9 finding: after a failed save, the next change reloaded the old file and undid the unsaved change.
     @Test func aFailedSaveDoesNotLoseTheChangeAtTheNextChange() throws {
         let url = tempFile()

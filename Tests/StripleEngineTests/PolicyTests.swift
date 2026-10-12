@@ -364,6 +364,29 @@ import Testing
         #expect(Policy.heldGraceDelay >= 3)
     }
 
+    // Round 10 finding: a strip key could pair a display with a Space of another display (never shown).
+    @Test func aStripKeyNeverPairsADisplayWithASpaceOfAnotherDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2]
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [1]) == K(display: "D1", space: 1))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [2]) == K(display: "D2", space: 2))
+        // A Space not on screen goes to the display that has it; an unknown one stays with the display asked for.
+        let all: () -> [String: Set<UInt64>] = { ["D1": [1, 8], "D2": [2, 9], "Main": [7]] }
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [9], allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [8], allSpaces: all) == K(display: "D1", space: 8))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [7], allSpaces: all) == K(display: "D1", space: 7))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [9]) == K(display: "D1", space: 9))
+        // No Space information.
+        #expect(Policy.stripKey(display: "D1", activeSpaces: [:], windowSpaces: [2]) == K(display: "D1", space: 0))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: []) == K(display: "D1", space: 1))
+
+        #expect(Policy.heldWindowFits(heldSpace: 2, floats: false, windowSpaces: [2, 3]))
+        #expect(!Policy.heldWindowFits(heldSpace: 1, floats: false, windowSpaces: [2]))
+        #expect(Policy.heldWindowFits(heldSpace: 1, floats: false, windowSpaces: []))
+        #expect(Policy.heldWindowFits(heldSpace: 0, floats: false, windowSpaces: [2]))
+        #expect(Policy.heldWindowFits(heldSpace: 1, floats: true, windowSpaces: [2]))
+    }
+
     @Test func anActivatedAppIsScannedAgainWhenStripleGaveUpOrHoldsItsWindows() {
         func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
             Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)

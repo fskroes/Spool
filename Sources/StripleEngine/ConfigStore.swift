@@ -48,9 +48,12 @@ public final class ConfigStore: ObservableObject {
     }
 
     /// Changes the settings, saves them and notifies observers. No-op when nothing changed.
-    public func update(_ change: (inout Config) -> Void) {
+    /// `automatic`: a change the user did not make. It is not done while the file has an error, also when that
+    /// error is found only by the read here.
+    public func update(automatic: Bool = false, _ change: (inout Config) -> Void) {
         // An edit that the watchers did not report yet is read first, so this save does not replace it.
         loadIfChangedOnDisk()
+        if automatic, fileIsBroken { return }
         var next = config
         change(&next)
         next.layout = next.layout.sanitized()
@@ -134,11 +137,19 @@ public final class ConfigStore: ObservableObject {
 
     /// The file a save writes: the target of a symlink (a dotfiles repo), so the link stays a link. An atomic
     /// write to the link itself would replace it with a plain file.
+    /// A relative link is read from the real folder of the link, as the kernel does: `..` in it goes up from
+    /// that folder, also when the folder is reached through another link (`~/.config -> ~/dotfiles/config`).
     nonisolated static func writeTarget(of url: URL) -> URL {
         var out = url
         for _ in 0..<16 {
             guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: out.path) else { return out }
-            out = URL(fileURLWithPath: dest, relativeTo: out.deletingLastPathComponent()).standardizedFileURL
+            if dest.hasPrefix("/") {
+                out = URL(fileURLWithPath: dest)
+            } else {
+                let dir = out.deletingLastPathComponent()
+                let real = realpath(dir.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? dir.path
+                out = URL(fileURLWithPath: real, isDirectory: true).appendingPathComponent(dest)
+            }
         }
         return out
     }
@@ -146,7 +157,14 @@ public final class ConfigStore: ObservableObject {
     private func save() {
         do {
             let target = Self.writeTarget(of: fileURL)
-            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // Only Striple's own folder is made. The folder of a link target is the user's.
+            if target == fileURL {
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            }
+            // An atomic write replaces a read-only file when its folder is writable. The user made it read-only.
+            if FileManager.default.fileExists(atPath: target.path), !FileManager.default.isWritableFile(atPath: target.path) {
+                throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: target.path])
+            }
             let data = try config.encoded()
             var kept: String?
             if fileIsBroken, let user = try? Data(contentsOf: fileURL) {

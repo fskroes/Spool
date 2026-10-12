@@ -135,6 +135,7 @@ extension Engine {
         heldWindows += restored.held.map { h in
             var h = h
             h.info.pid = pidOf[h.info.bundleID] ?? h.info.pid
+            if h.floats { return h }
             let k = Policy.heldKey(saved: StripKey(display: h.displayID, space: h.spaceID), restoredInto: restoredInto,
                                    activeSpaces: activeSpaces, knownSpaces: known, fallbackDisplay: fallback)
             h.displayID = k.display
@@ -177,14 +178,33 @@ extension Engine {
     /// `byApp`: the candidates are all windows of their apps, so a held window with no exact match takes one.
     func placeHeld(_ candidates: [Candidate], byApp: Bool, inScan: Bool) -> [Candidate] {
         guard !heldWindows.isEmpty else { return candidates }
-        var pairs = HeldWindow.take(&heldWindows, for: candidates.filter(\.tiles).map(\.info), byApp: byApp)
+        var pairs = HeldWindow.take(&heldWindows, for: candidates.filter(\.tiles).map(\.info), byApp: byApp, fits: heldWindowFits())
         guard !pairs.isEmpty else { return candidates }
         HeldWindow.passOnNewIDs(&pairs, held: &heldWindows)
         var byID: [WindowID: Candidate] = [:]
         for c in candidates { byID[c.info.id] = c }
-        for p in pairs { if let c = byID[p.live.id] { putInHeldSlot(c, p.held, inScan: inScan) } }
+        for p in pairs { if let c = byID[p.live.id] { putHeld(c, p.held, inScan: inScan) } }
         let done = Set(pairs.map(\.live.id))
         return candidates.filter { !done.contains($0.info.id) }
+    }
+
+    /// Whether a live window can take a held slot by title or by app: it must be on the held window's Space.
+    private func heldWindowFits() -> (HeldWindow, WindowInfo) -> Bool {
+        var cache: [WindowID: [UInt64]] = [:]
+        return { h, w in
+            if h.floats || h.spaceID == 0 { return true }
+            let spaces = cache[w.id] ?? Spaces.spaces(of: w.id)
+            cache[w.id] = spaces
+            return Policy.heldWindowFits(heldSpace: h.spaceID, floats: h.floats, windowSpaces: spaces)
+        }
+    }
+
+    /// Puts a window that the restore held back where it was: floating, or in its saved slot.
+    private func putHeld(_ c: Candidate, _ h: HeldWindow, inScan: Bool) {
+        guard h.floats else { return putInHeldSlot(c, h, inScan: inScan) }
+        register(c, state: .floating, key: nil, createdAt: 0)
+        windows[c.info.id]?.userFloating = true
+        if !inScan { scheduleSessionSave() }
     }
 
     /// Puts a window that the restore held back into its saved place, without focus.
@@ -218,7 +238,13 @@ extension Engine {
         guard !heldWindows.isEmpty, !bundles.isEmpty, !ScreenLock.isLocked else { return }
         let bundles = bundles.subtracting(bundlesWithAQuietCopy(bundles))
         let onScreen = Set(activeSpaces.values)
-        heldWindows.removeAll { bundles.contains($0.info.bundleID) && (onScreen.isEmpty || onScreen.contains($0.spaceID)) }
+        // A floating window has no Space here. One that still exists (a hung app) can be on a Space not on screen.
+        let alive = heldWindows.contains { $0.floats && bundles.contains($0.info.bundleID) } ? WindowList.allWindowIDs() : []
+        heldWindows.removeAll { h in
+            guard bundles.contains(h.info.bundleID) else { return false }
+            if h.floats { return alive.isEmpty || !alive.contains(h.info.id) }
+            return onScreen.isEmpty || onScreen.contains(h.spaceID)
+        }
     }
 
     /// Many apps answer before they make their windows again (Chrome, Electron apps). So held windows of apps that
@@ -297,20 +323,17 @@ extension Engine {
             d = displays.first
         }
         guard let d = d ?? displays.first, !isDisabled(d.uuid) else { return nil }
-        let active = activeSpaces[d.uuid] ?? 0
-        // Without Space information (private calls missing, or one Space for all displays) use one strip per display.
-        guard active != 0 else { return StripKey(display: d.uuid, space: 0) }
-        let spaces = Spaces.spaces(of: id)
-        let space = spaces.contains(active) ? active : (spaces.first ?? active)
-        return StripKey(display: d.uuid, space: space)
+        let spaces = (activeSpaces[d.uuid] ?? 0) == 0 ? [] : Spaces.spaces(of: id)
+        let key = Policy.stripKey(display: d.uuid, activeSpaces: activeSpaces, windowSpaces: spaces, allSpaces: Spaces.all)
+        return isDisabled(key.display) ? nil : key
     }
 
     /// Starts managing a window as its rules say. `inScan`: part of `scanAll`, whose caller lays out all strips once.
     func adopt(_ c: Candidate, isNew: Bool, inScan: Bool = false) {
         // A held window that comes by another path (focus, a new window event) still goes back to its place.
         if !heldWindows.isEmpty, c.tiles,
-           let p = HeldWindow.take(&heldWindows, for: [c.info], byApp: heldGrace[c.info.bundleID] != nil).first {
-            return putInHeldSlot(c, p.held, inScan: inScan)
+           let p = HeldWindow.take(&heldWindows, for: [c.info], byApp: heldGrace[c.info.bundleID] != nil, fits: heldWindowFits()).first {
+            return putHeld(c, p.held, inScan: inScan)
         }
         let now = isNew ? CACurrentMediaTime() : 0
         switch c.decision {
@@ -415,7 +438,7 @@ extension Engine {
             if let tracker,
                Policy.rescanOnActivate(watching: tracker.isWatching(pid), waiting: tracker.isWaiting(for: pid),
                                        rescanPending: quietRescans[pid] != nil, gaveUp: staleApps.contains(pid),
-                                       holdsWindows: heldWindows.contains { $0.info.bundleID == bundle && onScreen.contains($0.spaceID) }),
+                                       holdsWindows: heldWindows.contains { $0.info.bundleID == bundle && ($0.floats || onScreen.contains($0.spaceID)) }),
                let app = NSRunningApplication(processIdentifier: pid), WindowTracker.isManageable(app) { scanApp(pid) }
             focusChanged(pid: pid)
         case .focusedWindowChanged(let pid):

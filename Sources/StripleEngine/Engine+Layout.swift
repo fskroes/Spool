@@ -417,7 +417,8 @@ extension Engine {
         let saved = all.filter { !$0.value.isEmpty }
             .map { SessionStrip(displayID: $0.key.display, spaceID: $0.key.space, strip: $0.value) }
             .sorted { ($0.displayID, $0.spaceID) < ($1.displayID, $1.spaceID) }
-        let floating = windows.values.filter { $0.state == .floating && $0.userFloating }.map(\.info).sorted { $0.id < $1.id }
+        let floating = (windows.values.filter { $0.state == .floating && $0.userFloating }.map(\.info)
+                        + heldWindows.filter(\.floats).map(\.info)).sorted { $0.id < $1.id }
         return Session(strips: saved, floating: floating)
             .merging(later: laterStrips, laterFloating: laterFloating, managed: Set(windows.keys))
     }
