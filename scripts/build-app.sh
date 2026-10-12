@@ -5,8 +5,9 @@
 #   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when
 #                          scripts/make-signing-cert.sh made it, else "-" (ad hoc).
 #   STRIPLE_ARCHS          architectures to build. Default: "arm64 x86_64" (universal).
-#   STRIPLE_FEED_URL       Sparkle appcast URL (https). Set together with STRIPLE_ED_PUBLIC_KEY.
-#   STRIPLE_ED_PUBLIC_KEY  Sparkle EdDSA public key (from Sparkle's generate_keys).
+#   STRIPLE_FEED_URL       Sparkle appcast URL (https). Default: from Packaging/updates.env.
+#   STRIPLE_ED_PUBLIC_KEY  Sparkle EdDSA public key. Default: from Packaging/updates.env.
+#   STRIPLE_UPDATES        "off" builds without Sparkle updates (no feed, no key).
 #
 # The script does not install, open or register anything.
 set -euo pipefail
@@ -17,6 +18,8 @@ cd "$ROOT"
 readonly BUNDLE_ID="com.fskroes.Striple"
 # shellcheck source=signing-env.sh
 source "$ROOT/scripts/signing-env.sh"
+# shellcheck source=release-lib.sh
+source "$ROOT/scripts/release-lib.sh"
 readonly AGENT_PLIST="com.fskroes.Striple.agent.plist"
 readonly DIST="$ROOT/dist"
 readonly APP="$DIST/Striple.app"
@@ -38,8 +41,16 @@ BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 YEAR=$(git log -1 --format=%cd --date=format:%Y 2>/dev/null || date +%Y)
 
 # Sparkle feed: both values or neither.
-FEED_URL=${STRIPLE_FEED_URL:-}
-ED_KEY=${STRIPLE_ED_PUBLIC_KEY:-}
+# The environment overrides Packaging/updates.env.
+UPDATES_ENV="$ROOT/Packaging/updates.env"
+case "${STRIPLE_UPDATES:-on}" in
+    off) FEED_URL=""; ED_KEY="" ;;
+    on)
+        FEED_URL=${STRIPLE_FEED_URL:-$(striple_updates_value "$UPDATES_ENV" STRIPLE_FEED_URL)}
+        ED_KEY=${STRIPLE_ED_PUBLIC_KEY:-$(striple_updates_value "$UPDATES_ENV" STRIPLE_ED_PUBLIC_KEY)}
+        ;;
+    *) die "STRIPLE_UPDATES must be on or off" ;;
+esac
 if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
     [[ -n "$FEED_URL" && -n "$ED_KEY" ]] || die "set both STRIPLE_FEED_URL and STRIPLE_ED_PUBLIC_KEY, or neither"
     [[ "$FEED_URL" == https://* ]] || die "STRIPLE_FEED_URL must use https"
@@ -113,7 +124,7 @@ if [[ -n "$FEED_URL" ]]; then
     plutil -replace SUEnableAutomaticChecks -bool YES "$PLIST"
     log "Sparkle updates on: $FEED_URL"
 else
-    log "Sparkle updates off (STRIPLE_FEED_URL not set)"
+    log "Sparkle updates off (STRIPLE_UPDATES=off, or no feed in Packaging/updates.env)"
 fi
 plutil -convert xml1 "$PLIST"
 if grep -q '__STRIPLE_' "$PLIST"; then die "unreplaced placeholder in Info.plist"; fi

@@ -18,6 +18,8 @@ make app      # build and sign dist/Striple.app
 make dmg      # optional: make dist/Striple-<version>.dmg
 ```
 
+To publish a release on GitHub: `make publish-dry`, then `make publish`. See [RELEASING.md](RELEASING.md).
+
 `make app` runs `scripts/build-app.sh`. The script:
 
 1. Reads the version from the `VERSION` file. The build number is `git rev-list --count HEAD`.
@@ -32,8 +34,9 @@ You can change the build with these environment variables:
 |---|---|---|
 | `SIGN_IDENTITY` | the local identity from `make-signing-cert.sh` if it exists, else `-` (ad hoc) | The codesign identity. |
 | `STRIPLE_ARCHS` | `arm64 x86_64` | For example `STRIPLE_ARCHS=arm64 make app` for a faster build. |
-| `STRIPLE_FEED_URL` | not set | The Sparkle appcast URL (https). See "Updates". |
-| `STRIPLE_ED_PUBLIC_KEY` | not set | The Sparkle public EdDSA key. See "Updates". |
+| `STRIPLE_FEED_URL` | from `Packaging/updates.env` | The Sparkle appcast URL (https). See "Updates". |
+| `STRIPLE_ED_PUBLIC_KEY` | from `Packaging/updates.env` | The Sparkle public EdDSA key. See "Updates". |
+| `STRIPLE_UPDATES` | `on` | `off` builds without updates. |
 
 The bundle has this layout:
 
@@ -174,59 +177,11 @@ Striple uses the plain login item only when the agent is `notRegistered` or `not
 
 ## Updates (Sparkle)
 
-Striple uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates are off by default. A build has updates only when you set both `STRIPLE_FEED_URL` and `STRIPLE_ED_PUBLIC_KEY`. Then `build-app.sh` writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist, and "Check for Updates…" in the menu is on. Without the keys, Striple makes no Sparkle object and shows no update errors. This is also true for `swift run`.
+Striple uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates come from the public repository [fskroes/striple-releases](https://github.com/fskroes/striple-releases). `build-app.sh` reads the feed URL and the public EdDSA key from `Packaging/updates.env` and writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist. Then Striple checks for updates every 24 hours, and "Check for Updates…" in the menu is on.
 
-### Decisions for the owner (Fernando)
+`STRIPLE_UPDATES=off make app` builds without updates. Without the keys, Striple makes no Sparkle object and shows no update errors. This is also true for `swift run`.
 
-- **Hosting.** Sparkle needs an HTTPS URL for the appcast (`appcast.xml`) and the update archives. For example GitHub Releases plus GitHub Pages, or an S3 bucket with CloudFront. Not decided.
-- **Signing keys.** One EdDSA key pair. The private key stays in the login keychain of the Mac that publishes. Keep a backup (`generate_keys -x`). If you lose it, old installs cannot accept new updates.
-- **Code signing for releases.** Build releases with the same identity each time (the local certificate on one Mac, or a Developer ID). If the identity changes, macOS asks for Accessibility permission again after the update.
-
-### The Sparkle tools
-
-SwiftPM puts the Sparkle tools in the build folder after `swift package resolve` (or any build):
-
-```
-.build/artifacts/sparkle/Sparkle/bin/generate_keys
-.build/artifacts/sparkle/Sparkle/bin/generate_appcast
-.build/artifacts/sparkle/Sparkle/bin/sign_update
-```
-
-### Publish an update
-
-1. One time: make the key pair. The tool prints the public key.
-
-   ```sh
-   .build/artifacts/sparkle/Sparkle/bin/generate_keys        # make or show the key
-   .build/artifacts/sparkle/Sparkle/bin/generate_keys -p     # show the public key only
-   ```
-
-2. Increase the version in `VERSION` and commit. The build number comes from the commit count, so it must be higher than the last release.
-3. Build with the feed and the key:
-
-   ```sh
-   STRIPLE_FEED_URL=https://<your-host>/striple/appcast.xml \
-   STRIPLE_ED_PUBLIC_KEY=<public key from step 1> \
-   make app
-   ```
-
-4. Make the update archive. Keep symlinks (Sparkle.framework has symlinks):
-
-   ```sh
-   mkdir -p releases
-   ditto -c -k --sequesterRsrc --keepParent dist/Striple.app "releases/Striple-$(cat VERSION).zip"
-   ```
-
-5. Make or update the appcast. The tool signs each archive with the private key from your keychain:
-
-   ```sh
-   .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
-       --download-url-prefix https://<your-host>/striple/ releases/
-   ```
-
-6. Upload `releases/appcast.xml` and the new archive to the host. Do not change the old archives.
-
-Source: [Sparkle: Documentation](https://sparkle-project.org/documentation/) and [Sparkle: Publishing an update](https://sparkle-project.org/documentation/publishing/).
+To publish a release, see [RELEASING.md](RELEASING.md).
 
 ## Uninstall
 

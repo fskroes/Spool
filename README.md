@@ -139,4 +139,4 @@ make dmg      # dist/Striple-<version>.dmg
 
 - Window focus uses private SkyLight calls, as other window managers on macOS do. A future macOS can change them; Striple then falls back to normal app activation.
 - Trackpad swipes use the private MultitouchSupport framework.
-- Sparkle updates need a feed URL and a signing key. Until you set them, the app does not check for updates. See [docs/INSTALL.md](docs/INSTALL.md#updates-sparkle).
+- Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. Updates come from [fskroes/striple-releases](https://github.com/fskroes/striple-releases). See [docs/RELEASING.md](docs/RELEASING.md).
