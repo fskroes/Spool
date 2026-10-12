@@ -5,7 +5,8 @@ let package = Package(
     name: "Striple",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "Striple", targets: ["StripleApp"]),
+        // The app binary is "StripleApp" because "Striple" and "striple" collide on case-insensitive APFS.
+        .executable(name: "StripleApp", targets: ["StripleApp"]),
         .executable(name: "striple", targets: ["striple-cli"]),
     ],
     targets: [
