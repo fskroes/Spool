@@ -756,15 +756,30 @@ public enum StripleCLI {
             ("Restarts", "\(s.restarts)"),
         ]
         let width = rows.map(\.0.count).max()! + 2
-        return rows.map { ($0.0 + ":").padding(toLength: width, withPad: " ", startingAt: 0) + $0.1 }.joined(separator: "\n") + "\n"
+        var lines = rows.map { ($0.0 + ":").padding(toLength: width, withPad: " ", startingAt: 0) + $0.1 }
+        if let apps = s.slowestApps, !apps.isEmpty {
+            let names = apps.map { (app($0.bundleID, pid: $0.pid)) + " (\($0.pid))" }
+            let nameWidth = names.map(\.count).max()! + 2
+            lines.append("Slowest apps (AX write per window):")
+            for (a, name) in zip(apps, names) {
+                lines.append("  " + name.padding(toLength: nameWidth, withPad: " ", startingAt: 0)
+                             + "p50 \(ms(a.axP50)), p95 \(ms(a.axP95)), latency p95 \(ms(a.latencyP95)), \(a.writes) writes")
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     /// `Safari "Apple"`: the last part of the bundle ID and the title (shortened to 40 characters).
     static func label(_ w: WindowInfo) -> String {
-        let app = w.bundleID.split(separator: ".").last.map(String.init) ?? "pid \(w.pid)"
+        let app = app(w.bundleID, pid: w.pid)
         var title = w.title.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
         if title.count > 40 { title = String(title.prefix(37)) + "..." }
         return title.isEmpty ? app : "\(app) \"\(title)\""
+    }
+
+    /// The last part of the bundle ID, else `pid 123`.
+    static func app(_ bundleID: String, pid: Int32) -> String {
+        bundleID.split(separator: ".").last.map(String.init) ?? "pid \(pid)"
     }
 
     static func ms(_ v: Double) -> String { v.isFinite ? String(format: "%.2f ms", v) : "n/a" }

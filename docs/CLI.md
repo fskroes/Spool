@@ -81,7 +81,7 @@ or as part of the name (`striple focus-index-3`).
 |---|---|
 | `striple ping` | `Striple is running.` when the app answers. |
 | `striple state` | Engine status, the focused window, and the columns of each display. |
-| `striple stats` | Uptime, frame and window write counts, AX errors, timings and restarts. |
+| `striple stats` | Uptime, frame and window write counts, AX errors, timings, restarts and the slowest apps. |
 
 Example output of `striple state`:
 
@@ -111,7 +111,18 @@ AX errors:        1
 Frame write:      p50 1.20 ms, p95 3.46 ms
 Command latency:  p50 4.00 ms, p95 9.50 ms
 Restarts:         2
+Slowest apps (AX write per window):
+  teams2 (4173)  p50 12.00 ms, p95 40.50 ms, latency p95 80.00 ms, 340 writes
+  Notes (1838)   p50 3.10 ms, p95 6.20 ms, latency p95 9.80 ms, 512 writes
 ```
+
+- **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
+  replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
+  slowest app in the tick.
+- **Slowest apps**: the 5 apps with the highest p95 AX time for one window write, from the newest 128
+  writes of each app. **latency** is from the tick that queued the frame until it was written, so it
+  includes the wait for the write before it. An app with a high AX time makes Striple feel slow; quit it or
+  float its windows to check.
 
 ## JSON output
 

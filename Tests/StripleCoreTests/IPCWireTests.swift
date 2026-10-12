@@ -334,6 +334,33 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
             """)
     }
 
+    @Test func statsListTheSlowestApps() {
+        let stats = EngineStats(restarts: 0, slowestApps: [
+            AppWriteStats(bundleID: "com.microsoft.teams2", pid: 4173, writes: 340, axP50: 12, axP95: 40.5, latencyP95: 80),
+            AppWriteStats(bundleID: "", pid: 77, writes: 3, axP50: 1, axP95: 2, latencyP95: .nan),
+        ])
+        #expect(StripleCLI.format(stats: stats).hasSuffix("""
+            Restarts:         0
+            Slowest apps (AX write per window):
+              teams2 (4173)  p50 12.00 ms, p95 40.50 ms, latency p95 80.00 ms, 340 writes
+              pid 77 (77)    p50 1.00 ms, p95 2.00 ms, latency p95 n/a, 3 writes
+
+            """))
+        #expect(!StripleCLI.format(stats: EngineStats(slowestApps: [])).contains("Slowest"))
+    }
+
+    @Test func statsFromAnAppWithoutPerAppTimesDecode() throws {
+        let old = #"{"ok":true,"stats":{"uptimeSeconds":1,"framesWritten":2,"windowWrites":3,"skippedWrites":0,"#
+            + #""coalescedWrites":0,"axErrors":0,"frameWriteP50":1,"frameWriteP95":2,"commandLatencyP50":3,"#
+            + #""commandLatencyP95":4,"restarts":0}}"#
+        let r = try IPCWire.decodeResponse(Data(old.utf8))
+        #expect(r.stats?.framesWritten == 2)
+        #expect(r.stats?.slowestApps == nil)
+        let apps = [AppWriteStats(bundleID: "a.b", pid: 1, writes: 2, axP50: 3, axP95: 4, latencyP95: 5)]
+        let back = try IPCWire.decodeResponse(try IPCWire.encode(IPCResponse(ok: true, stats: EngineStats(slowestApps: apps))).dropLast())
+        #expect(back.stats?.slowestApps == apps)
+    }
+
     @Test func durations() {
         #expect(StripleCLI.duration(0) == "0s")
         #expect(StripleCLI.duration(59.9) == "59s")

@@ -61,7 +61,7 @@ How Striple stays fast:
 - `AXEnhancedUserInterface` (which makes Chrome and Electron apps animate every move) is read and turned off once per app per animation, not on every frame.
 - The animation ticker runs only while something moves.
 
-`striple stats` shows the live p50 and p95 frame-write time and command latency.
+`striple stats` shows the live p50 and p95 frame-write time and command latency, and the apps with the slowest AX writes.
 
 ## Install
 

@@ -679,6 +679,7 @@ extension Engine {
         for (id, w) in windows where w.info.pid == pid { remove(id) }
         writer.unregisterApp(pid)
         applier.forgetApp(pid)
+        recorder.forget(pid: pid)
         tracker?.unwatch(pid)
     }
 

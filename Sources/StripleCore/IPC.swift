@@ -93,10 +93,12 @@ public struct EngineStats: Codable, Equatable, Sendable {
     public var commandLatencyP50: Double
     public var commandLatencyP95: Double
     public var restarts: Int
+    /// The apps with the slowest AX writes, slowest first. Nil from an app that does not report it.
+    public var slowestApps: [AppWriteStats]?
 
     public init(uptimeSeconds: Double = 0, framesWritten: Int = 0, windowWrites: Int = 0, skippedWrites: Int = 0, coalescedWrites: Int = 0,
                 axErrors: Int = 0, frameWriteP50: Double = 0, frameWriteP95: Double = 0, commandLatencyP50: Double = 0,
-                commandLatencyP95: Double = 0, restarts: Int = 0) {
+                commandLatencyP95: Double = 0, restarts: Int = 0, slowestApps: [AppWriteStats]? = nil) {
         self.uptimeSeconds = uptimeSeconds
         self.framesWritten = framesWritten
         self.windowWrites = windowWrites
@@ -108,6 +110,29 @@ public struct EngineStats: Codable, Equatable, Sendable {
         self.commandLatencyP50 = commandLatencyP50
         self.commandLatencyP95 = commandLatencyP95
         self.restarts = restarts
+        self.slowestApps = slowestApps
+    }
+}
+
+/// AX write times of one app, in milliseconds.
+public struct AppWriteStats: Codable, Equatable, Sendable {
+    public var bundleID: String
+    public var pid: Int32
+    /// Window writes measured (the newest 128 give the percentiles).
+    public var writes: Int
+    /// The AX calls of one window write.
+    public var axP50: Double
+    public var axP95: Double
+    /// From the layout tick that queued a frame until it was written. It includes the wait for earlier writes.
+    public var latencyP95: Double
+
+    public init(bundleID: String, pid: Int32, writes: Int, axP50: Double, axP95: Double, latencyP95: Double) {
+        self.bundleID = bundleID
+        self.pid = pid
+        self.writes = writes
+        self.axP50 = axP50
+        self.axP95 = axP95
+        self.latencyP95 = latencyP95
     }
 }
 

@@ -209,6 +209,65 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(writer.settledApps == [10, 11])
     }
 
+    /// The engine records the time of each tick's call as "Frame write". An app slower than the tick rate gets
+    /// new frames before it is idle; the time of one call must not grow with the frames of the later ticks.
+    @Test func aStreamOfTicksToASlowAppDoesNotInflateTheTimeOfOneCall() {
+        let writer = FakeWriter(delay: 0.02)
+        let applier = FrameApplier(writer: writer)
+        let lock = NSLock()
+        var times: [Double] = []
+        var early: [Int] = []
+        let group = DispatchGroup()
+        for x in 0..<40 { // one tick every 8 ms for 320 ms, 20 ms per write
+            group.enter()
+            applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(CGFloat(x)))]) { ms in
+                // Done means this frame or a newer one is on the window.
+                let landed = applier.lastWritten(1)?.minX ?? -1
+                lock.withLock {
+                    times.append(ms)
+                    if landed < CGFloat(x) { early.append(x) }
+                }
+                group.leave()
+            }
+            Thread.sleep(forTimeInterval: 0.008)
+        }
+        #expect(group.wait(timeout: .now() + 3) == .success)
+        let worst = lock.withLock { times.max() ?? 0 }
+        // A frame waits for at most the write in flight and its own write: about 40 ms. Waiting for the app to
+        // be idle took the whole stream: about 320 ms.
+        #expect(worst < 120, "one call took \(worst) ms")
+        #expect(lock.withLock { early }.isEmpty, "calls that finished before their frame landed")
+        #expect(applier.lastWritten(1) == rect(39))
+    }
+
+    @Test func resetReleasesTheWaitForDroppedFrames() {
+        let writer = FakeWriter(delay: 0.05)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        Thread.sleep(forTimeInterval: 0.01)
+        let done = DispatchSemaphore(value: 0)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { _ in done.signal() } // pending
+        applier.reset() // drops the pending frame
+        #expect(done.wait(timeout: .now() + 1) == .success)
+        #expect(writer.frames(1) == [rect(0)])
+        // The app is idle again: a new frame is written.
+        #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(2))], timeout: 1) != nil)
+        #expect(writer.frames(1) == [rect(0), rect(2)])
+    }
+
+    @Test func eachWriteReportsItsAppTheAXTimeAndTheWait() {
+        let writer = FakeWriter(delay: 0.01)
+        let lock = NSLock()
+        var timings: [FrameApplier.WriteTiming] = []
+        let applier = FrameApplier(writer: writer) { t in lock.withLock { timings.append(t) } }
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0)), FrameWrite(id: 2, pid: 11, frame: rect(0))])
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))]) // skipped: no timing
+        let t = lock.withLock { timings }
+        #expect(t.map(\.pid).sorted() == [10, 11])
+        #expect(t.allSatisfy { $0.axMs >= 9 && $0.axMs < 200 }, "\(t)")
+        #expect(t.allSatisfy { $0.latencyMs >= $0.axMs }, "the wait includes the AX call")
+    }
+
     @Test func appsWhoseWritesAllFailAreReported() {
         let writer = FakeWriter(failing: [2])
         let applier = FrameApplier(writer: writer)

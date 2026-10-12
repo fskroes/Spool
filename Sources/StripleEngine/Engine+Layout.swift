@@ -209,7 +209,7 @@ extension Engine {
         let recent = (corrections[id] ?? []).filter { now - $0 < 5 }
         guard recent.count < 2 else { return }
         corrections[id] = recent + [now]
-        log.log("correct: window \(id) of \(w.info.bundleID) moved by its app, putting it back")
+        log.log("correct: window \(id) of \(w.info.bundleID) moved by its app (wrote \(Policy.text(last)), now \(Policy.text(f))), putting it back")
         applier.forget(id)
         tick(now)
     }

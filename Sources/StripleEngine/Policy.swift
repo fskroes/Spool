@@ -64,6 +64,12 @@ enum Policy {
             && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 
+    /// `10,25 800x600` for logs. Values are rounded; a value that is not finite prints as `?`.
+    static func text(_ r: CGRect) -> String {
+        func n(_ v: CGFloat) -> String { v.isFinite ? String(Int(v.rounded())) : "?" }
+        return "\(n(r.minX)),\(n(r.minY)) \(n(r.width))x\(n(r.height))"
+    }
+
     /// The display that contains `point`, else the one nearest to it. Frames are in AX coordinates.
     static func displayIndex(for point: CGPoint, frames: [CGRect]) -> Int? {
         if let i = frames.firstIndex(where: { $0.contains(point) }) { return i }

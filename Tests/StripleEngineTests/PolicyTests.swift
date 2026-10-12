@@ -63,6 +63,11 @@ import Testing
         #expect(!Policy.same(r, nil))
     }
 
+    @Test func rectTextForLogs() {
+        #expect(Policy.text(CGRect(x: 10.4, y: -25.6, width: 800, height: 600)) == "10,-26 800x600")
+        #expect(Policy.text(CGRect(x: CGFloat.nan, y: 0, width: .infinity, height: 1)) == "?,0 ?x1")
+    }
+
     @Test func displayLookup() {
         let frames = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: 1000, y: 0, width: 1000, height: 800)]
         #expect(Policy.displayIndex(for: CGPoint(x: 1500, y: 10), frames: frames) == 1)

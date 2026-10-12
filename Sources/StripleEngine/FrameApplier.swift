@@ -50,18 +50,37 @@ public final class FrameApplier: @unchecked Sendable {
         public var errors = 0
     }
 
+    /// One window write, for the timing stats.
+    public struct WriteTiming: Equatable, Sendable {
+        public var pid: pid_t
+        /// The time of the AX calls for this window.
+        public var axMs: Double
+        /// From the `apply` call that queued this frame until it was written: the wait for the app plus `axMs`.
+        public var latencyMs: Double
+    }
+
+    private struct Pending {
+        var write: FrameWrite
+        var queuedAt: UInt64
+    }
+
     private struct AppState {
         let queue: DispatchQueue
         var busy = false
-        var pending: [WindowID: FrameWrite] = [:]
+        var pending: [WindowID: Pending] = [:]
         var pendingOrder: [WindowID] = []
-        /// Run when the queue has nothing left to write.
-        var idleWaiters: [@Sendable () -> Void] = []
+        /// Each `apply` that queues a frame for this app increases `queued`. A batch takes every pending frame,
+        /// so when it is written, `landed` becomes the `queued` value at the time it was taken.
+        var queued: UInt64 = 0
+        var landed: UInt64 = 0
+        /// Run when `landed` reaches the number.
+        var waiters: [(upTo: UInt64, run: @Sendable () -> Void)] = []
         /// Batches in a row in which every write failed. One success sets it to 0.
         var failedBatches = 0
     }
 
     private let writer: FrameWriter
+    private let onWrite: (@Sendable (WriteTiming) -> Void)?
     private let lock = NSLock()
     private var apps: [pid_t: AppState] = [:]
     private var written: [WindowID: CGRect] = [:]
@@ -69,7 +88,11 @@ public final class FrameApplier: @unchecked Sendable {
     private var inFlight: [WindowID: CGRect] = [:]
     private var counters = Counters()
 
-    public init(writer: FrameWriter) { self.writer = writer }
+    /// `onWrite` runs on the app's queue after each window write.
+    public init(writer: FrameWriter, onWrite: (@Sendable (WriteTiming) -> Void)? = nil) {
+        self.writer = writer
+        self.onWrite = onWrite
+    }
 
     public var stats: Counters { lock.withLock { counters } }
 
@@ -82,7 +105,7 @@ public final class FrameApplier: @unchecked Sendable {
     public func isOwnFrame(_ id: WindowID, _ frame: CGRect, tolerance: CGFloat = 2) -> Bool {
         lock.withLock {
             if inFlight[id] != nil { return true }
-            let pending = apps.values.lazy.compactMap { $0.pending[id]?.frame }.first
+            let pending = apps.values.lazy.compactMap { $0.pending[id]?.write.frame }.first
             return [written[id], inFlight[id], pending].contains { Policy.same(frame, $0, tolerance: tolerance) }
         }
     }
@@ -96,8 +119,8 @@ public final class FrameApplier: @unchecked Sendable {
     }
 
     public func forgetApp(_ pid: pid_t) {
-        let waiters = lock.withLock { apps.removeValue(forKey: pid)?.idleWaiters ?? [] }
-        for w in waiters { w() }
+        let waiters = lock.withLock { apps.removeValue(forKey: pid)?.waiters ?? [] }
+        for w in waiters { w.run() }
     }
 
     /// Apps whose last `threshold` batches all failed: their AX elements or observer are probably dead.
@@ -140,15 +163,16 @@ public final class FrameApplier: @unchecked Sendable {
         }
     }
 
-    /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every app that
-    /// got a write from this call has nothing left to write, with the wall time in milliseconds. A write merged
-    /// into an app that was already busy is waited for too.
+    /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every frame of this
+    /// call is written, or replaced by a newer frame that is written, with the wall time in milliseconds.
+    /// A frame merged into an app that was already busy is waited for too, but frames of later calls are not.
     public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double) -> Void)? = nil) {
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
         var toStart: [(pid_t, DispatchQueue)] = []
         lock.withLock {
-            var touched = Set<pid_t>()
+            var queuedFor = Set<pid_t>()
+            var waitFor = Set<pid_t>()
             for w in writes {
                 let pendingSame = apps[w.pid]?.pending[w.id]
                 // Compare with the newest frame the window will have: the one in flight, else the written one.
@@ -156,36 +180,35 @@ public final class FrameApplier: @unchecked Sendable {
                 if pendingSame == nil, (inFlight[w.id] ?? written[w.id]) == w.frame {
                     counters.skipped += 1
                     // Already being written: callers that wait must wait for it to land.
-                    if inFlight[w.id] != nil { touched.insert(w.pid) }
+                    if inFlight[w.id] != nil { waitFor.insert(w.pid) }
                     continue
                 }
                 if apps[w.pid] == nil {
                     apps[w.pid] = AppState(queue: DispatchQueue(label: "striple.ax.\(w.pid)", qos: .userInteractive))
                 }
-                if apps[w.pid]!.pending.updateValue(w, forKey: w.id) == nil {
+                if apps[w.pid]!.pending.updateValue(Pending(write: w, queuedAt: start), forKey: w.id) == nil {
                     apps[w.pid]!.pendingOrder.append(w.id)
                 } else {
                     counters.coalesced += 1
                 }
-                touched.insert(w.pid)
+                queuedFor.insert(w.pid)
             }
+            for pid in queuedFor { apps[pid]!.queued += 1 }
             for (pid, state) in apps where !state.busy && !state.pending.isEmpty {
                 apps[pid]!.busy = true
                 toStart.append((pid, state.queue))
             }
             guard completion != nil else { return }
-            let started = Set(toStart.map(\.0))
-            for pid in touched.subtracting(started) where apps[pid]?.busy == true {
+            // A frame in flight belongs to a batch taken at or before the current `queued`, so waiting for
+            // `queued` covers it.
+            for pid in queuedFor.union(waitFor) {
+                guard let state = apps[pid], state.landed < state.queued else { continue }
                 group.enter()
-                apps[pid]!.idleWaiters.append { group.leave() }
+                apps[pid]!.waiters.append((state.queued, { group.leave() }))
             }
         }
         for (pid, queue) in toStart {
-            group.enter()
-            queue.async { [self] in
-                drain(pid)
-                group.leave()
-            }
+            queue.async { [self] in drain(pid) }
         }
         guard let completion else { return }
         group.notify(queue: .global(qos: .userInteractive)) {
@@ -213,40 +236,56 @@ public final class FrameApplier: @unchecked Sendable {
     /// Runs on the app's queue. Writes everything pending, then anything that arrived meanwhile.
     private func drain(_ pid: pid_t) {
         while true {
-            var waiters: [@Sendable () -> Void] = []
-            let batch: [(FrameWrite, CGRect?)] = lock.withLock {
+            var idle: [@Sendable () -> Void] = []
+            let taken: (batch: [(Pending, CGRect?)], upTo: UInt64)? = lock.withLock {
                 guard var state = apps[pid], !state.pending.isEmpty else {
-                    apps[pid]?.busy = false
-                    waiters = apps[pid]?.idleWaiters ?? []
-                    apps[pid]?.idleWaiters.removeAll()
-                    return []
+                    // Nothing left: everything queued is written or was dropped by `reset`.
+                    if let state = apps[pid] {
+                        apps[pid]!.busy = false
+                        apps[pid]!.landed = state.queued
+                        idle = state.waiters.map(\.run)
+                        apps[pid]!.waiters.removeAll()
+                    }
+                    return nil
                 }
                 let items = state.pendingOrder.compactMap { id in state.pending[id].map { ($0, written[id]) } }
-                for (w, _) in items { inFlight[w.id] = w.frame }
+                for (p, _) in items { inFlight[p.write.id] = p.write.frame }
                 state.pending.removeAll(keepingCapacity: true)
                 state.pendingOrder.removeAll(keepingCapacity: true)
                 apps[pid] = state
-                return items
+                return (items, state.queued)
             }
-            if batch.isEmpty {
-                for w in waiters { w() }
+            guard let (batch, upTo) = taken else {
+                for run in idle { run() }
                 return
             }
             writer.beginBatch(pid: pid)
             var results: [(WindowID, CGRect, Bool)] = []
             results.reserveCapacity(batch.count)
-            for (w, previous) in batch {
-                results.append((w.id, w.frame, writer.write(w, previous: previous)))
+            for (p, previous) in batch {
+                let before = DispatchTime.now().uptimeNanoseconds
+                let ok = writer.write(p.write, previous: previous)
+                let after = DispatchTime.now().uptimeNanoseconds
+                results.append((p.write.id, p.write.frame, ok))
+                onWrite?(WriteTiming(pid: pid, axMs: Double(after - before) / 1_000_000,
+                                     latencyMs: Double(after - p.queuedAt) / 1_000_000))
             }
             writer.endBatch(pid: pid)
-            lock.withLock {
+            let done: [@Sendable () -> Void] = lock.withLock {
                 for (id, frame, ok) in results {
                     inFlight.removeValue(forKey: id)
                     counters.windowWrites += 1
                     if ok { written[id] = frame } else { counters.errors += 1; written.removeValue(forKey: id) }
                 }
-                if results.contains(where: \.2) { apps[pid]?.failedBatches = 0 } else { apps[pid]?.failedBatches += 1 }
+                guard apps[pid] != nil else { return [] }
+                if results.contains(where: \.2) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
+                apps[pid]!.landed = max(apps[pid]!.landed, upTo)
+                let landed = apps[pid]!.landed
+                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map(\.run)
+                apps[pid]!.waiters.removeAll { $0.upTo <= landed }
+                return ready
             }
+            for run in done { run() }
         }
     }
 }

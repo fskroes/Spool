@@ -32,7 +32,7 @@ public final class Engine: ObservableObject {
     let writer: AXFrameWriter
     let applier: FrameApplier
     let overlays = Overlays()
-    let recorder = StatsRecorder()
+    let recorder: StatsRecorder
     var tracker: WindowTracker?
     var hotkeys: Hotkeys?
     var gestureTap: GestureTap?
@@ -139,8 +139,10 @@ public final class Engine: ObservableObject {
         self.configStore = configStore
         config = configStore.config
         let w = AXFrameWriter()
+        let r = StatsRecorder()
         writer = w
-        applier = FrameApplier(writer: w)
+        recorder = r
+        applier = FrameApplier(writer: w) { r.record(write: $0) }
         overlays.onTabClick = { [weak self] id in self?.perform(.focusWindow(id)) }
         configStore.$config
             .dropFirst()
@@ -443,7 +445,9 @@ public final class Engine: ObservableObject {
         return EngineStats(uptimeSeconds: status == .running ? CACurrentMediaTime() - startedAt : 0, framesWritten: r.batches,
                            windowWrites: c.windowWrites, skippedWrites: c.skipped, coalescedWrites: c.coalesced, axErrors: c.errors,
                            frameWriteP50: r.frameP50, frameWriteP95: r.frameP95, commandLatencyP50: r.commandP50,
-                           commandLatencyP95: r.commandP95, restarts: restarts)
+                           commandLatencyP95: r.commandP95, restarts: restarts,
+                           slowestApps: StatsRecorder.slowest(r.apps, bundleIDs: Dictionary(
+                               windows.values.map { ($0.info.pid, $0.info.bundleID) }, uniquingKeysWith: { a, _ in a })))
     }
 
     // MARK: Helpers
@@ -489,7 +493,35 @@ final class StatsRecorder: @unchecked Sendable {
         }
     }
 
-    func snapshot() -> (batches: Int, frameP50: Double, frameP95: Double, commandP50: Double, commandP95: Double) {
-        lock.withLock { (batches, frame.percentile(50), frame.percentile(95), command.percentile(50), command.percentile(95)) }
+    struct App {
+        var ax = SampleWindow(capacity: 128)
+        var latency = SampleWindow(capacity: 128)
+        var writes = 0
+    }
+
+    private var apps: [pid_t: App] = [:]
+
+    func record(write t: FrameApplier.WriteTiming) {
+        lock.withLock {
+            apps[t.pid, default: App()].ax.add(t.axMs)
+            apps[t.pid]!.latency.add(t.latencyMs)
+            apps[t.pid]!.writes += 1
+        }
+    }
+
+    func forget(pid: pid_t) { lock.withLock { _ = apps.removeValue(forKey: pid) } }
+
+    /// The `limit` apps with the highest p95 AX write time, slowest first.
+    static func slowest(_ apps: [pid_t: App], bundleIDs: [pid_t: String], limit: Int = 5) -> [AppWriteStats] {
+        apps.map { pid, a in
+            AppWriteStats(bundleID: bundleIDs[pid] ?? "", pid: pid, writes: a.writes, axP50: a.ax.percentile(50),
+                          axP95: a.ax.percentile(95), latencyP95: a.latency.percentile(95))
+        }
+        .sorted { ($0.axP95, $0.pid) > ($1.axP95, $1.pid) }
+        .prefix(limit).map { $0 }
+    }
+
+    func snapshot() -> (batches: Int, frameP50: Double, frameP95: Double, commandP50: Double, commandP95: Double, apps: [pid_t: App]) {
+        lock.withLock { (batches, frame.percentile(50), frame.percentile(95), command.percentile(50), command.percentile(95), apps) }
     }
 }
