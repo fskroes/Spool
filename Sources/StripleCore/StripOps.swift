@@ -43,13 +43,18 @@ extension Strip {
 
     /// Adds a window without focus, as `insert`, and changes `scroll` so the focused column stays where it is on
     /// screen. A column put in to the left of the focused one does not push the focused window away.
-    public mutating func insertKeepingView(_ window: WindowInfo, width: ColumnWidth, slot: Int?, metrics: StripMetrics?) {
+    /// Except with `always`, the strip never scrolls past its ends, so a strip that fits stays left-aligned. The
+    /// focused column then moves only as far as needed, and stays fully on screen.
+    public mutating func insertKeepingView(_ window: WindowInfo, width: ColumnWidth, slot: Int?,
+                                           settings: LayoutSettings, metrics: StripMetrics?) {
         guard let metrics, columns.indices.contains(focusedColumn), !contains(window.id) else {
             return insert(window, width: width, slot: slot, focus: false)
         }
         let before = columnPositions(metrics: metrics).x[focusedColumn]
         insert(window, width: width, slot: slot, focus: false)
-        scroll += columnPositions(metrics: metrics).x[focusedColumn] - before
+        let p = columnPositions(metrics: metrics)
+        scroll += p.x[focusedColumn] - before
+        if settings.centerMode != .always { scroll = min(max(scroll, 0), max(p.total - metrics.usableWidth, 0)) }
     }
 
     /// Removes a window. Returns the window that should get focus, if the focused window was removed.

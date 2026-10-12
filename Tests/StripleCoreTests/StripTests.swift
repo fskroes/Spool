@@ -21,26 +21,50 @@ func ids(_ s: Strip) -> [[WindowID]] { s.columns.map { $0.windows.map(\.id) } }
 
 @Suite struct InsertRemoveTests {
     // Round 8 finding: a held window put in to the left of the focused column pushed the focused window away.
-    @Test func insertKeepingViewDoesNotMoveTheFocusedColumn() {
+    @Test(arguments: [CenterMode.always, .onOverflow, .never])
+    func insertKeepingViewDoesNotMoveTheFocusedColumn(mode: CenterMode) {
+        var settings = LayoutSettings()
+        settings.centerMode = mode
         var s = Strip()
         for i in 1...3 { s.insert(win(WindowID(i)), width: .proportion(0.5), focus: true) }
-        s.ensureFocusVisible(settings: LayoutSettings(), metrics: metrics)
+        s.ensureFocusVisible(settings: settings, metrics: metrics)
         let onScreen = { (s: Strip) in s.columnPositions(metrics: metrics).x[s.focusedColumn] - s.scroll }
         let before = onScreen(s)
 
-        s.insertKeepingView(win(9), width: .proportion(0.5), slot: 2, metrics: metrics)
+        s.insertKeepingView(win(9), width: .proportion(0.5), slot: 2, settings: settings, metrics: metrics)
         #expect(s.allWindows.map(\.id) == [1, 9, 2, 3])
         #expect(s.focusedWindow?.id == 3)
         #expect(abs(onScreen(s) - before) < 0.001)
 
         // To the right of focus: nothing moves.
         let scroll = s.scroll
-        s.insertKeepingView(win(10), width: .proportion(0.5), slot: 5, metrics: metrics)
+        s.insertKeepingView(win(10), width: .proportion(0.5), slot: 5, settings: settings, metrics: metrics)
         #expect(s.scroll == scroll)
         // An empty strip, or no metrics: a plain insert.
         var e = Strip()
-        e.insertKeepingView(win(1), width: .proportion(0.5), slot: 1, metrics: nil)
+        e.insertKeepingView(win(1), width: .proportion(0.5), slot: 1, settings: settings, metrics: nil)
         #expect(e.allWindows.map(\.id) == [1] && e.scroll == 0)
+    }
+
+    // Round 9 finding: keeping the view ignored the center mode. A strip that fits must stay left-aligned, and no
+    // strip scrolls past its ends.
+    @Test(arguments: [CenterMode.onOverflow, .never])
+    func insertKeepingViewNeverScrollsAStripPastItsEnds(mode: CenterMode) {
+        var settings = LayoutSettings()
+        settings.centerMode = mode
+        var s = Strip()
+        s.insert(win(1), width: .proportion(0.5), focus: true)
+        s.insertKeepingView(win(9), width: .proportion(0.4), slot: 1, settings: settings, metrics: metrics)
+        #expect(s.allWindows.map(\.id) == [9, 1])
+        #expect(s.scroll == 0)
+
+        // Fits before, overflows after: no empty space on the right.
+        s.insertKeepingView(win(8), width: .proportion(0.5), slot: 1, settings: settings, metrics: metrics)
+        let p = s.columnPositions(metrics: metrics)
+        #expect(s.scroll >= 0 && s.scroll <= p.total - metrics.usableWidth + 0.001)
+        // The focused window stays fully on screen.
+        let x = p.x[s.focusedColumn] - s.scroll
+        #expect(x >= -0.001 && x + p.width[s.focusedColumn] <= metrics.usableWidth + 0.001)
     }
 
     @Test func newWindowGoesRightOfFocused() {

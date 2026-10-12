@@ -194,7 +194,12 @@ extension Engine {
             return adopt(c, isNew: false, inScan: inScan)
         }
         var strip = strips[key] ?? Strip()
-        strip.insertKeepingView(c.info, width: h.width, slot: h.slot(in: strip), metrics: metrics(key))
+        // A window that is taken off at once (minimized, or its app is hidden) only keeps its slot: no scroll change.
+        if c.minimizedTile || NSRunningApplication(processIdentifier: c.info.pid)?.isHidden == true {
+            strip.insert(c.info, width: h.width, slot: h.slot(in: strip), focus: false)
+        } else {
+            strip.insertKeepingView(c.info, width: h.width, slot: h.slot(in: strip), settings: config.layout, metrics: metrics(key))
+        }
         strips[key] = strip
         register(c, state: .tiled, key: key, createdAt: 0)
         // A minimized window keeps the place: it goes back there when it is shown again.

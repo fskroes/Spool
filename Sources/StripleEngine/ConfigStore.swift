@@ -132,9 +132,21 @@ public final class ConfigStore: ObservableObject {
         if (try? data.write(to: lastGoodURL, options: .atomic)) != nil { lastGoodData = data }
     }
 
+    /// The file a save writes: the target of a symlink (a dotfiles repo), so the link stays a link. An atomic
+    /// write to the link itself would replace it with a plain file.
+    nonisolated static func writeTarget(of url: URL) -> URL {
+        var out = url
+        for _ in 0..<16 {
+            guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: out.path) else { return out }
+            out = URL(fileURLWithPath: dest, relativeTo: out.deletingLastPathComponent()).standardizedFileURL
+        }
+        return out
+    }
+
     private func save() {
         do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let target = Self.writeTarget(of: fileURL)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try config.encoded()
             var kept: String?
             if fileIsBroken, let user = try? Data(contentsOf: fileURL) {
@@ -142,8 +154,9 @@ public final class ConfigStore: ObservableObject {
                 try user.write(to: brokenCopyURL, options: .atomic)
                 kept = brokenCopyURL.lastPathComponent
             }
+            try data.write(to: target, options: .atomic)
+            // Only after the write: a failed save must not look like a change on disk to `loadIfChangedOnDisk`.
             lastData = data
-            try data.write(to: fileURL, options: .atomic)
             fileIsBroken = false
             hasProblem = false
             keepLastGood(data)
@@ -177,8 +190,8 @@ public final class ConfigStore: ObservableObject {
         watchFile()
     }
 
-    /// Watches the file that is at `fileURL` now. Called again after each folder change, because an atomic save
-    /// or a delete puts a new file (a new inode) there.
+    /// Watches the file that is at `fileURL` now (the target, for a symlink). Called again after each change,
+    /// because an atomic save or a delete puts a new file (a new inode) there, also in the folder of a symlink target.
     private func watchFile() {
         fileWatcher?.cancel()
         fileWatcher = nil
@@ -197,7 +210,11 @@ public final class ConfigStore: ObservableObject {
     private func scheduleReload() {
         reloadWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.load() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.watcher != nil { self.watchFile() }
+                self.load()
+            }
         }
         reloadWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)

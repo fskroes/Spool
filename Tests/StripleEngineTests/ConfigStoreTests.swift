@@ -249,6 +249,50 @@ import Testing
         #expect(ConfigStore(fileURL: url, watch: false).config == Config())
     }
 
+    // Round 9 finding: an atomic save replaced a symlinked config.json (a dotfiles repo) with a plain file.
+    @Test func aSymlinkedFileStaysALinkAndItsTargetIsSaved() async throws {
+        let url = tempFile()
+        let dotfiles = url.deletingLastPathComponent().appendingPathComponent("dotfiles")
+        try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let target = dotfiles.appendingPathComponent("striple.json")
+        var c = Config()
+        c.layout.innerGap = 21
+        try c.encoded().write(to: target)
+        try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: "dotfiles/striple.json")
+
+        let store = ConfigStore(fileURL: url, watch: true)
+        #expect(store.config.layout.innerGap == 21)
+        store.update { $0.layout.innerGap = 22 }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: url.path) == "dotfiles/striple.json")
+        #expect(try Config.decode(Data(contentsOf: target)).layout.innerGap == 22)
+
+        // An editor saves the target atomically, twice: both edits load (the watch follows the new file).
+        for gap in [23.0, 24.0] {
+            try await Task.sleep(nanoseconds: 300_000_000)
+            c.layout.innerGap = gap
+            try c.encoded().write(to: target, options: .atomic)
+            for _ in 0..<40 where store.config.layout.innerGap != gap { try await Task.sleep(nanoseconds: 50_000_000) }
+            #expect(store.config.layout.innerGap == gap)
+        }
+        #expect(ConfigStore.writeTarget(of: url).standardizedFileURL.path == target.standardizedFileURL.path)
+    }
+
+    // Round 9 finding: after a failed save, the next change reloaded the old file and undid the unsaved change.
+    @Test func aFailedSaveDoesNotLoseTheChangeAtTheNextChange() throws {
+        let url = tempFile()
+        let dir = url.deletingLastPathComponent()
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 11 }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+
+        store.update { $0.behavior.focusFollowsMouse = true }
+        #expect(store.hasProblem)
+        store.update { $0.layout.innerGap = 12 }
+        #expect(store.config.behavior.focusFollowsMouse)
+        #expect(store.config.layout.innerGap == 12)
+    }
+
     @Test func anOldBrokenCopyIsReplacedByTheNewOne() throws {
         let url = tempFile()
         let store = ConfigStore(fileURL: url, watch: false)

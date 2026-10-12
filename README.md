@@ -101,6 +101,9 @@ If `config.json` is missing when Striple starts, Striple writes it again from `c
 the factory settings, quit Striple and delete both files.
 Edits load automatically, also from editors and tools that write the file in place (for example `nano` or
 `jq … > config.json`). A change in Settings first reads an edit that was not loaded yet, so it never replaces it.
+`config.json` can be a symlink into a dotfiles repo. Striple saves to the file the link points to, so the link stays,
+and edits to that file load too. If that file is read-only (for example managed by Nix), a change in Settings shows
+"Could not save config.json" and stays in use until Striple quits.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 
