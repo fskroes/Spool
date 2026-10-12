@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel!
     private var statusMenu: StatusMenu?
     private var ipc: IPCServer?
+    private var signalSources: [DispatchSourceSignal] = []
     private var didLaunch = false
     /// URL commands that arrive before launch is complete run after auto-start.
     private var pending: [Command] = []
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                             name: SingleInstance.reopenNotification, object: nil,
                                                             suspensionBehavior: .deliverImmediately)
 
+        handleQuitSignals()
         startIPC()
         if model.store.config.behavior.autoStart { model.engine.start() }
         didLaunch = true
@@ -50,6 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.recorder.stop()
         ipc?.stop()
         model.engine.stop()
+    }
+
+    /// launchd (logout, `launchctl bootout`) and `kill` send signals, which skip `applicationWillTerminate`.
+    /// Without this, windows parked off screen would stay there. A normal quit restores them.
+    private func handleQuitSignals() {
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     /// The `striple` CLI and Raycast scripts talk to this socket. A failure only turns off the CLI.

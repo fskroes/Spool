@@ -21,6 +21,8 @@ enum TrackerEvent {
     case spaceChanged
     case displaysChanged
     case didWake
+    /// The screen was unlocked or the user switched back to this login session.
+    case sessionResumed
 }
 
 /// Watches apps and windows with AX observers and NSWorkspace notifications.
@@ -59,10 +61,14 @@ final class WindowTracker {
 
     /// Apps whose windows Striple manages: regular apps. Striple itself is left out: its own windows float, and
     /// Accessibility calls into the own process from the main thread can block.
+    static let screenUnlocked = Notification.Name("com.apple.screenIsUnlocked")
+
     static func manageableApps() -> [NSRunningApplication] {
-        NSWorkspace.shared.runningApplications.filter {
-            $0.activationPolicy == .regular && $0.processIdentifier != getpid() && !$0.isTerminated
-        }
+        NSWorkspace.shared.runningApplications.filter(isManageable)
+    }
+
+    static func isManageable(_ app: NSRunningApplication) -> Bool {
+        Policy.isManageableApp(policy: app.activationPolicy, pid: app.processIdentifier, ownPID: getpid(), terminated: app.isTerminated)
     }
 
     func start() {
@@ -79,7 +85,7 @@ final class WindowTracker {
             })
         }
         on(NSWorkspace.didLaunchApplicationNotification) { app in
-            guard let app, app.activationPolicy == .regular, app.processIdentifier != getpid() else { return nil }
+            guard let app, Self.isManageable(app) else { return nil }
             return .appLaunched(app.processIdentifier)
         }
         on(NSWorkspace.didTerminateApplicationNotification) { $0.map { .appTerminated($0.processIdentifier) } }
@@ -88,6 +94,12 @@ final class WindowTracker {
         on(NSWorkspace.didUnhideApplicationNotification) { $0.map { .appShown($0.processIdentifier) } }
         on(NSWorkspace.activeSpaceDidChangeNotification) { _ in .spaceChanged }
         on(NSWorkspace.didWakeNotification) { _ in .didWake }
+        on(NSWorkspace.sessionDidBecomeActiveNotification) { _ in .sessionResumed }
+        // While the screen is locked, AX shows no real windows. The unlock is the moment to look again.
+        tokens.append(DistributedNotificationCenter.default().addObserver(forName: Self.screenUnlocked, object: nil,
+                                                                          queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onEvent(.sessionResumed) }
+        })
         tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                              object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent(.displaysChanged) }
@@ -99,6 +111,7 @@ final class WindowTracker {
         for t in tokens {
             NSWorkspace.shared.notificationCenter.removeObserver(t)
             NotificationCenter.default.removeObserver(t)
+            DistributedNotificationCenter.default().removeObserver(t)
         }
         tokens.removeAll()
         for pid in Array(watches.keys) { unwatch(pid) }

@@ -14,8 +14,8 @@ extension Engine {
     }
 
     func classify(_ element: AXUIElement, pid: pid_t) -> Candidate? {
-        guard pid != getpid(), let id = AX.windowID(element), id != 0,
-              let app = NSRunningApplication(processIdentifier: pid) else { return nil }
+        guard let app = NSRunningApplication(processIdentifier: pid), WindowTracker.isManageable(app),
+              let id = AX.windowID(element), id != 0 else { return nil }
         let bundle = app.bundleIdentifier ?? ""
         let traits = AX.traits(element, bundleID: bundle, isOwnApp: false)
         let info = WindowInfo(id: id, pid: pid, bundleID: bundle, title: AX.string(element, kAXTitleAttribute) ?? "")
@@ -201,7 +201,20 @@ extension Engine {
             spacesChanged()
         case .displaysChanged, .didWake:
             displaysChanged()
+        case .sessionResumed:
+            sessionResumed()
         }
+    }
+
+    /// Windows that existed while the screen was locked were invisible to AX. Find them now.
+    private func sessionResumed() {
+        let before = windows.count
+        refreshDisplays()
+        for app in WindowTracker.manageableApps() { tracker?.watch(app.processIdentifier) }
+        scanAll(session: nil)
+        relayoutAll(animate: false)
+        syncFocusWithSystem()
+        log.log("session resumed: \(windows.count - before) windows found")
     }
 
     private func titleChanged(_ element: AXUIElement, pid: pid_t) {

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import StripleCore
@@ -51,6 +52,12 @@ enum Policy {
     // MARK: Geometry
 
     /// True when two frames are the same within `tolerance` points. Used to tell Striple's own writes from user moves.
+    /// Apps whose windows Striple manages: regular apps that still run, never Striple itself.
+    /// This leaves out loginwindow (the lock screen), agents and menu bar apps.
+    static func isManageableApp(policy: NSApplication.ActivationPolicy, pid: pid_t, ownPID: pid_t, terminated: Bool) -> Bool {
+        policy == .regular && pid != ownPID && !terminated
+    }
+
     static func same(_ a: CGRect, _ b: CGRect?, tolerance: CGFloat = 2) -> Bool {
         guard let b else { return false }
         return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
