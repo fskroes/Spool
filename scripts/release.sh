@@ -168,8 +168,10 @@ Installed copies would refuse this update. Use the key of the published release.
         ;;
     404)
         # Drafts are not public; a failed draft of this version is handled before the upload.
-        if [[ $DRY -eq 0 ]] && gh release list --repo "$REPO" --exclude-drafts --limit 1 2>/dev/null | grep -q .; then
-            die "$REPO has published releases but no feed at $FEED. Fix the latest release first."
+        # When gh cannot tell (network, login), the run stops: "no releases" would skip the checks of
+        # the published identity and key.
+        if [[ $DRY -eq 0 ]]; then
+            PUBLISHED=$(striple_release_none_published "$REPO" "$FEED") || die "$PUBLISHED"
         fi
         log "No release published yet. New: $VERSION ($BUILD)"
         ;;

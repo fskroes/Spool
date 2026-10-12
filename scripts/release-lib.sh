@@ -167,6 +167,32 @@ striple_release_existing() {
     return 1
 }
 
+# release.sh asks this when the feed FEED of the releases repository REPO returns 404.
+# Status 0 when REPO has no published release, or does not exist yet (the first release makes it).
+# Status 1 with a message on stdout when REPO has a published release: then the feed must exist.
+# Status 2 with a message on stdout when gh cannot tell (network, rate limit, login): never "none".
+striple_release_none_published() {
+    local repo=$1 feed=$2 out err status=0 msg
+    err=$(mktemp "${TMPDIR:-/tmp}/striple-gh.XXXXXX") || return 2
+    out=$(gh release list --repo "$repo" --exclude-drafts --limit 1 --json tagName --jq length 2>"$err") || status=$?
+    msg=$(<"$err")
+    rm -f "$err"
+    if [[ $status -ne 0 ]]; then
+        [[ "$msg" == *"Could not resolve to a Repository"* ]] && return 0
+        printf 'cannot list the releases of %s: %s\n' "$repo" "$msg"
+        return 2
+    fi
+    case "$out" in
+        0) return 0 ;;
+        [1-9]*)
+            printf '%s has published releases but no feed at %s. Fix the latest release first.\n' "$repo" "$feed"
+            return 1 ;;
+        *)
+            printf 'unexpected answer from gh release list --repo %s: %s\n' "$repo" "$out"
+            return 2 ;;
+    esac
+}
+
 # Status 0 when HEAD is COMMIT. With "clean" as the second argument, the working tree must also have
 # no changes. release.sh checks this after the build: the files must come from COMMIT.
 striple_release_head_is() {

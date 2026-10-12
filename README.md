@@ -44,12 +44,12 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 
 ## Performance
 
-Measured on this Mac (Apple silicon, macOS 26) with `make test` and `make bench`:
+Measured on this Mac (Apple silicon, macOS 26) with `make bench` on 2026-10-12:
 
 | Metric | Budget (docs/SPEC.md) | Measured |
 |---|---|---|
-| Layout and placement of 50 columns, per frame | < 50 µs | 5.3 µs |
-| Frame write, 6 apps with 2 ms AX latency each | < 4 ms | 3.04 ms (one after the other: about 12 ms) |
+| Layout and placement of 50 columns, per frame | < 50 µs | 6.5 µs |
+| Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds | < 4 ms | 2.55 ms (one after the other: about 12 ms) |
 | Idle | no timer, no display link | the ticker stops when all windows are at rest |
 
 How Striple stays fast:
@@ -68,9 +68,11 @@ How Striple stays fast:
 Requirements: macOS 13 or later, the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
-make install                  # builds dist/Striple.app and copies it to /Applications
+make install
 open /Applications/Striple.app
 ```
+
+`make install` builds `dist/Striple.app` and copies it to `/Applications`.
 
 At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Striple needs.
 
@@ -83,9 +85,11 @@ An ad hoc signed build gets a new signature with each rebuild, and macOS then fo
 
   ```sh
   striple focus-right
-  striple state            # the strips, as text; add --json for scripts
-  striple stats            # live performance numbers
+  striple state
+  striple stats
   ```
+
+  `striple state` shows the strips as text. Add `--json` for scripts. `striple stats` shows live performance numbers.
 
 - URL scheme: `open -g striple://focus-right`, `open striple://settings/shortcuts`.
 - Menu bar: start or stop tiling, settings, the engine log, updates.
@@ -117,13 +121,23 @@ When you quit Striple (from the menu, at logout, or with a plain `kill`), every 
 ## Build and test
 
 ```sh
-make build    # debug build
-make test     # all unit tests (core, engine, IPC)
-make bench    # layout benchmark in release mode
-make app      # dist/Striple.app (universal, signed)
-make dmg      # dist/Striple-<version>.dmg
-make e2e      # live end-to-end test on real windows of a test app (docs/E2E.md)
+make build
+make test
+make bench
+make app
+make dmg
+make e2e
 ```
+
+| Target | What it does |
+|---|---|
+| `make build` | Debug build. |
+| `make test` | All unit tests (core, engine, IPC, E2E kit), except `SigningScriptTests`. |
+| `make test-signing` | `SigningScriptTests` only. They run `make-signing-cert.sh` against a fake `security`; on a managed Mac the endpoint security tool can report that. |
+| `make bench` | The frame-write and layout benchmarks in release mode. |
+| `make app` | Makes `dist/Striple.app` (universal, signed). |
+| `make dmg` | Makes `dist/Striple-<version>.dmg`. |
+| `make e2e` | Live end-to-end test on real windows of a test app ([docs/E2E.md](docs/E2E.md)). |
 
 ## Project layout
 

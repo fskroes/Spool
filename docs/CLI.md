@@ -18,15 +18,26 @@ striple <command> [<n>] [--json] [--socket <path>]
 Examples:
 
 ```sh
-striple focus-left          # focus the column on the left
-striple focus-index 3       # focus place 3 (same as: striple focus-index-3)
-striple command focus-left  # same as: striple focus-left
-striple state               # show displays, columns and windows
-striple stats --json        # performance counters as JSON
-striple list                # all commands with a short description
-striple help focus-index    # help for one command
+striple focus-left
+striple focus-index 3
+striple command focus-left
+striple state
+striple stats --json
+striple list
+striple help focus-index
 striple --version
 ```
+
+| Command | What it does |
+|---|---|
+| `striple focus-left` | Focuses the column on the left. |
+| `striple focus-index 3` | Focuses place 3. Same as `striple focus-index-3`. |
+| `striple command focus-left` | Same as `striple focus-left`. |
+| `striple state` | Shows the displays, columns and windows. |
+| `striple stats --json` | Shows the performance counters as JSON. |
+| `striple list` | Shows all commands with a short description. |
+| `striple help focus-index` | Shows the help for one command. |
+| `striple --version` | Shows the version. |
 
 A command prints nothing when it works. Errors go to stderr.
 
@@ -190,8 +201,10 @@ These forms do the same thing:
 ```sh
 open -g "striple://focus-left"
 open -g "striple://command?name=focus-left"
-open -g "striple://focus-index/3"    # same as: striple focus-index 3
+open -g "striple://focus-index/3"
 ```
+
+The last URL is the same as `striple focus-index 3`.
 
 A URL opens Striple if it is not running. Queries (`ping`, `state`, `stats`) are not available as URLs.
 

@@ -5,6 +5,7 @@ import Testing
 /// keychain path, so the keychains of this Mac are never read or changed. The fakes log each call to `calls.log`:
 /// argv as is, a command read by `security -i` from stdin as `stdin: <command>`, and codesign as `codesign <args>`.
 /// The fake `security` keeps state in its folder: with `acceptMake`, a full make or import runs to the end.
+/// The pin in Packaging/updates.env is not read: `STRIPLE_UPDATES_ENV` is /dev/null (no pin) unless a test gives a file.
 @Suite(.serialized) struct SigningScriptTests {
     static let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -91,6 +92,7 @@ import Testing
         env["PATH"] = dir.path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
         env["STRIPLE_SIGNING_KEYCHAIN"] = keychain.path
         env["HOME"] = "/Users/x"
+        env["STRIPLE_UPDATES_ENV"] = "/dev/null"
         env.merge(extra) { $1 }
         p.environment = env
         let out = Pipe()
@@ -246,7 +248,7 @@ import Testing
     // MARK: full runs: no secret is ever an argument
 
     /// A PKCS#12 "Striple Local Signing" identity like the backup of make-signing-cert.sh, and its SHA-1.
-    static func makeP12(in dir: URL, passphrase: String) throws -> (file: URL, sha1: String) {
+    static func makeP12(in dir: URL, passphrase: String, withKey: Bool = true) throws -> (file: URL, sha1: String) {
         let key = dir.appendingPathComponent("k.pem"), cert = dir.appendingPathComponent("c.pem")
         let p12 = dir.appendingPathComponent("backup.p12")
         func openssl(_ args: [String], env: [String: String] = [:]) throws -> String {
@@ -265,7 +267,8 @@ import Testing
         }
         _ = try openssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1",
                          "-subj", "/CN=Striple Local Signing", "-keyout", key.path, "-out", cert.path])
-        _ = try openssl(["pkcs12", "-export", "-name", "Striple Local Signing", "-inkey", key.path, "-in", cert.path,
+        _ = try openssl(["pkcs12", "-export", "-name", "Striple Local Signing"]
+                        + (withKey ? ["-inkey", key.path] : ["-nokeys"]) + ["-in", cert.path,
                          "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-macalg", "sha1",
                          "-passout", "env:P", "-out", p12.path], env: ["P": passphrase])
         let fp = try openssl(["x509", "-in", cert.path, "-noout", "-fingerprint", "-sha1"])
@@ -352,6 +355,205 @@ import Testing
         #expect(r.status == 0, "\(r.output)")
         #expect(r.output.contains("(\(sha1)) and signs. Nothing to do."))
         #expect(r.calls.contains { $0.hasPrefix("codesign --force --sign \(sha1) ") })
+    }
+
+    // MARK: the pin in Packaging/updates.env
+
+    static let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+
+    /// An updates.env with STRIPLE_SIGNING_CERT_SHA1=`sha1`, as the env for `run`.
+    static func pinned(_ sha1: String, in dir: URL) throws -> [String: String] {
+        let file = dir.appendingPathComponent("updates-\(UUID().uuidString).env")
+        try Data("STRIPLE_RELEASES_REPO=fskroes/striple-releases\nSTRIPLE_SIGNING_CERT_SHA1=\(sha1)\n".utf8).write(to: file)
+        return ["STRIPLE_UPDATES_ENV": file.path]
+    }
+
+    // On a new Mac, a new identity would break the Accessibility permission of every installed copy.
+    @Test func makeWithAPinStopsAndChangesNothing() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let backup = dir.appendingPathComponent("b.p12")
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let r = try Self.run(k, [], env: try Self.pinned(Self.pin, in: dir).merging(["STRIPLE_SIGNING_BACKUP": backup.path]) { $1 })
+        #expect(r.status == 1)
+        #expect(r.output.contains("pins the identity \(Self.pin)"), "\(r.output)")
+        #expect(r.output.contains("scripts/make-signing-cert.sh --import <backup file>"))
+        #expect(r.output.contains("--new-identity"))
+        #expect(r.calls.isEmpty, "\(r.calls)")
+        #expect(!FileManager.default.fileExists(atPath: backup.path))
+
+        let dry = try Self.run(k, ["--dry-run"], env: try Self.pinned(Self.pin, in: dir))
+        #expect(dry.status == 0)
+        #expect(dry.output.contains("the script stops and makes nothing"), "\(dry.output)")
+        #expect(!dry.output.contains("create-keychain"))
+    }
+
+    @Test func aPinThatIsNotASHA1StopsTheScript() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true), [],
+                             env: try Self.pinned("ABCD1234", in: dir))
+        #expect(r.status == 1)
+        #expect(r.output.contains("is not a SHA-1: ABCD1234"), "\(r.output)")
+        #expect(r.calls.isEmpty)
+    }
+
+    @Test func newIdentityMakesOneAndSaysThatThePinChanges() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let env = try Self.pinned(Self.pin, in: dir).merging(["STRIPLE_SIGNING_BACKUP": dir.appendingPathComponent("b.p12").path]) { $1 }
+        let r = try Self.run(k, ["--new-identity"], env: env)
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("signs with no prompt"))
+        #expect(r.output.contains("(it pins \(Self.pin) now)"), "\(r.output)")
+        #expect(r.output.contains("asks for the Accessibility permission again"))
+        #expect(try Self.run(k, ["--import", "x.p12", "--new-identity"], env: env).output.contains("--new-identity is only for"))
+    }
+
+    @Test func aReadyIdentityThatIsNotPinnedFails() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = "0123456789ABCDEF0123456789ABCDEF01234567"
+        let r = try Self.run(k, [], env: try Self.pinned(Self.pin, in: dir))
+        #expect(r.status == 1)
+        #expect(r.output.contains("the keychain has the identity \(k.identityHash), but "), "\(r.output)")
+        #expect(r.output.contains("pins \(Self.pin)"))
+        #expect(!r.output.contains("Nothing to do"))
+        #expect(!r.calls.contains { $0.hasPrefix("codesign") || $0.contains("create-keychain") || $0.contains("import ") })
+
+        // The pinned identity is ready. The pin may use lowercase letters.
+        k.identityHash = Self.pin
+        let ok = try Self.run(k, [], env: try Self.pinned(Self.pin.lowercased(), in: dir))
+        #expect(ok.status == 0, "\(ok.output)")
+        #expect(ok.output.contains("(\(Self.pin)) and signs. Nothing to do."))
+    }
+
+    @Test func importOfABackupThatIsNotPinnedFailsAndChangesNothing() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let r = try Self.run(k, ["--import", p12.path],
+                             env: try Self.pinned(Self.pin, in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 })
+        #expect(r.status == 1)
+        #expect(r.output.contains("\(p12.path) has the identity \(sha1), but "), "\(r.output)")
+        #expect(r.output.contains("pins \(Self.pin)"))
+        #expect(r.output.contains("Nothing was changed."))
+        #expect(r.calls.isEmpty, "\(r.calls)")
+
+        let ok = try Self.run(k, ["--import", p12.path],
+                              env: try Self.pinned(sha1, in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 })
+        #expect(ok.status == 0, "\(ok.output)")
+        #expect(ok.output.contains("pins this identity already"), "\(ok.output)")
+    }
+
+    // An updates.env without a value for the pin works as before the pin: make mode makes an identity.
+    @Test func anEmptyPinKeepsTheOldBehavior() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let env = try Self.pinned("", in: dir).merging(["STRIPLE_SIGNING_BACKUP": dir.appendingPathComponent("b.p12").path]) { $1 }
+        let r = try Self.run(k, [], env: env)
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("if releases use this identity"), "\(r.output)")
+        var ready = Keychain(file: true, password: true, identity: true, listed: true)
+        ready.identityHash = "0123456789ABCDEF0123456789ABCDEF01234567"
+        #expect(try Self.run(ready, [], env: try Self.pinned("", in: dir)).output.contains("Nothing to do"))
+    }
+
+    // MARK: --remove of the pinned identity needs its backup
+
+    static func deleted(_ r: Result) -> Bool {
+        r.calls.contains { $0.hasPrefix("delete-keychain ") || $0.hasPrefix("delete-generic-password ") }
+    }
+
+    @Test func removeOfThePinnedIdentityWithoutItsBackupRefuses() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = Self.pin
+        let r = try Self.run(k, ["--remove", "--yes"], env: try Self.pinned(Self.pin, in: dir))
+        #expect(r.status == 1)
+        #expect(r.output.contains("the keychain has the pinned identity \(Self.pin)."), "\(r.output)")
+        #expect(r.output.contains("--remove --yes --backup <backup file>"))
+        #expect(r.output.contains("Nothing was deleted."))
+        #expect(!Self.deleted(r), "\(r.calls)")
+        #expect(!r.calls.contains { $0.hasPrefix("list-keychains -d user -s") && !$0.contains("striple-signing") }, "\(r.calls)")
+
+        // An identity that cannot be read can be the pinned one.
+        let unreadable = try Self.run(Keychain(file: true, password: false, identity: false), ["--remove", "--yes"],
+                                      env: try Self.pinned(Self.pin, in: dir))
+        #expect(unreadable.status == 1)
+        #expect(unreadable.output.contains("an identity that cannot be read"), "\(unreadable.output)")
+        #expect(!Self.deleted(unreadable))
+    }
+
+    @Test func removeWithAWrongBackupRefuses() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = Self.pin
+        let env = try Self.pinned(Self.pin, in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 }
+        let other = try Self.run(k, ["--remove", "--yes", "--backup", p12.path], env: env)
+        #expect(other.status == 1)
+        #expect(other.output.contains("is not a backup of the pinned identity \(Self.pin) (\(sha1))"), "\(other.output)")
+        #expect(!Self.deleted(other))
+
+        let missing = try Self.run(k, ["--remove", "--yes", "--backup", dir.appendingPathComponent("no.p12").path], env: env)
+        #expect(missing.status == 1)
+        #expect(missing.output.contains("no such file"))
+        #expect(!Self.deleted(missing))
+
+        // The right certificate, but the wrong passphrase, or no private key: not a backup.
+        k.identityHash = sha1
+        let pinnedEnv = try Self.pinned(sha1, in: dir)
+        let wrongPass = try Self.run(k, ["--remove", "--yes", "--backup", p12.path],
+                                     env: pinnedEnv.merging(["STRIPLE_SIGNING_P12_PASSWORD": "wrong"]) { $1 })
+        #expect(wrongPass.status == 1)
+        #expect(wrongPass.output.contains("cannot read it: wrong passphrase"), "\(wrongPass.output)")
+        #expect(!Self.deleted(wrongPass))
+
+        let certDir = dir.appendingPathComponent("cert-only")
+        try FileManager.default.createDirectory(at: certDir, withIntermediateDirectories: true)
+        let (certOnly, certSha1) = try Self.makeP12(in: certDir, passphrase: "secret", withKey: false)
+        k.identityHash = certSha1
+        let noKey = try Self.run(k, ["--remove", "--yes", "--backup", certOnly.path],
+                                 env: try Self.pinned(certSha1, in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 })
+        #expect(noKey.status == 1)
+        #expect(noKey.output.contains("has no private key"), "\(noKey.output)")
+        #expect(!Self.deleted(noKey))
+    }
+
+    @Test func removeWithTheBackupOfThePinnedIdentityDeletes() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, sha1) = try Self.makeP12(in: dir, passphrase: "secret")
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = sha1
+        let r = try Self.run(k, ["--remove", "--yes", "--backup", p12.path],
+                             env: try Self.pinned(sha1.lowercased(), in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 })
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.output.contains("is a backup of the pinned identity"))
+        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
+        #expect(try Self.run(k, ["--backup", p12.path]).output.contains("--backup is only for --remove"))
+    }
+
+    @Test func removeOfAnIdentityThatIsNotPinnedNeedsNoBackup() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var k = Keychain(file: true, password: true, identity: true, listed: true)
+        k.identityHash = "0123456789ABCDEF0123456789ABCDEF01234567"
+        let r = try Self.run(k, ["--remove", "--yes"], env: try Self.pinned(Self.pin, in: dir))
+        #expect(r.status == 0, "\(r.output)")
+        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
+        #expect(r.calls.contains { $0.hasPrefix("delete-generic-password ") })
     }
 
     // MARK: security -i lines

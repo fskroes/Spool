@@ -3,13 +3,19 @@
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
 
-.PHONY: build test bench release app icon dmg install uninstall run clean e2e publish publish-dry publish-finish
+.PHONY: build test test-signing bench release app icon dmg install uninstall run clean e2e publish publish-dry publish-finish
 
 build:
 	swift build
 
+# SigningScriptTests run scripts/make-signing-cert.sh against a fake `security`. On a managed Mac the
+# endpoint security tool can report that as keychain access, so `make test` skips them.
 test:
-	swift test $(SWIFT_TEST_FLAGS)
+	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
+
+# Only on a Mac where keychain-like test activity is allowed.
+test-signing:
+	swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
 
 # Performance budgets from docs/SPEC.md, measured in an optimized build.
 bench:
@@ -62,5 +68,7 @@ publish-finish:
 run: app
 	open dist/Striple.app
 
+# Deletes the build output. Keeps dist/release/<version>/: `make publish-finish` needs it.
 clean:
-	rm -rf .build dist
+	rm -rf .build dist/release/dry-run
+	if [ -d dist ]; then find dist -mindepth 1 -maxdepth 1 ! -name release -exec rm -rf {} +; fi

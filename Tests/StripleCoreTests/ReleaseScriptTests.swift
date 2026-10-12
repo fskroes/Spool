@@ -387,9 +387,38 @@ import Testing
           network) echo "error connecting to api.github.com" >&2; exit 1 ;;
           notice) echo "A new release of gh is available: 2.102.0 -> 2.103.0" >&2; echo false ;;
           odd) echo maybe ;;
+          norepo) echo "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)" >&2; exit 1 ;;
+          zero) echo 0 ;;
+          one) echo 1 ;;
         esac
         """)
         return bin
+    }
+
+    // A feed that returns 404: only a missing repository or an empty release list lets the run go on.
+    @Test func noPublishedReleaseOnlyWhenGhSaysSo() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        func ask(_ mode: String) throws -> Result {
+            try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": mode], "striple_release_none_published", "o/r", "https://f/appcast.xml")
+        }
+        for mode in ["norepo", "zero"] {
+            let r = try ask(mode)
+            #expect(r.status == 0 && r.output.isEmpty, "\(mode): \(r)")
+        }
+        let one = try ask("one")
+        #expect(one.status == 1)
+        #expect(one.output == "o/r has published releases but no feed at https://f/appcast.xml. Fix the latest release first.")
+        let net = try ask("network")
+        #expect(net.status == 2)
+        #expect(net.output == "cannot list the releases of o/r: error connecting to api.github.com")
+        for mode in ["odd", "notice"] {
+            let r = try ask(mode)
+            #expect(r.status == 2, "\(mode)")
+            #expect(r.output.hasPrefix("unexpected answer from gh release list --repo o/r: "), "\(mode): \(r.output)")
+        }
+        let log = try String(contentsOf: bin.appendingPathComponent("gh.log"), encoding: .utf8)
+        #expect(log.hasPrefix("release list --repo o/r --exclude-drafts --limit 1 --json tagName --jq length\n"))
     }
 
     @Test func noReleaseAndNoRepositoryAreBothFree() throws {

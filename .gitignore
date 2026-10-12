@@ -4,3 +4,8 @@ dist/
 *.xcodeproj/
 .DS_Store
 /build/
+
+# Secrets: never commit them. The docs write them outside the repository.
+striple-sparkle-key.txt
+*.p12
+Striple-signing-passphrase.txt

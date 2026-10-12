@@ -13,10 +13,14 @@ The app is a universal binary (Apple silicon and Intel).
 ## Build from source
 
 ```sh
-make test     # run the tests
-make app      # build and sign dist/Striple.app
-make dmg      # optional: make dist/Striple-<version>.dmg
+make test
+make app
+make dmg
 ```
+
+- `make test` runs the tests, except `SigningScriptTests`. `make test-signing` runs those (see the README).
+- `make app` builds and signs `dist/Striple.app`.
+- `make dmg` is optional. It makes `dist/Striple-<version>.dmg`.
 
 To publish a release on GitHub: `make publish-dry`, then `make publish`. See [RELEASING.md](RELEASING.md).
 
@@ -55,10 +59,14 @@ To make the icon only: `make icon`.
 ## Install
 
 ```sh
-make install                                    # build, then install
-./scripts/install.sh --dry-run                  # show what install does, change nothing
-./scripts/install.sh --prefix ~/Applications    # install into another folder
+make install
+./scripts/install.sh --dry-run
+./scripts/install.sh --prefix ~/Applications
 ```
+
+- `make install` builds, then installs.
+- `--dry-run` shows what the install does and changes nothing.
+- `--prefix ~/Applications` installs into another folder.
 
 `scripts/install.sh` does these steps:
 
@@ -132,7 +140,12 @@ An ad hoc signature is a hash of the code (a cdhash). Each build has a new hash.
 
 ```sh
 codesign -d -r - dist/Striple.app
-# designated => cdhash H"2d50fa83..." or cdhash H"29730e60..."
+```
+
+The output is similar to this:
+
+```
+designated => cdhash H"2d50fa83..." or cdhash H"29730e60..."
 ```
 
 ### The fix: a local signing certificate
@@ -140,9 +153,13 @@ codesign -d -r - dist/Striple.app
 Make a self-signed code signing certificate one time. Then each build has the same designated requirement: the bundle ID plus the hash of your certificate. The permission stays after a rebuild.
 
 ```sh
-./scripts/make-signing-cert.sh --dry-run   # show the steps; reads and changes no keychain
-./scripts/make-signing-cert.sh             # make the identity "Striple Local Signing" and its backup
+./scripts/make-signing-cert.sh --dry-run
+./scripts/make-signing-cert.sh
 ```
+
+The first command shows the steps. It reads and changes no keychain. The second command makes the identity "Striple Local Signing" and its backup.
+
+When `Packaging/updates.env` has a pin (`STRIPLE_SIGNING_CERT_SHA1`), the second command stops and makes nothing. A new identity would make every installed copy ask for the Accessibility permission again. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `STRIPLE_UPDATES_ENV` sets another file than `Packaging/updates.env`.
 
 The script:
 
@@ -163,10 +180,17 @@ The script does not ask for your login password. It does not change trust settin
 Restore the identity from the backup (on a new Mac, or after `--remove`):
 
 ```sh
-./scripts/make-signing-cert.sh --import ~/Striple-signing-identity.p12   # asks for the passphrase
+./scripts/make-signing-cert.sh --import ~/Striple-signing-identity.p12
 ```
 
-When you run the script again and the identity works, the script signs a test file to check it and changes nothing. With `--import`, the identity in the keychain must be the one in the file. If it is another one, the script stops and changes nothing: run `--remove --yes` first (back up the current identity first if a release uses it). If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove --yes` first, then `--import` your backup.
+The script asks for the passphrase. `STRIPLE_SIGNING_P12_PASSWORD` gives it without a prompt.
+
+When you run the script again and the identity works, the script signs a test file to check it and changes nothing. With `--import`, the identity in the keychain must be the one in the file. If it is another one, the script stops and changes nothing: run `--remove --yes` first. If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove --yes` first, then `--import` your backup.
+
+With a pin, the script accepts only the pinned identity. It stops and changes nothing when:
+
+- the backup that you import has another SHA-1,
+- the keychain has another identity. Remove it with `--remove --yes`, then import the backup of the pinned identity.
 
 After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
 
@@ -175,7 +199,12 @@ Check the identity:
 ```sh
 security find-identity -p codesigning ~/Library/Keychains/striple-signing.keychain-db
 codesign -d -r - /Applications/Striple.app
-# designated => identifier "com.fskroes.Striple" and certificate leaf = H"b608fa4f..."
+```
+
+The `codesign` output is similar to this:
+
+```
+designated => identifier "com.fskroes.Striple" and certificate leaf = H"b608fa4f..."
 ```
 
 `security find-identity -v` does not show the identity, because `-v` shows only trusted identities. That is correct and does not stop signing.
@@ -185,6 +214,14 @@ Remove the identity (the keychain, its password item and its search list entry).
 ```sh
 ./scripts/make-signing-cert.sh --remove --yes
 ```
+
+When the keychain has the pinned identity, the script deletes it only when you give its backup. This is also true when the script cannot read the identity, because it can be the pinned one. The script reads the backup (the passphrase rules are the same as for `--import`). It deletes the identity only when the certificate in the backup has the pinned SHA-1 and the backup has the private key. Else it stops and deletes nothing.
+
+```sh
+./scripts/make-signing-cert.sh --remove --yes --backup ~/Striple-signing-identity.p12
+```
+
+The script cannot make a backup of an identity that is in the keychain already. Thus keep the backup that the script wrote when it made the identity.
 
 Notes:
 
@@ -293,16 +330,20 @@ Until you have an answer, use Striple only on a Mac that you own.
 ## Uninstall
 
 ```sh
-make uninstall                            # or: ./scripts/install.sh --uninstall
+make uninstall
 ./scripts/install.sh --uninstall --dry-run
 ```
+
+`make uninstall` runs `./scripts/install.sh --uninstall`. The second command shows what the uninstall does and changes nothing.
 
 The script first quits Striple. Then it runs `Striple --unregister-login`, which removes the login agent and the login item. This order is necessary: if the agent started Striple, removing the agent first would stop Striple without a clean quit. Then the script removes the app and the `~/.local/bin/striple` link. With `--prefix`, the link is kept when it points to a Striple in another folder that is not removed.
 
 Without `--prefix`, the script removes every Striple it finds: the app that the `striple` link points into, `/Applications/Striple.app` and `~/Applications/Striple.app`. So you do not have to remember the folder you installed into. An app with another bundle ID at one of these paths is kept. With `--prefix DIR`, only `DIR/Striple.app` is removed. The script does not remove your settings and logs. It shows the commands to remove them yourself:
 
 ```sh
-rm -r ~/Library/Application\ Support/Striple    # settings
-rm -r ~/Library/Logs/Striple                    # logs
-tccutil reset Accessibility com.fskroes.Striple # Accessibility permission
+rm -r ~/Library/Application\ Support/Striple
+rm -r ~/Library/Logs/Striple
+tccutil reset Accessibility com.fskroes.Striple
 ```
+
+These commands remove the settings, the logs and the Accessibility permission, in this sequence.

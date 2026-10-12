@@ -38,18 +38,23 @@ The feed URL is `https://github.com/fskroes/striple-releases/releases/latest/dow
 
    ```sh
    brew install gh
-   gh auth login        # GitHub.com, HTTPS, log in with a web browser
+   gh auth login
    ```
 
-2. Make the code signing identity: `./scripts/make-signing-cert.sh` (see [INSTALL.md](INSTALL.md#keep-the-accessibility-permission-after-a-rebuild)). **Put the backup file and the passphrase it prints in your password manager**, then delete the file. Set `STRIPLE_SIGNING_CERT_SHA1` in `Packaging/updates.env` to the SHA-1 it prints. On a new Mac, restore it with `./scripts/make-signing-cert.sh --import <file>`.
+   Select GitHub.com and HTTPS, and log in with a web browser.
+
+2. The code signing identity. `STRIPLE_SIGNING_CERT_SHA1` in `Packaging/updates.env` pins it. On a new Mac, restore it from the backup in your password manager: `./scripts/make-signing-cert.sh --import <file>`. The script accepts only the pinned identity. When a pin is set, `./scripts/make-signing-cert.sh` without `--import` stops and makes nothing (see [INSTALL.md](INSTALL.md#keep-the-accessibility-permission-after-a-rebuild)).
+
+   Make a new identity only when there is no pin yet, or when you change the identity on purpose. A change makes every installed copy ask for the Accessibility permission again. For a change, use `./scripts/make-signing-cert.sh --new-identity`. **Put the backup file and the passphrase it prints in your password manager**, then delete the file. Then set `STRIPLE_SIGNING_CERT_SHA1` to the SHA-1 it prints.
 3. The Sparkle key pair exists already. Its public key is in `Packaging/updates.env`. **Make a backup of the private key** and keep it in your password manager:
 
    ```sh
-   .build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -x striple-sparkle-key.txt
-   # store the file in your password manager, then delete it
+   (umask 077 && .build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -x ~/striple-sparkle-key.txt)
    ```
 
-   Without the private key, the installed apps cannot accept new updates. On a new Mac, import it with `generate_keys --account com.fskroes.Striple -f striple-sparkle-key.txt`.
+   This writes the private key to `~/striple-sparkle-key.txt`, outside the repository. `umask 077` makes the file readable only by you. Put the file in your password manager, then delete it.
+
+   Without the private key, the installed apps cannot accept new updates. On a new Mac, run `swift package resolve` once (it downloads the Sparkle tools), then import the key: `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -f ~/striple-sparkle-key.txt`. Delete the file after the import.
 
 Releases need both keys. With another code signing identity, the designated requirement changes, and macOS asks for the Accessibility permission again after the update. With another EdDSA key, installed apps refuse the update. `make publish` checks both against `Packaging/updates.env` and against the published release.
 
@@ -91,7 +96,7 @@ Then it uploads the files to a **draft** release, publishes it, downloads the fe
 
 The script reads the commit once, at the start. The build must come from that commit: if HEAD moves or the working tree changes during the build, the release stops before the upload. The tag goes on that commit, not on HEAD.
 
-The files stay in `dist/release/<version>/`. `commit.txt` there names the commit of the build. It is not uploaded. `make publish-dry` writes to `dist/release/dry-run/<version>/`, so it never replaces the files of a real run.
+The files stay in `dist/release/<version>/`. `commit.txt` there names the commit of the build. It is not uploaded. `make publish-dry` writes to `dist/release/dry-run/<version>/`, so it never replaces the files of a real run. `make clean` keeps `dist/release/<version>/`, because `make publish-finish` needs these files. It deletes only `dist/release/dry-run/` there.
 
 If the script stops while the DMG is open, its exit handler detaches the DMG before it deletes its temporary folder.
 
@@ -104,7 +109,8 @@ If the script stops while the DMG is open, its exit handler detaches the DMG bef
 | "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
 | "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
 | "the local signing identity is …, but Packaging/updates.env pins …" | Restore the pinned identity: `./scripts/make-signing-cert.sh --remove --yes`, then `--import <backup file>`. |
-| "the Sparkle key … does not match" | Import the backup with `generate_keys --account com.fskroes.Striple -f <file>`. |
+| "the Sparkle key … does not match" | Import the backup with `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -f <file>`. |
+| "dist/release/<version>/… is missing" from `make publish-finish` | The files of the run are not there. Run `make publish-finish` on the Mac and in the folder of the run. `make clean` keeps these files. If you deleted them, check the release on GitHub by hand and make the tag yourself: `git tag -a v<version> <commit>`. |
 | A bad release is out | Publish a fixed version with a higher `VERSION`. Do not delete a published archive: installed apps can be in the middle of an update. |
 
 ## Test an update
