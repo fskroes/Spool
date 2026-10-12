@@ -43,7 +43,8 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
             let ms = applier.applyAndWait(writes.map { FrameWrite(id: $0.id, pid: $0.pid, frame: rect(CGFloat(round * 10) + $0.frame.minX)) })
             best = min(best, ms)
         }
-        #expect(best < 6, "6 apps x 2 ms took \(best) ms; serial would be about 12 ms")
+        print("Frame write, 6 apps x 2 ms AX latency: \(String(format: "%.2f", best)) ms (serial about 12 ms)")
+        #expect(best < 4, "6 apps x 2 ms took \(best) ms; serial would be about 12 ms")
         #expect(writer.writes.count == 36)
     }
 

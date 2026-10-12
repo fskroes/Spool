@@ -62,7 +62,7 @@ struct SettingsView: View {
         case .general: GeneralTab(store: store, engine: engine)
         case .displays: DisplaysTab(store: store)
         case .rules: RulesTab(store: store)
-        case .shortcuts: ShortcutsTab(store: store, recorder: app.recorder)
+        case .shortcuts: ShortcutsTab(store: store, engine: engine, recorder: app.recorder)
         case .macSetup: MacSetupTab(store: store)
         case .help: HelpTab(store: store)
         }

@@ -5,6 +5,7 @@ import StripleEngine
 /// Every bindable command with its key combinations. A command can have zero or more.
 struct ShortcutsTab: View {
     @ObservedObject var store: ConfigStore
+    @ObservedObject var engine: Engine
     @ObservedObject var recorder: ShortcutRecorder
     @ViewState private var query = ""
     @ViewState private var confirmReset = false
@@ -27,6 +28,17 @@ struct ShortcutsTab: View {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                     Text(conflicts.count == 1 ? "1 key combination is used by more than one action. Only one action runs."
                                               : "\(conflicts.count) key combinations are used by more than one action. Only one action runs.")
+                }
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+
+            if !engine.refusedShortcuts.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                    Text("macOS or another app already uses \(engine.refusedShortcuts.map(KeyLabel.label).joined(separator: ", ")). Striple cannot use \(engine.refusedShortcuts.count == 1 ? "it" : "them"). Choose other keys, or free them in the other app.")
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.callout)
                 .padding(.horizontal, 12)
