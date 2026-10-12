@@ -14,6 +14,16 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     private var log: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] = []
     private var batches: [pid_t] = []
     private var settled: [pid_t] = []
+    private var gates: [WindowID: Gate] = [:]
+
+    /// Holds the writes of one window: `started` signals when a write begins, the write ends after `release`.
+    /// The tests use it to put events in a fixed order, without sleeps.
+    final class Gate: Sendable {
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+    }
+
+    func gate(_ id: WindowID) -> Gate { lock.withLock { let g = Gate(); gates[id] = g; return g } }
 
     init(delay: Double = 0, failing: Set<WindowID> = []) {
         self.delay = delay
@@ -21,12 +31,19 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     }
 
     func beginBatch(pid: pid_t) { lock.withLock { batches.append(pid) } }
+    /// Signals once for every batch that ends.
+    let batchEnded = DispatchSemaphore(value: 0)
+    func endBatch(pid: pid_t) { batchEnded.signal() }
     func settle(pid: pid_t) { lock.withLock { settled.append(pid) } }
     var settledApps: [pid_t] { lock.withLock { settled.sorted() } }
     /// Writes of one window, in order.
     func frames(_ id: WindowID) -> [CGRect] { lock.withLock { log.filter { $0.id == id }.map(\.frame) } }
 
     func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
+        if let g = lock.withLock({ gates[w.id] }) {
+            g.started.signal()
+            g.release.wait()
+        }
         let wait = delays[w.id] ?? delay
         if wait > 0 { Thread.sleep(forTimeInterval: wait) }
         lock.withLock { log.append((w.pid, w.id, w.frame, previous)) }
@@ -268,37 +285,72 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(writer.frames(1) == [rect(0), rect(2)])
     }
 
+    // The pid-reuse tests below hold writes with gates. Where a test checks that something does NOT happen, it
+    // waits a short time (`quiet`). A slow machine can only make such a check pass, never fail.
+    private static let quiet = 0.3
+
     @Test func aDrainOfAForgottenAppDoesNotFinishTheCallsOfANewAppWithTheSamePid() {
-        // App 10 is removed while its slow write runs. A new app gets pid 10 at once. The old drain ends first;
-        // it must not mark the new app's frame as written.
+        // App 10 is removed while its write runs. A new app gets pid 10 at once and its write is still running
+        // when the old drain ends. The old drain must not mark the new app's frame as written.
         let writer = FakeWriter()
-        writer.delays = [1: 0.25, 2: 0.5]
+        let old = writer.gate(1), new = writer.gate(2)
         let applier = FrameApplier(writer: writer)
         applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
-        Thread.sleep(forTimeInterval: 0.03)
+        #expect(old.started.wait(timeout: .now() + 2) == .success)
         applier.forgetApp(10)
         let done = DispatchSemaphore(value: 0)
+        applier.apply([FrameWrite(id: 2, pid: 10, frame: rect(0))]) { _ in done.signal() }
+        #expect(new.started.wait(timeout: .now() + 2) == .success)
+        old.release.signal() // the old drain ends while the new write runs
+        #expect(done.wait(timeout: .now() + Self.quiet) == .timedOut, "the call finished before its frame was written")
+        new.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(writer.frames(1) == [rect(0)])
+        #expect(writer.frames(2) == [rect(0)])
+    }
+
+    @Test func aDrainOfAForgottenAppDoesNotTakeTheFramesOfANewAppWithTheSamePid() {
+        // As above, but the new app has a frame waiting (W3) when the old drain ends. Only the new app's drain may
+        // write it: one writer per app, and the call of W3 finishes after W3 is written.
+        let writer = FakeWriter()
+        let old = writer.gate(1), new = writer.gate(2), third = writer.gate(3)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(old.started.wait(timeout: .now() + 2) == .success)
+        applier.forgetApp(10)
+        applier.apply([FrameWrite(id: 2, pid: 10, frame: rect(0))])
+        #expect(new.started.wait(timeout: .now() + 2) == .success)
+        let done = DispatchSemaphore(value: 0)
         let early = Box<Bool>(false)
-        applier.apply([FrameWrite(id: 2, pid: 10, frame: rect(0))]) { _ in
-            early.value = writer.frames(2).isEmpty
+        applier.apply([FrameWrite(id: 3, pid: 10, frame: rect(0))]) { _ in // waits behind W2
+            early.value = writer.frames(3).isEmpty
             done.signal()
         }
+        old.release.signal()
+        let stolen = third.started.wait(timeout: .now() + Self.quiet) == .success
+        #expect(!stolen, "the old drain wrote a frame of the new app")
+        new.release.signal()
+        if !stolen { #expect(third.started.wait(timeout: .now() + 2) == .success) }
+        third.release.signal()
         #expect(done.wait(timeout: .now() + 2) == .success)
         #expect(!early.value, "the call finished before its frame was written")
-        #expect(writer.frames(2) == [rect(0)])
+        #expect(writer.frames(3) == [rect(0)])
     }
 
     @Test func noTimingIsReportedForAnAppThatWasForgottenDuringItsBatch() {
         // removeApp forgets the app in the applier and then in the stats. A batch that was running must not add
         // the app to the stats again.
-        let writer = FakeWriter(delay: 0.05)
+        let writer = FakeWriter()
+        let first = writer.gate(1)
         let lock = NSLock()
         var timings: [FrameApplier.WriteTiming] = []
         let applier = FrameApplier(writer: writer) { t in lock.withLock { timings.append(t) } }
         applier.apply([FrameWrite(id: 1, pid: 9, frame: rect(0)), FrameWrite(id: 2, pid: 9, frame: rect(0))])
-        Thread.sleep(forTimeInterval: 0.02)
+        #expect(first.started.wait(timeout: .now() + 2) == .success)
         applier.forgetApp(9)
-        Thread.sleep(forTimeInterval: 0.2)
+        first.release.signal()
+        #expect(writer.batchEnded.wait(timeout: .now() + 2) == .success)
+        Thread.sleep(forTimeInterval: Self.quiet) // the drain records timings after the batch ends
         #expect(writer.writes.count == 2, "the batch that was running finished")
         #expect(lock.withLock { timings }.isEmpty)
         // A new app with the same pid is measured again.
