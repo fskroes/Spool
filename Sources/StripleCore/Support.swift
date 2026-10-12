@@ -154,10 +154,13 @@ public struct MinimapModel: Equatable, Sendable {
     public struct Item: Equatable, Sendable {
         public var rect: CGRect
         public var focused: Bool
+        public init(rect: CGRect, focused: Bool) { self.rect = rect; self.focused = focused }
     }
 
     public var items: [Item]
     public var viewport: CGRect
+
+    public init(items: [Item], viewport: CGRect) { self.items = items; self.viewport = viewport }
 
     public static func make(strip: Strip, display: DisplayGeometry, settings: LayoutSettings, scroll: Double? = nil) -> MinimapModel {
         let metrics = display.metrics(settings)

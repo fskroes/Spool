@@ -130,6 +130,42 @@ extension Strip {
         return .changed(focus: focusedWindow?.id)
     }
 
+    // MARK: Drag and drop
+
+    /// The gap (0...columns.count) that a point at `x` on the strip falls into: the number of columns whose
+    /// centre is left of `x`. `x` is in strip coordinates: screen x minus the work area's left edge plus the scroll.
+    public func dropGap(atStripX x: Double, metrics: StripMetrics) -> Int {
+        let p = columnPositions(metrics: metrics)
+        return p.x.indices.filter { p.x[$0] + p.width[$0] / 2 < x }.count
+    }
+
+    /// Moves a dragged window to `gap` (0...columns.count, "before column `gap`"). A window alone in its column
+    /// takes its column along, so the width stays. A window from a stack becomes a new column with the stack's width.
+    /// The moved window gets focus. Returns false when nothing changed.
+    @discardableResult
+    public mutating func moveWindow(_ id: WindowID, toGap rawGap: Int) -> Bool {
+        guard let (c, r) = locate(id) else { return false }
+        let gap = min(max(rawGap, 0), columns.count)
+        if columns[c].windows.count == 1 {
+            guard gap != c && gap != c + 1 else { return false }
+            let column = columns.remove(at: c)
+            let index = gap > c ? gap - 1 : gap
+            columns.insert(column, at: index)
+            focusedColumn = index
+            return true
+        }
+        var source = columns[c]
+        let window = source.windows.remove(at: r)
+        source.heights.remove(at: r)
+        source.activeIndex = min(source.activeIndex, source.windows.count - 1)
+        source.normalize()
+        if source.windows.count == 1 { source.isTabbed = false }
+        columns[c] = source
+        columns.insert(Column(window: window, width: source.width), at: gap)
+        focusedColumn = gap
+        return true
+    }
+
     private mutating func moveColumn(to rawTarget: Int) {
         let target = min(max(rawTarget, 0), columns.count - 1)
         guard target != focusedColumn else { return }
