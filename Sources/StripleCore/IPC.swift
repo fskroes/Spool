@@ -1,0 +1,159 @@
+import Foundation
+
+/// Files Striple uses. All paths are per user.
+public enum StriplePaths {
+    public static var supportDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Striple", isDirectory: true)
+    }
+
+    public static var configFile: URL { supportDirectory.appendingPathComponent("config.json") }
+    public static var sessionFile: URL { supportDirectory.appendingPathComponent("session.json") }
+    public static var socket: URL { supportDirectory.appendingPathComponent("striple.sock") }
+
+    public static var logDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Striple", isDirectory: true)
+    }
+
+    public static var logFile: URL { logDirectory.appendingPathComponent("engine.log") }
+}
+
+/// A request from the CLI (or another tool) to the running app. One JSON object per line.
+public struct IPCRequest: Codable, Equatable, Sendable {
+    public enum Query: String, Codable, Sendable { case ping, state, stats }
+
+    public var command: Command?
+    public var query: Query?
+
+    public init(command: Command) { self.command = command; self.query = nil }
+    public init(query: Query) { self.command = nil; self.query = query }
+}
+
+public struct IPCResponse: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var error: String?
+    public var state: EngineState?
+    public var stats: EngineStats?
+
+    public init(ok: Bool, error: String? = nil, state: EngineState? = nil, stats: EngineStats? = nil) {
+        self.ok = ok
+        self.error = error
+        self.state = state
+        self.stats = stats
+    }
+}
+
+/// Snapshot of the engine for `striple state`.
+public struct EngineState: Codable, Equatable, Sendable {
+    public struct DisplayState: Codable, Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var enabled: Bool
+        public var spaceID: UInt64
+        public var focusedColumn: Int
+        public var scroll: Double
+        public var columns: [[WindowInfo]]
+
+        public init(id: String, name: String, enabled: Bool, spaceID: UInt64, focusedColumn: Int, scroll: Double, columns: [[WindowInfo]]) {
+            self.id = id
+            self.name = name
+            self.enabled = enabled
+            self.spaceID = spaceID
+            self.focusedColumn = focusedColumn
+            self.scroll = scroll
+            self.columns = columns
+        }
+    }
+
+    public var running: Bool
+    public var accessibilityTrusted: Bool
+    public var focusedWindow: WindowInfo?
+    public var displays: [DisplayState]
+    public var floating: [WindowInfo]
+
+    public init(running: Bool, accessibilityTrusted: Bool, focusedWindow: WindowInfo?, displays: [DisplayState], floating: [WindowInfo]) {
+        self.running = running
+        self.accessibilityTrusted = accessibilityTrusted
+        self.focusedWindow = focusedWindow
+        self.displays = displays
+        self.floating = floating
+    }
+}
+
+/// Performance counters for `striple stats`. Times are in milliseconds.
+public struct EngineStats: Codable, Equatable, Sendable {
+    public var uptimeSeconds: Double
+    public var framesWritten: Int
+    public var windowWrites: Int
+    public var skippedWrites: Int
+    public var coalescedWrites: Int
+    public var axErrors: Int
+    public var frameWriteP50: Double
+    public var frameWriteP95: Double
+    public var commandLatencyP50: Double
+    public var commandLatencyP95: Double
+    public var restarts: Int
+
+    public init(uptimeSeconds: Double = 0, framesWritten: Int = 0, windowWrites: Int = 0, skippedWrites: Int = 0, coalescedWrites: Int = 0,
+                axErrors: Int = 0, frameWriteP50: Double = 0, frameWriteP95: Double = 0, commandLatencyP50: Double = 0,
+                commandLatencyP95: Double = 0, restarts: Int = 0) {
+        self.uptimeSeconds = uptimeSeconds
+        self.framesWritten = framesWritten
+        self.windowWrites = windowWrites
+        self.skippedWrites = skippedWrites
+        self.coalescedWrites = coalescedWrites
+        self.axErrors = axErrors
+        self.frameWriteP50 = frameWriteP50
+        self.frameWriteP95 = frameWriteP95
+        self.commandLatencyP50 = commandLatencyP50
+        self.commandLatencyP95 = commandLatencyP95
+        self.restarts = restarts
+    }
+}
+
+/// A fixed-size ring of samples with percentiles. Used for the timing stats.
+public struct SampleWindow: Sendable {
+    private var samples: [Double]
+    private var next = 0
+    private var filled = false
+
+    public init(capacity: Int = 512) { samples = Array(repeating: 0, count: max(capacity, 1)) }
+
+    public mutating func add(_ v: Double) {
+        samples[next] = v
+        next = (next + 1) % samples.count
+        if next == 0 { filled = true }
+    }
+
+    public var count: Int { filled ? samples.count : next }
+
+    /// Nearest-rank percentile, `p` in 0...100. 0 when there are no samples.
+    public func percentile(_ p: Double) -> Double {
+        let n = count
+        guard n > 0 else { return 0 }
+        let sorted = samples[0..<n].sorted()
+        let rank = Int((p / 100 * Double(n)).rounded(.up))
+        return sorted[min(max(rank - 1, 0), n - 1)]
+    }
+}
+
+/// Parses `striple://` URLs. Accepts `striple://focus-left`, `striple://focus-index/3`
+/// and `striple://command?name=focus-left`.
+public enum StripleURL {
+    public static let scheme = "striple"
+
+    public static func command(from url: URL) -> Command? {
+        guard url.scheme?.lowercased() == scheme else { return nil }
+        let host = url.host ?? ""
+        if host == "command" {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return items.first { $0.name == "name" }?.value.flatMap(Command.init(name:))
+        }
+        let path = url.path.split(separator: "/").joined(separator: "-")
+        return Command(name: path.isEmpty ? host : "\(host)-\(path)")
+    }
+
+    public static func url(for command: Command) -> URL {
+        URL(string: "\(scheme)://\(command.name)")!
+    }
+}
