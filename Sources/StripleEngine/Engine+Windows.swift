@@ -194,16 +194,18 @@ extension Engine {
         for e in AX.elements(AX.app(pid), kAXWindowsAttribute) {
             if let id = AX.windowID(e) { fresh[id] = e }
         }
-        var renewed = 0
-        for (id, w) in windows where w.info.pid == pid {
-            // A window that is not listed may be on another Space; keep its old element.
-            guard let e = fresh[id] else { continue }
+        let managed = windows.filter { $0.value.info.pid == pid }.mapValues(\.element)
+        let plan = Policy.healPlan(managed: managed, fresh: fresh)
+        // rewatch dropped every window notification, so all managed windows are observed again. A window that
+        // AXWindows does not list may be on another Space; it keeps its old element.
+        for (id, e) in plan.observe {
+            tracker?.observe(window: e, pid: pid)
+            guard plan.renewed.contains(id) else { continue }
             windows[id]?.element = e
             writer.register(id, element: e, pid: pid)
-            tracker?.observe(window: e, pid: pid)
             applier.forget(id)
-            renewed += 1
         }
+        let renewed = plan.renewed.count
         scanApp(pid)
         relayoutAll(animate: false)
         log.log("tracker: pid \(pid) watched again, \(renewed) window elements renewed")
@@ -446,7 +448,7 @@ extension Engine {
                 let area = d.geometry.usable
                 let frame = p.hidden ? CGRect(x: area.midX - p.frame.width / 2, y: area.midY - p.frame.height / 2,
                                               width: p.frame.width, height: p.frame.height) : p.frame
-                applier.apply([FrameWrite(id: id, pid: w.info.pid, frame: Policy.bringIntoView(frame, area: area))])
+                applyOnce(FrameWrite(id: id, pid: w.info.pid, frame: Policy.bringIntoView(frame, area: area)))
             }
             floatingBorderFrame = AX.frame(w.element)
         case .floating:
@@ -460,6 +462,19 @@ extension Engine {
         }
         updateFocusOverlays()
         scheduleSessionSave()
+    }
+
+    /// One write outside an animation. A tick settles the apps when its animation ends; after this write
+    /// nothing else would, and AXEnhancedUserInterface would stay off (VoiceOver loses web content).
+    func applyOnce(_ write: FrameWrite) {
+        applier.apply([write]) { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.ticker?.isRunning != true else { return }
+                    self.applier.settle(pids: [write.pid])
+                }
+            }
+        }
     }
 
     func sendToNextDisplay() {
@@ -495,7 +510,7 @@ extension Engine {
             guard let f = AX.frame(w.element) else { return }
             let frame = Policy.translate(f, from: from.geometry.usable, to: to.geometry.usable)
             applier.forget(id)
-            applier.apply([FrameWrite(id: id, pid: w.info.pid, frame: frame)])
+            applyOnce(FrameWrite(id: id, pid: w.info.pid, frame: frame))
             floatingBorderFrame = frame
             focusWindow(id, scroll: false, fromCommand: true)
         }

@@ -65,6 +65,8 @@ public final class FrameApplier: @unchecked Sendable {
     private let lock = NSLock()
     private var apps: [pid_t: AppState] = [:]
     private var written: [WindowID: CGRect] = [:]
+    /// Frames taken out of `pending` that the app's queue is writing now.
+    private var inFlight: [WindowID: CGRect] = [:]
     private var counters = Counters()
 
     public init(writer: FrameWriter) { self.writer = writer }
@@ -74,8 +76,24 @@ public final class FrameApplier: @unchecked Sendable {
     /// The last frame written to a window (what macOS has, as far as Striple knows).
     public func lastWritten(_ id: WindowID) -> CGRect? { lock.withLock { written[id] } }
 
+    /// True when `frame` is one that Striple wrote or will write to the window, or the window is being written
+    /// now (AX sets position and size one after the other, so a frame read meanwhile can be half of each).
+    /// A move notification with such a frame is Striple's own write arriving, not the user.
+    public func isOwnFrame(_ id: WindowID, _ frame: CGRect, tolerance: CGFloat = 2) -> Bool {
+        lock.withLock {
+            if inFlight[id] != nil { return true }
+            let pending = apps.values.lazy.compactMap { $0.pending[id]?.frame }.first
+            return [written[id], inFlight[id], pending].contains { Policy.same(frame, $0, tolerance: tolerance) }
+        }
+    }
+
     /// Forget a window, for example after it closed or the user moved it by hand.
-    public func forget(_ id: WindowID) { lock.withLock { _ = written.removeValue(forKey: id) } }
+    public func forget(_ id: WindowID) {
+        lock.withLock {
+            written.removeValue(forKey: id)
+            inFlight.removeValue(forKey: id)
+        }
+    }
 
     public func forgetApp(_ pid: pid_t) {
         let waiters = lock.withLock { apps.removeValue(forKey: pid)?.idleWaiters ?? [] }
@@ -89,10 +107,10 @@ public final class FrameApplier: @unchecked Sendable {
 
     public func clearFailures(_ pid: pid_t) { lock.withLock { apps[pid]?.failedBatches = 0 } }
 
-    /// Tells every app that the animation is over, after its last write. Returns at once.
-    public func settle(completion: (@Sendable () -> Void)? = nil) {
+    /// Tells every app (or only `pids`) that the animation is over, after its last write. Returns at once.
+    public func settle(pids: Set<pid_t>? = nil, completion: (@Sendable () -> Void)? = nil) {
         let group = DispatchGroup()
-        let queues = lock.withLock { apps.map { ($0.key, $0.value.queue) } }
+        let queues = lock.withLock { apps.filter { pids?.contains($0.key) ?? true }.map { ($0.key, $0.value.queue) } }
         for (pid, queue) in queues {
             group.enter()
             queue.async { [writer] in
@@ -105,15 +123,16 @@ public final class FrameApplier: @unchecked Sendable {
 
     /// Like `settle`, but waits. Returns false on timeout.
     @discardableResult
-    public func settleAndWait(timeout: Double) -> Bool {
+    public func settleAndWait(timeout: Double, pids: Set<pid_t>? = nil) -> Bool {
         let done = DispatchSemaphore(value: 0)
-        settle { done.signal() }
+        settle(pids: pids) { done.signal() }
         return done.wait(timeout: .now() + timeout) == .success
     }
 
     public func reset() {
         lock.withLock {
             written.removeAll()
+            inFlight.removeAll()
             for pid in apps.keys {
                 apps[pid]?.pending.removeAll()
                 apps[pid]?.pendingOrder.removeAll()
@@ -132,7 +151,14 @@ public final class FrameApplier: @unchecked Sendable {
             var touched = Set<pid_t>()
             for w in writes {
                 let pendingSame = apps[w.pid]?.pending[w.id]
-                if pendingSame == nil, written[w.id] == w.frame { counters.skipped += 1; continue }
+                // Compare with the newest frame the window will have: the one in flight, else the written one.
+                // A frame equal to an older written frame must still be written after the one in flight.
+                if pendingSame == nil, (inFlight[w.id] ?? written[w.id]) == w.frame {
+                    counters.skipped += 1
+                    // Already being written: callers that wait must wait for it to land.
+                    if inFlight[w.id] != nil { touched.insert(w.pid) }
+                    continue
+                }
                 if apps[w.pid] == nil {
                     apps[w.pid] = AppState(queue: DispatchQueue(label: "striple.ax.\(w.pid)", qos: .userInteractive))
                 }
@@ -196,6 +222,7 @@ public final class FrameApplier: @unchecked Sendable {
                     return []
                 }
                 let items = state.pendingOrder.compactMap { id in state.pending[id].map { ($0, written[id]) } }
+                for (w, _) in items { inFlight[w.id] = w.frame }
                 state.pending.removeAll(keepingCapacity: true)
                 state.pendingOrder.removeAll(keepingCapacity: true)
                 apps[pid] = state
@@ -214,6 +241,7 @@ public final class FrameApplier: @unchecked Sendable {
             writer.endBatch(pid: pid)
             lock.withLock {
                 for (id, frame, ok) in results {
+                    inFlight.removeValue(forKey: id)
                     counters.windowWrites += 1
                     if ok { written[id] = frame } else { counters.errors += 1; written.removeValue(forKey: id) }
                 }

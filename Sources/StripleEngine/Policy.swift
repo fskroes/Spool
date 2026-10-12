@@ -114,6 +114,29 @@ enum Policy {
 
     /// A left-button drag that moved more than `threshold` points. A click that does not move is not a drag,
     /// even when Striple's own animation moves the window under the mouse.
+    /// After an app is watched again: every managed window must be observed again, with the fresh element when
+    /// AXWindows lists the window and with the old one otherwise (a window on another Space is not listed).
+    static func healPlan<E>(managed: [WindowID: E], fresh: [WindowID: E]) -> (observe: [WindowID: E], renewed: Set<WindowID>) {
+        var observe = managed
+        var renewed = Set<WindowID>()
+        for id in managed.keys {
+            if let e = fresh[id] {
+                observe[id] = e
+                renewed.insert(id)
+            }
+        }
+        return (observe, renewed)
+    }
+
+    /// A tiled window that moves while the button is down is dragged by the user only when the mouse moved,
+    /// the window was under the mouse at mouse-down, its frame is not one Striple wrote or is writing, and no
+    /// other window is dragged already.
+    static func isUserDrag(window: WindowID, mouseMoved: Bool, pressedWindow: WindowID?, ownFrame: Bool,
+                           currentDrag: WindowID?) -> Bool {
+        guard mouseMoved, window == pressedWindow, !ownFrame else { return false }
+        return currentDrag == nil || currentDrag == window
+    }
+
     static func isDrag(from down: CGPoint?, to now: CGPoint, threshold: CGFloat = 4) -> Bool {
         guard let down else { return false }
         return hypot(now.x - down.x, now.y - down.y) > threshold

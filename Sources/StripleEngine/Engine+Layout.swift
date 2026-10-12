@@ -136,11 +136,13 @@ extension Engine {
                 return
             }
             if NSEvent.pressedMouseButtons & 1 != 0, swipe == nil {
-                // Only a real drag counts. After a click that starts Striple's own animation the button is down
-                // too, and the window moves under the mouse; taking that for a drag would reorder the strip.
-                guard mouseDragging else { return }
-                guard let f = AX.frame(element), !Policy.same(f, applier.lastWritten(id)) else { return }
-                if drag?.id != id { drag = DragState(id: id, resize: false) }
+                // Only a real drag of the pressed window counts. While Striple animates, every window moves and
+                // the button can be down for a click or a text selection; taking that for a drag would reorder
+                // the strip.
+                guard let f = AX.frame(element),
+                      Policy.isUserDrag(window: id, mouseMoved: mouseDragging, pressedWindow: mouseDownWindow,
+                                        ownFrame: applier.isOwnFrame(id, f), currentDrag: drag?.id) else { return }
+                if drag == nil { drag = DragState(id: id, resize: false) }
                 if let last = applier.lastWritten(id), abs(f.width - last.width) > 2 || abs(f.height - last.height) > 2 {
                     drag?.resize = true
                 }
@@ -248,14 +250,17 @@ extension Engine {
                     self?.mouseUp()
                     self?.mouseDownAt = nil
                     self?.mouseDragging = false
+                    self?.mouseDownWindow = nil
                 }
             }
         }
         if mouseDownMonitor == nil {
             mouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.mouseDownAt = NSEvent.mouseLocation
-                    self?.mouseDragging = false
+                    guard let self else { return }
+                    self.mouseDownAt = NSEvent.mouseLocation
+                    self.mouseDragging = false
+                    self.mouseDownWindow = self.topWindow(at: self.mouseLocation())
                 }
             }
         }

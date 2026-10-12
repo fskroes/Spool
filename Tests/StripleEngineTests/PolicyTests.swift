@@ -141,6 +141,26 @@ import Testing
         #expect(Policy.isDrag(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 15, y: 10)))
     }
 
+    // Round 2 finding N2: a mouse drag anywhere while the strip animates took over animating windows.
+    // Round 2 finding N3: windows of a healed app on other Spaces lost their notifications.
+    @Test func healingObservesEveryManagedWindow() {
+        let plan = Policy.healPlan(managed: [1: "old1", 2: "old2", 3: "old3"], fresh: [1: "new1", 3: "new3", 9: "unmanaged"])
+        #expect(plan.observe == [1: "new1", 2: "old2", 3: "new3"])
+        #expect(plan.renewed == [1, 3])
+    }
+
+    @Test func onlyThePressedWindowCanBeDragged() {
+        #expect(Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        #expect(Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: 7))
+        // Another window that moves because Striple animates the strip.
+        #expect(!Policy.isUserDrag(window: 8, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        // The pressed window, but at a frame Striple wrote: selecting text while it animates.
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: true, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: false, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: nil, ownFrame: false, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: 9))
+    }
+
     @Test func spaceOfARemovedDisplay() {
         let known: [String: Set<UInt64>] = ["A": [1, 2], "B": [5]]
         #expect(Policy.spaceExists(2, onDisplay: "A", known: known))

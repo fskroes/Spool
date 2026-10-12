@@ -136,6 +136,51 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(applier.lastWritten(1) == rect(500))
     }
 
+    @Test func goingBackToTheOldFrameWhileAWriteIsInFlightIsWritten() {
+        // focus-right then focus-left with animation off: the second target equals the frame written before.
+        let writer = FakeWriter(delay: 0.05)
+        let applier = FrameApplier(writer: writer)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500))])
+        Thread.sleep(forTimeInterval: 0.01) // rect(500) is being written now
+        #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))], timeout: 2) != nil)
+        #expect(writer.frames(1) == [rect(0), rect(500), rect(0)])
+        #expect(applier.lastWritten(1) == rect(0))
+    }
+
+    @Test func aFrameEqualToTheOneInFlightIsSkippedButWaitedFor() {
+        let writer = FakeWriter(delay: 0.05)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500))])
+        Thread.sleep(forTimeInterval: 0.01)
+        #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(500))], timeout: 2) != nil)
+        #expect(writer.frames(1) == [rect(500)])
+        #expect(applier.lastWritten(1) == rect(500))
+    }
+
+    @Test func ownFramesIncludeWrittenInFlightAndPending() {
+        let writer = FakeWriter(delay: 0.05)
+        let applier = FrameApplier(writer: writer)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500))])
+        Thread.sleep(forTimeInterval: 0.01)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(900))]) // pending behind the write in flight
+        #expect(applier.isOwnFrame(1, rect(300)), "a half-written frame while the write runs")
+        #expect(!applier.isOwnFrame(2, rect(0)))
+        _ = applier.settleAndWait(timeout: 2)
+        #expect(applier.isOwnFrame(1, rect(901)))
+        #expect(!applier.isOwnFrame(1, rect(500)))
+        #expect(!applier.isOwnFrame(1, rect(300)))
+    }
+
+    @Test func settleCanBeLimitedToSomeApps() {
+        let writer = FakeWriter()
+        let applier = FrameApplier(writer: writer)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0)), FrameWrite(id: 2, pid: 20, frame: rect(0))])
+        #expect(applier.settleAndWait(timeout: 2, pids: [20]))
+        #expect(writer.settledApps == [20])
+    }
+
     @Test func waitGivesUpOnAnAppThatDoesNotAnswer() {
         let writer = FakeWriter(delay: 0.5)
         let applier = FrameApplier(writer: writer)

@@ -109,6 +109,8 @@ public final class Engine: ObservableObject {
     /// Where the left button went down, and whether the mouse has moved far enough since to be a drag.
     var mouseDownAt: CGPoint?
     var mouseDragging = false
+    /// The window under the cursor at the last left mouse-down. Only this window can be dragged.
+    var mouseDownWindow: WindowID?
     /// Saved strips of Spaces that are not on screen, and saved floating windows not found yet.
     /// Restored when they appear; included in every save so they are not lost.
     var laterStrips: [SessionStrip] = []
@@ -269,6 +271,7 @@ public final class Engine: ObservableObject {
         suppressScrollFor = nil
         mouseDownAt = nil
         mouseDragging = false
+        mouseDownWindow = nil
         laterStrips.removeAll()
         laterFloating.removeAll()
         healedAt.removeAll()
