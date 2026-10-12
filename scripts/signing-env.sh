@@ -9,9 +9,17 @@ STRIPLE_LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 # Runs one `security` command that has a secret in it. The command goes to `security -i` on stdin,
 # so the secret is not in the argument list of any process (ps, process accounting, EDR).
-# Values with spaces must be in double quotes; a value must not contain a double quote.
-# The status is the status of the command.
+# Put every value through striple_security_quote. The status is the status of the command.
 striple_security_secret() { printf '%s\n' "$1" | security -i; }
+
+# One argument for a `security -i` line: in double quotes, with \ and " escaped. `security -i` treats a
+# backslash as an escape also inside quotes, so "a\b" would arrive as "ab".
+striple_security_quote() {
+    local v=$1
+    v=${v//\\/\\\\}
+    v=${v//\"/\\\"}
+    printf '"%s"' "$v"
+}
 
 # The user keychain search list, one path per line, without quotes.
 striple_signing_search_list() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
@@ -54,8 +62,8 @@ striple_signing_identity() {
     [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]] || return 1
     local pass
     pass=$(security find-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" -w 2>/dev/null) || return 1
-    [[ "$STRIPLE_SIGNING_KEYCHAIN" != *'"'* && "$pass" =~ ^[0-9a-f]+$ ]] || return 1
-    striple_security_secret "unlock-keychain -p $pass \"$STRIPLE_SIGNING_KEYCHAIN\"" >/dev/null 2>&1 || return 1
+    [[ "$pass" =~ ^[0-9a-f]+$ ]] || return 1
+    striple_security_secret "unlock-keychain -p $pass $(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN")" >/dev/null 2>&1 || return 1
     striple_signing_add_to_search_list || return 1
     # Not "-v": the certificate is self-signed and not trusted, which codesign does not need.
     security find-identity -p codesigning "$STRIPLE_SIGNING_KEYCHAIN" 2>/dev/null \

@@ -15,6 +15,7 @@ import Testing
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = ["-c", "set -u; source \"$0\"; \"$@\"", lib.path, function] + args
+        p.currentDirectoryURL = root
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -229,6 +230,112 @@ import Testing
         #expect(hit.output.hasSuffix("Striple.app/Contents/MacOS/Striple"))
         #expect(try Self.call("striple_private_strings", dir.path, "nobody", "").status == 0)
         #expect(try Self.call("striple_private_strings", dir.path, "", "").status == 0)
+    }
+
+    // A failed check must never read as "clean": the release would publish without the check.
+    @Test func privateStringsFailClosedWhenAFileCannotBeRead() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-private-\(UUID().uuidString)")
+        let locked = dir.appendingPathComponent("locked")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("clean".utf8).write(to: dir.appendingPathComponent("README"))
+        try Data("/Users/someone".utf8).write(to: locked)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        let r = try Self.call("striple_private_strings", dir.path, "/Users/someone")
+        #expect(r.status == 2)
+        #expect(r.error.contains("Permission denied"), "grep must tell why: \(r.error)")
+        let missing = try Self.call("striple_private_strings", dir.appendingPathComponent("nope").path, "x")
+        #expect(missing.status == 2)
+        #expect(missing.error.contains("no such folder"))
+    }
+
+    @Test func finishNeedsTheCommitTheReleaseWasBuiltFrom() throws {
+        let head = try Self.git("rev-parse", "HEAD")
+        let dir = try Self.temp("commit.txt", head + "\n").deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(try Self.call("striple_release_commit_check", dir.path).status == 0)
+
+        let other = String(repeating: "0", count: 40)
+        try Data((other + "\n").utf8).write(to: dir.appendingPathComponent("commit.txt"))
+        let wrong = try Self.call("striple_release_commit_check", dir.path)
+        #expect(wrong.status == 1)
+        #expect(wrong.error.contains("built from commit \(other), HEAD is \(head)"))
+
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("commit.txt"))
+        let none = try Self.call("striple_release_commit_check", dir.path)
+        #expect(none.status == 1)
+        #expect(none.error.contains("commit.txt is missing"))
+    }
+
+    // release.sh mounts Striple.dmg at $TMP/dmg. A failure while it is mounted must not leave it mounted,
+    // and rm -rf must not run into the mounted volume.
+    @Test func cleanupDetachesAMountedDMGAndDeletesTheFolder() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-cleanup-\(UUID().uuidString)")
+        let mountPoint = dir.appendingPathComponent("dmg")
+        defer {
+            _ = try? Self.run("/usr/bin/hdiutil", "detach", "-force", mountPoint.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let image = dir.appendingPathComponent("t.dmg")
+        #expect(try Self.run("/usr/bin/hdiutil", "create", "-quiet", "-size", "1m", "-fs", "HFS+",
+                             "-volname", "StripleCleanupTest", image.path) == 0)
+        #expect(try Self.run("/usr/bin/hdiutil", "attach", "-quiet", "-readonly", "-nobrowse", "-noautoopen",
+                             "-mountpoint", mountPoint.path, image.path) == 0)
+        #expect(try Self.mounted(mountPoint))
+
+        let r = try Self.call("striple_release_cleanup", dir.path)
+        #expect(r.status == 0, "\(r.error)")
+        #expect(try !Self.mounted(mountPoint))
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+
+        // No DMG: the folder is deleted. An empty or missing path does nothing.
+        let plain = try Self.temp("x", "x").deletingLastPathComponent()
+        #expect(try Self.call("striple_release_cleanup", plain.path).status == 0)
+        #expect(!FileManager.default.fileExists(atPath: plain.path))
+        #expect(try Self.call("striple_release_cleanup", "").status == 0)
+    }
+
+    static func run(_ tool: String, _ args: String...) throws -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    static func git(_ args: String...) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = args
+        p.currentDirectoryURL = root
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func mounted(_ mountPoint: URL) throws -> Bool {
+        // Not resolvingSymlinksInPath: it drops "/private", and mount lists /private/var/...
+        guard let c = realpath(mountPoint.path, nil) else { return false }
+        defer { free(c) }
+        let real = String(cString: c)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/mount")
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).contains(" on \(real) (")
     }
 
     @Test func downloadPrefixIsPerTag() throws {

@@ -84,18 +84,20 @@ Releases need both keys. With another code signing identity, the designated requ
 | The app is universal, has the feed URL and the key, and is signed with the local identity | No broken build goes out. |
 | The appcast has one item with the right version, build, URL, length and an EdDSA signature | The feed matches the archive. |
 | The archive unpacks to an app with a valid signature and the same designated requirement | This is what an update installs. |
-| No file in the zip or the DMG contains your home path, user name or Git email | The files are public. `build-app.sh` removes the debug map (`strip -S`), which had the build paths. |
+| No file in the zip or the DMG contains your home path, user name or Git email | The files are public. `build-app.sh` removes the debug map (`strip -S`), which had the build paths. If the check itself fails (for example a file it cannot read), the release stops too. |
 
 Then it uploads the files to a **draft** release, publishes it, downloads the feed and the archive again and compares them byte for byte, and tags the commit `v<version>` (local tag only).
 
-The files stay in `dist/release/<version>/`.
+The files stay in `dist/release/<version>/`. `commit.txt` there names the commit of the build. It is not uploaded.
+
+If the script stops while the DMG is open, its exit handler detaches the DMG before it deletes its temporary folder.
 
 ## If something goes wrong
 
 | Problem | Fix |
 |---|---|
 | "the release vX exists" after a failed run | The draft is still there. `gh release delete vX --repo fskroes/striple-releases --yes`, then run again. |
-| "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
+| "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
 | "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
 | "the local signing identity is …, but Packaging/updates.env pins …" | Restore the pinned identity: `./scripts/make-signing-cert.sh --remove --yes`, then `--import <backup file>`. |
 | "the Sparkle key … does not match" | Import the backup with `generate_keys --account com.fskroes.Striple -f <file>`. |

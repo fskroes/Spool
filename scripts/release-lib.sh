@@ -108,15 +108,46 @@ striple_dr_is_local() {
 }
 
 # Prints each file under DIR that contains one of the other arguments as bytes (for example $HOME
-# and $USER). Empty arguments are ignored. Status 0 when no file has one.
+# and $USER). Empty arguments are ignored. Status 0: no file has one. Status 1: a file has one.
+# Status 2: the check failed (for example a file that cannot be read); grep tells why on stderr.
 striple_private_strings() {
-    local dir=$1 needle found=1
+    local dir=$1 needle status=0
     shift
     local -a args=()
     for needle in "$@"; do [[ -n "$needle" ]] && args+=(-e "$needle"); done
     [[ ${#args[@]} -gt 0 ]] || return 0
-    LC_ALL=C grep -rlF "${args[@]}" "$dir" 2>/dev/null && found=0
-    return $(( 1 - found ))
+    [[ -d "$dir" ]] || { echo "striple_private_strings: no such folder: $dir" >&2; return 2; }
+    LC_ALL=C grep -rlF "${args[@]}" "$dir" || status=$?
+    case $status in
+        0) return 1 ;;
+        1) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Status 0 when the files in DIR were built from the commit HEAD. The release writes
+# DIR/commit.txt; the build number alone does not identify a commit (two branches can have the same count).
+striple_release_commit_check() {
+    local dir=$1 built head
+    [[ -f "$dir/commit.txt" ]] || { echo "$dir/commit.txt is missing" >&2; return 1; }
+    built=$(<"$dir/commit.txt")
+    head=$(git rev-parse HEAD) || return 1
+    [[ "$built" == "$head" ]] || { echo "$dir was built from commit $built, HEAD is $head. Check out $built first." >&2; return 1; }
+}
+
+# The EXIT trap of release.sh: detach the DMG if it is still mounted at DIR/dmg, then delete DIR.
+# If the DMG does not detach, DIR is kept: rm -rf must not run into a mounted volume.
+striple_release_cleanup() {
+    local dir=$1 real
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    real=$(cd "$dir" && pwd -P)
+    if mount | grep -qF " on $real/dmg ("; then
+        hdiutil detach -force "$dir/dmg" -quiet || {
+            echo "cannot detach $dir/dmg. Detach it, then delete $dir" >&2
+            return 1
+        }
+    fi
+    rm -rf "$dir"
 }
 
 # Prints the url attribute of the enclosure of the item with the highest build number.

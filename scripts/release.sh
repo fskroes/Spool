@@ -95,7 +95,7 @@ Releases must keep one identity, else every installed copy loses its Accessibili
 Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/striple-release.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+trap 'striple_release_cleanup "$TMP"' EXIT
 OUT="$ROOT/dist/release/$VERSION"
 ZIP_NAME="Striple-$VERSION.zip"
 PREFIX=$(striple_download_prefix "$REPO" "$VERSION")
@@ -121,11 +121,12 @@ then run: scripts/release.sh --finish"
 }
 
 if [[ $FINISH -eq 1 ]]; then
-    for f in "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt; do
+    for f in "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt commit.txt; do
         [[ -f "$OUT/$f" ]] || die "$OUT/$f is missing. --finish needs the files of the run that published $TAG."
     done
     (cd "$OUT" && shasum -a 256 -c SHA256SUMS.txt >/dev/null) || die "the files in $OUT do not match SHA256SUMS.txt"
-    # The build number is the commit count: the tag must go on the commit the release was built from.
+    # The tag must go on the commit the release was built from.
+    striple_release_commit_check "$OUT" || die "--finish must run on the commit of the release."
     read -r _ RUN_BUILD < <(striple_appcast_latest "$OUT/appcast.xml") || die "$OUT/appcast.xml has no release item"
     [[ "$RUN_BUILD" == "$BUILD" ]] || die "$OUT was built at build $RUN_BUILD, HEAD is build $BUILD. Check out that commit first."
     [[ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" == false ]] \
@@ -223,19 +224,27 @@ striple_dr_is_local "$(codesign -d -r - "$TMP/unpacked/Striple.app" 2>&1)" "$BUN
 # The files are public: nothing may name this Mac's user.
 log "Checking the zip and the DMG for your home path, user name and Git email"
 PRIVATE=("$HOME" "$USER" "$(git config user.email || true)")
-LEAKS=$(striple_private_strings "$TMP/unpacked" "${PRIVATE[@]}") \
-    || die "files in $ZIP_NAME contain your home path, user name or Git email:
-$LEAKS"
+# Status 1 is a leak; any other failure must also stop the release, never pass as "clean".
+check_private() {
+    local leaks status=0
+    leaks=$(striple_private_strings "$1" "${PRIVATE[@]}") || status=$?
+    case $status in
+        0) ;;
+        1) die "files in $2 contain your home path, user name or Git email:
+$leaks" ;;
+        *) die "cannot check $2 for your home path, user name or Git email (see the error above)" ;;
+    esac
+}
+check_private "$TMP/unpacked" "$ZIP_NAME"
 hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$TMP/dmg" "$OUT/Striple.dmg" >/dev/null \
     || die "cannot open Striple.dmg"
-LEAKS=$(striple_private_strings "$TMP/dmg" "${PRIVATE[@]}") || {
-    hdiutil detach "$TMP/dmg" -quiet || true
-    die "files in Striple.dmg contain your home path, user name or Git email:
-$LEAKS"
-}
-[[ -d "$TMP/dmg/Striple.app" ]] || { hdiutil detach "$TMP/dmg" -quiet || true; die "Striple.dmg has no Striple.app"; }
+# A die from here on leaves the DMG mounted; the EXIT trap detaches it.
+check_private "$TMP/dmg" Striple.dmg
+[[ -d "$TMP/dmg/Striple.app" ]] || die "Striple.dmg has no Striple.app"
 hdiutil detach "$TMP/dmg" -quiet
 (cd "$OUT" && shasum -a 256 "$ZIP_NAME" Striple.dmg appcast.xml > SHA256SUMS.txt)
+# Not uploaded. --finish uses it to put the tag on this commit.
+git rev-parse HEAD > "$OUT/commit.txt"
 log "Files in $OUT:"
 (cd "$OUT" && ls -l "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt notes.md | awk '{ printf "    %10s  %s\n", $5, $9 }')
 

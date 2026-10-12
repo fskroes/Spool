@@ -118,16 +118,17 @@ Make a self-signed code signing certificate one time. Then each build has the sa
 
 The script:
 
-1. Makes an RSA key and a certificate with the "Code Signing" extended key usage (`/usr/bin/openssl`, valid 10 years).
-2. Makes a separate keychain, `~/Library/Keychains/striple-signing.keychain-db`, with a random password. The keychain does not lock itself.
-3. Puts that password in your login keychain as the item "Striple Local Signing keychain". Only `/usr/bin/security` can read it without a prompt.
-4. Imports the identity into the new keychain. Only `codesign` can use the key, and `set-key-partition-list` stops the "allow access" prompt.
-5. Adds the new keychain to your keychain search list. `codesign` finds identities only in keychains on that list.
-6. Signs a test file and checks that its designated requirement names the certificate hash.
-7. Writes the backup `~/Striple-signing-identity.p12` (`STRIPLE_SIGNING_BACKUP` sets another path). The file is encrypted with a random passphrase that the script prints one time.
-8. Deletes the key files from `.build/signing-cert`.
+1. Checks that it can write the backup file. If it cannot, it stops before it changes anything.
+2. Makes an RSA key and a certificate with the "Code Signing" extended key usage (`/usr/bin/openssl`, valid 10 years).
+3. Writes the backup `~/Striple-signing-identity.p12` (`STRIPLE_SIGNING_BACKUP` sets another path). The file is encrypted with a random passphrase that the script prints one time. The backup comes first, so a failure in a later step does not lose the key.
+4. Makes a separate keychain, `~/Library/Keychains/striple-signing.keychain-db`, with a random password. The keychain does not lock itself.
+5. Puts that password in your login keychain as the item "Striple Local Signing keychain". Only `/usr/bin/security` can read it without a prompt.
+6. Imports the identity into the new keychain. Only `codesign` can use the key, and `set-key-partition-list` stops the "allow access" prompt.
+7. Adds the new keychain to your keychain search list. `codesign` finds identities only in keychains on that list.
+8. Signs a test file and checks that its designated requirement names the certificate hash, and that this hash is the one in the backup.
+9. Deletes the key files from `.build/signing-cert`.
 
-The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see.
+The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see. A passphrase can contain any character, also `"` and `\`: the script escapes them for `security -i`.
 
 **Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete the file. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
 

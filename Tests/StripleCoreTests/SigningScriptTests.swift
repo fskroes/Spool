@@ -20,7 +20,7 @@ import Testing
 
     struct Result { var output: String; var status: Int32; var calls: [String] }
 
-    static func run(_ k: Keychain, _ args: [String]) throws -> Result {
+    static func run(_ k: Keychain, _ args: [String], env extra: [String: String] = [:]) throws -> Result {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-sign-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -62,6 +62,7 @@ import Testing
         env["PATH"] = dir.path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
         env["STRIPLE_SIGNING_KEYCHAIN"] = keychain.path
         env["HOME"] = "/Users/x"
+        env.merge(extra) { $1 }
         p.environment = env
         let out = Pipe()
         p.standardOutput = out
@@ -105,8 +106,8 @@ import Testing
     @Test func aDryRunChangesNothing() throws {
         let r = try Self.run(Keychain(file: false, password: false, identity: false), ["--dry-run"])
         #expect(r.status == 0)
-        #expect(r.output.contains("[dry-run] 2. security create-keychain"))
-        #expect(r.output.contains("[dry-run] 8. write the backup"))
+        #expect(r.output.contains("[dry-run] 2. write the backup"))
+        #expect(r.output.contains("[dry-run] 3. security create-keychain"))
         #expect(r.calls.isEmpty)
     }
 
@@ -155,5 +156,49 @@ import Testing
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password -s Striple Local Signing keychain") })
         let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
         #expect(set == "list-keychains -d user -s /Users/x/Library/Keychains/login.keychain-db")
+    }
+
+    // A backup that cannot be written must stop the script before the keychains change.
+    @Test func aBackupFolderThatDoesNotExistStopsBeforeAnyChange() throws {
+        let r = try Self.run(Keychain(file: false, password: false, identity: false), [],
+                             env: ["STRIPLE_SIGNING_BACKUP": "/nonexistent-\(UUID().uuidString)/identity.p12"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("cannot write the backup to /nonexistent-"))
+        #expect(r.calls.isEmpty, "\(r.calls)")
+    }
+
+    // The fake `security` refuses create-keychain, so the run fails at the first keychain step. The key must
+    // already be in the backup, with its passphrase printed.
+    @Test func theBackupIsWrittenBeforeTheKeychainIsMade() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-backup-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let backup = dir.appendingPathComponent("identity.p12")
+        let r = try Self.run(Keychain(file: false, password: false, identity: false), [],
+                             env: ["STRIPLE_SIGNING_BACKUP": backup.path])
+        #expect(r.status != 0)
+        #expect(r.calls.first?.hasPrefix("stdin: create-keychain -p ") == true, "\(r.calls)")
+        #expect(FileManager.default.fileExists(atPath: backup.path))
+        let mode = try FileManager.default.attributesOfItem(atPath: backup.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        #expect(r.output.range(of: #"Passphrase: [0-9a-f]{32}\n"#, options: .regularExpression) != nil, "\(r.output)")
+        #expect(r.output.range(of: #"SHA-1: +[0-9A-F]{40}\n"#, options: .regularExpression) != nil)
+    }
+
+    // `security -i` reads a backslash as an escape, also inside double quotes.
+    @Test func securityQuoteEscapesBackslashesAndQuotes() throws {
+        let env = Self.script.deletingLastPathComponent().appendingPathComponent("signing-env.sh").path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", #"source "$0"; for v in plain 'a b' 'x\y' 'q"t' 'e\"' ''; do striple_security_quote "$v"; echo; done"#, env]
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        #expect(p.terminationStatus == 0)
+        #expect(String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false).dropLast() == [
+            #""plain""#, #""a b""#, #""x\\y""#, #""q\"t""#, #""e\\\"""#, #""""#,
+        ])
     }
 }

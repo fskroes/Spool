@@ -54,8 +54,6 @@ done
 for tool in "$OPENSSL" security codesign; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
-[[ "$STRIPLE_SIGNING_KEYCHAIN" != *'"'* && "$STRIPLE_SIGNING_PASSWORD_ITEM" != *'"'* ]] \
-    || die "the keychain path and the item name must not contain a double quote"
 
 if [[ $MODE == dry ]]; then
     if [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]]; then
@@ -65,13 +63,13 @@ if [[ $MODE == dry ]]; then
     fi
     cat <<STEPS
 [dry-run] 1. openssl: make an RSA 2048 key and a certificate "CN=$STRIPLE_SIGNING_NAME" with the codeSigning usage ($DAYS days)
-[dry-run] 2. security create-keychain $STRIPLE_SIGNING_KEYCHAIN with a random password (no auto-lock)
-[dry-run] 3. security add-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a $USER (the password, in the login keychain)
-[dry-run] 4. security import the identity into the new keychain, usable by /usr/bin/codesign only
-[dry-run] 5. security set-key-partition-list (so codesign signs with no prompt)
-[dry-run] 6. security list-keychains -d user -s <current list> $STRIPLE_SIGNING_KEYCHAIN
-[dry-run] 7. sign a test file and check that its designated requirement names the certificate hash
-[dry-run] 8. write the backup $BACKUP (PKCS#12, encrypted with a random passphrase that is printed once)
+[dry-run] 2. write the backup $BACKUP (PKCS#12, encrypted with a random passphrase that is printed once)
+[dry-run] 3. security create-keychain $STRIPLE_SIGNING_KEYCHAIN with a random password (no auto-lock)
+[dry-run] 4. security add-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a $USER (the password, in the login keychain)
+[dry-run] 5. security import the identity into the new keychain, usable by /usr/bin/codesign only
+[dry-run] 6. security set-key-partition-list (so codesign signs with no prompt)
+[dry-run] 7. security list-keychains -d user -s <current list> $STRIPLE_SIGNING_KEYCHAIN
+[dry-run] 8. sign a test file and check that its designated requirement names the certificate hash
 STEPS
     exit 0
 fi
@@ -110,6 +108,10 @@ fi
 if [[ $MODE == make && -e "$BACKUP" ]]; then
     die "$BACKUP exists. Move it away, or restore it: scripts/make-signing-cert.sh --import $BACKUP"
 fi
+if [[ $MODE == make ]]; then
+    [[ -d "$(dirname "$BACKUP")" && -w "$(dirname "$BACKUP")" ]] \
+        || die "cannot write the backup to $(dirname "$BACKUP"). Set STRIPLE_SIGNING_BACKUP to a file in a folder you can write."
+fi
 
 # The private key is written here for a moment. Delete it on every exit path.
 case "$WORK" in */.build/signing-cert) ;; *) die "unexpected work directory: $WORK" ;; esac
@@ -128,7 +130,6 @@ if [[ $MODE == import ]]; then
         printf '\n' > /dev/tty
     fi
     export STRIPLE_SIGNING_P12_PASSWORD
-    [[ "$STRIPLE_SIGNING_P12_PASSWORD" != *'"'* ]] || die "the passphrase must not contain a double quote"
     "$OPENSSL" pkcs12 -in "$IMPORT" -passin env:STRIPLE_SIGNING_P12_PASSWORD -nokeys -out "$WORK/cert.pem" 2>/dev/null \
         || die "cannot read $IMPORT: wrong passphrase, or not a PKCS#12 file"
     SUBJECT=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -subject)
@@ -160,19 +161,33 @@ CNF
     "$OPENSSL" pkcs12 -export -name "$STRIPLE_SIGNING_NAME" -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
         -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
         -passout env:STRIPLE_SIGNING_P12_PASSWORD -out "$WORK/identity.p12"
+    # The backup comes before any keychain change: if a later step fails, the key is not lost.
+    NEW_HASH=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g')
+    (umask 077 && cp "$WORK/identity.p12" "$BACKUP") || die "cannot write the backup $BACKUP"
+    cat <<BACKUP_NOTE
+
+Back up the identity now. Without the backup, a new Mac or a lost keychain means a new identity,
+and every installed Striple asks for the Accessibility permission again after the next update.
+  File:       $BACKUP
+  Passphrase: $STRIPLE_SIGNING_P12_PASSWORD
+  SHA-1:      $NEW_HASH
+Put the file and the passphrase in your password manager, then delete the file: rm "$BACKUP"
+Restore it with: scripts/make-signing-cert.sh --import <file>
+
+BACKUP_NOTE
 fi
 P12_PASS=$STRIPLE_SIGNING_P12_PASSWORD
 
 say "Making the keychain $STRIPLE_SIGNING_KEYCHAIN"
 KC_PASS=$("$OPENSSL" rand -hex 24)
-KC="\"$STRIPLE_SIGNING_KEYCHAIN\""
+KC=$(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN")
 striple_security_secret "create-keychain -p $KC_PASS $KC"
 security set-keychain-settings "$STRIPLE_SIGNING_KEYCHAIN"
 striple_security_secret "unlock-keychain -p $KC_PASS $KC"
-striple_security_secret "add-generic-password -U -s \"$STRIPLE_SIGNING_PASSWORD_ITEM\" -a \"$USER\" -w $KC_PASS -T /usr/bin/security -j \"Unlocks $STRIPLE_SIGNING_KEYCHAIN for Striple builds\""
+striple_security_secret "add-generic-password -U -s $(striple_security_quote "$STRIPLE_SIGNING_PASSWORD_ITEM") -a $(striple_security_quote "$USER") -w $KC_PASS -T /usr/bin/security -j $(striple_security_quote "Unlocks $STRIPLE_SIGNING_KEYCHAIN for Striple builds")"
 
 say "Adding the identity (codesign only)"
-striple_security_secret "import \"$WORK/identity.p12\" -k $KC -f pkcs12 -P \"$P12_PASS\" -T /usr/bin/codesign" >/dev/null
+striple_security_secret "import $(striple_security_quote "$WORK/identity.p12") -k $KC -f pkcs12 -P $(striple_security_quote "$P12_PASS") -T /usr/bin/codesign" >/dev/null
 striple_security_secret "set-key-partition-list -S apple-tool:,apple:,codesign: -s -k $KC_PASS $KC" >/dev/null
 striple_signing_add_to_search_list
 
@@ -184,18 +199,8 @@ codesign --force --sign "$HASH" --identifier com.fskroes.Striple.probe "$WORK/pr
     || die "the designated requirement does not name the certificate"
 say "The identity \"$STRIPLE_SIGNING_NAME\" ($HASH) signs with no prompt."
 
-if [[ $MODE == make ]]; then
-    (umask 077 && cp "$WORK/identity.p12" "$BACKUP")
-    cat <<BACKUP_NOTE
-
-Back up the identity now. Without the backup, a new Mac or a lost keychain means a new identity,
-and every installed Striple asks for the Accessibility permission again after the next update.
-  File:       $BACKUP
-  Passphrase: $P12_PASS
-  SHA-1:      $HASH
-Put the file and the passphrase in your password manager, then delete the file: rm "$BACKUP"
-Restore it with: scripts/make-signing-cert.sh --import <file>
-BACKUP_NOTE
+if [[ $MODE == make && "$HASH" != "$NEW_HASH" ]]; then
+    die "the keychain identity ($HASH) is not the certificate in the backup ($NEW_HASH)"
 fi
 
 cat <<NEXT
