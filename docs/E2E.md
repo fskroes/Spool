@@ -105,7 +105,7 @@ The test runs on your work Mac, next to your own windows. These rules keep it aw
    proves too little. Menu bar items and other high layers change on their own, so they are not compared.
 3. **Your settings are not touched.** Striple starts with `STRIPLE_HOME` set to a new `/tmp/striple-e2e-XXXXXX`
    folder with a `config.json` (`onboardingDone: true`, other values default). The socket, config, session and logs
-   are in that folder. The login item is not registered or changed. The folder is deleted at the end.
+   are in that folder. The login item is not registered or changed, and Sparkle does not check for updates. The folder is deleted at the end.
 4. **Always clean up.** At the end, on a failure and on Ctrl-C, the runner quits the test app, sends SIGTERM to
    Striple (SIGKILL after 5 seconds), copies the engine log and deletes `STRIPLE_HOME`.
 
@@ -117,7 +117,7 @@ Do not use these for normal work.
 
 | Variable | Effect |
 |---|---|
-| `STRIPLE_HOME` | When set and not empty, the support files (config, session, socket, lock) are in this folder and the logs in `$STRIPLE_HOME/Logs`. Striple does not read or change the login item. `StriplePaths.resolve(environment:home:)` decides. |
+| `STRIPLE_HOME` | When set and not empty, the support files (config, session, socket, lock) are in this folder and the logs in `$STRIPLE_HOME/Logs`. Striple does not read or change the login item, and does not start Sparkle (`Updater.isEnabled`). `StriplePaths.resolve(environment:home:)` decides. |
 | `STRIPLE_MANAGE_ONLY` | A comma-separated list of bundle IDs. Striple manages only windows of these apps. Set but empty: Striple manages no app (a test seam fails closed). `Policy.manageOnlyBundleIDs(environment:)` and `Policy.isAllowed(bundleID:manageOnly:)` decide. |
 | `STRIPLE_SOCKET` | Used by the `striple` command, not the app. The runner sets it to `$STRIPLE_HOME/striple.sock`. See [CLI.md](CLI.md#socket). |
 

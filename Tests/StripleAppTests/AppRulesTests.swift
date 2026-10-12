@@ -148,3 +148,12 @@ import StripleCore
         #expect(!LoginItem.isAvailable(bundleID: nil, isolated: false))
     }
 }
+
+/// A test run must not check for updates: an update window would take the focus from the test windows.
+@Suite struct UpdaterIsolationTests {
+    @Test func noUpdaterInATestRun() {
+        #expect(Updater.isEnabled(hasFeed: true, isolated: false))
+        #expect(!Updater.isEnabled(hasFeed: true, isolated: true))
+        #expect(!Updater.isEnabled(hasFeed: false, isolated: false))
+    }
+}
