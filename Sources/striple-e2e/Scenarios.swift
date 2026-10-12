@@ -27,6 +27,9 @@ final class Scenarios {
 
     func ids(_ d: EngineState.DisplayState) -> [UInt32] { d.columns.compactMap { $0.first?.id } }
 
+    /// The window of the focused column, or nil when the state has no such column. Never traps.
+    func focusedID(_ d: EngineState.DisplayState) -> UInt32? { ids(d)[safe: d.focusedColumn] }
+
     func title(_ id: UInt32, _ f: WindowReport?) -> String { f?.window(number: Int(id))?.title ?? "window \(id)" }
 
     /// A check for `settle`: the strip has `count` single-window columns (in `order` when given), the frames
@@ -70,41 +73,65 @@ final class Scenarios {
         return (s, d)
     }
 
-    private func record(_ scenario: String, _ body: () -> (failures: [String], details: String)) {
+    /// Runs one scenario and adds its row. Returns true when it passed.
+    @discardableResult
+    private func record(_ scenario: String, _ body: () -> (failures: [String], details: String)) -> Bool {
         h.log("scenario: \(scenario)")
         let started = Date()
-        let r = body()
+        let focusBefore = h.focusFailures.count
+        var r = body()
+        r.failures += h.focusFailures.dropFirst(focusBefore).map { "focus: \($0)" }
         let secs = String(format: "%.1f s", Date().timeIntervalSince(started))
         let row = Report.Row(scenario: scenario, result: r.failures.isEmpty ? .pass : .fail,
                              details: (r.failures.isEmpty ? r.details : r.failures.prefix(6).joined(separator: "\n")) + " (\(secs))")
         h.log("  \(row.result.rawValue): \(row.details)")
         rows.append(row)
+        return row.result == .pass
     }
 
     func add(_ row: Report.Row) { rows.append(row) }
 
+    /// A SKIP row (it counts as a failure) for a scenario that cannot start from a known state.
+    func skip(_ scenario: String, because why: String) {
+        h.log("scenario: \(scenario)\n  SKIP: \(why)")
+        rows.append(.init(scenario: scenario, result: .skip, details: "not run: \(why)"))
+    }
+
+    /// The names of the strip scenarios b to f. They need the tiled strip of scenario a.
+    enum Name {
+        static let focus = "b. focus-left / focus-right scroll the focused column into view"
+        static let move = "c. move-left / move-right change the column order"
+        static let widths = "d. cycle-width and toggle-full-width"
+        static let closeAndOpen = "e. Close one window, open one more"
+        static let float = "f. toggle-float takes a window out of the strip and back"
+    }
+    static let stripScenarios = [Name.focus, Name.move, Name.widths, Name.closeAndOpen, Name.float]
+
     // MARK: a. Tiling
 
-    func tiling() {
+    /// Returns true when the strip is tiled. The later strip scenarios need that start.
+    func tiling() -> Bool {
         record("a. Tiling: 3 windows become columns") {
             let n = h.config.windowCount
-            let fails = h.settle(timeout: 10, stripCheck(count: n, focusedInView: false))
+            let fails = h.settle(timeout: 10, stripCheck(count: n))
             let f = h.frames()
             let widths = f?.windows.map { String(format: "%.0f", $0.w) }.joined(separator: ", ") ?? "?"
-            return (fails, "\(n) columns, top \(Int(g.work.minY)), height \(Int(g.work.height)), widths \(widths), gap \(Int(g.gap))")
+            return (fails, "\(n) columns, top \(Int(g.work.minY)), height \(Int(g.work.height)), widths \(widths), gap \(Int(g.gap)); "
+                    + "focused column in view, parked columns keep a sliver")
         }
     }
 
     // MARK: b. Focus
 
     func focus() {
-        record("b. focus-left / focus-right scroll the focused column into view") {
+        record(Name.focus) {
             guard let (_, d) = current() else { return (["no test strip"], "") }
             let n = d.columns.count
+            guard let start = focusedID(d) else { return (["focused column \(d.focusedColumn + 1) of \(n) does not exist"], "") }
             var fails: [String] = []
             var steps = 0
             var col = d.focusedColumn
-            h.lastTestFocus = ids(d)[col]
+            h.lastTestFocus = start
             while col > 0 && fails.isEmpty {
                 _ = h.command("focus-left")
                 col -= 1
@@ -117,24 +144,31 @@ final class Scenarios {
                 steps += 1
                 fails += h.settle(stripCheck(count: n, focusedColumn: col)).map { "focus-right to \(col + 1): \($0)" }
             }
-            if fails.isEmpty, !h.poll(timeout: 3, { current().map { $0.0.focusedWindow?.id == ids($0.1)[col] } ?? false }) {
+            // Striple's focus and the system focus (test app active, that window key) must both be on the column.
+            if fails.isEmpty, !h.poll(timeout: 3, { [self] in
+                guard let (s, d) = current(), let want = ids(d)[safe: col] else { return false }
+                return s.focusedWindow?.id == want && h.frames()?.hasSystemFocus(Int(want)) == true
+            }) {
                 let id = current()?.0.focusedWindow?.id
-                fails.append("Striple's focused window \(id.map(String.init) ?? "none") is not the focused column's window")
+                let f = h.frames()
+                fails.append("column \(col + 1): Striple focus \(id.map(String.init) ?? "none"), "
+                             + "system focus: test app active \(f?.active ?? false), key window \(f?.key.map(String.init) ?? "none")")
             }
-            h.lastTestFocus = current().map { ids($0.1)[$0.1.focusedColumn] }
-            return (fails, "\(steps) focus steps, each focused column fully in view")
+            if let (_, d) = current(), let id = focusedID(d) { h.lastTestFocus = id }
+            return (fails, "\(steps) focus steps, each focused column fully in view; Striple and system focus on column \(col + 1)")
         }
     }
 
     // MARK: c. Move
 
     func move() {
-        record("c. move-left / move-right change the column order") {
+        record(Name.move) {
             guard let (_, d) = current() else { return (["no test strip"], "") }
             var order = ids(d)
             var col = d.focusedColumn
             let n = order.count
             guard n >= 2 else { return (["need 2 columns, have \(n)"], "") }
+            guard order.indices.contains(col) else { return (["focused column \(col + 1) of \(n) does not exist"], "") }
             var fails: [String] = []
             var moves: [String] = []
             // Move the focused column to the far left, then back to the far right.
@@ -155,10 +189,10 @@ final class Scenarios {
     // MARK: d. Widths
 
     func widths() {
-        record("d. cycle-width and toggle-full-width") {
+        record(Name.widths) {
             guard let (_, d) = current() else { return (["no test strip"], "") }
             let n = d.columns.count
-            let id = ids(d)[d.focusedColumn]
+            guard let id = focusedID(d) else { return (["focused column \(d.focusedColumn + 1) of \(n) does not exist"], "") }
             let presets = h.layout.presetWidths.sorted()
             var fails: [String] = []
             var seen: [String] = []
@@ -170,7 +204,8 @@ final class Scenarios {
                 seen.append("\(name) -> \(Int(want.rounded()))")
                 fails += h.settle(stripCheck(count: n)).map { "\(name): \($0)" }
             }
-            func nextPreset() -> Double { presets.first { $0 > proportion(id) + 0.01 } ?? presets[0] }
+            guard let smallest = presets.first else { return (["layout.presetWidths is empty"], "") }
+            func nextPreset() -> Double { presets.first { $0 > proportion(id) + 0.01 } ?? smallest }
             step("cycle-width", nextPreset())
             step("cycle-width", nextPreset())
             let beforeFull = proportion(id)
@@ -190,7 +225,7 @@ final class Scenarios {
     // MARK: e. Close and open
 
     func closeAndOpen() {
-        record("e. Close one window, open one more") {
+        record(Name.closeAndOpen) {
             guard let (_, d) = current() else { return (["no test strip"], "") }
             let before = ids(d)
             let n = before.count
@@ -206,25 +241,32 @@ final class Scenarios {
                 fails += h.settle(stripCheck(count: n - 1, order: rest)).map { "after closing \(name): \($0)" }
             }
             let titlesBefore = Set(h.frames()?.windows.map(\.title) ?? [])
+            // docs/SPEC.md: a new window opens directly to the right of the focused column.
+            let focusedBefore = current()?.1.focusedColumn
+            if fails.isEmpty, focusedBefore == nil { fails.append("no test strip after closing \(name)") }
             if fails.isEmpty, !h.send(.open) { fails.append("the test app did not open a window") }
             var opened = "?"
-            if fails.isEmpty {
-                fails += h.settle(timeout: 5, stripCheck(count: n) { s, f in
+            var column = 0
+            if fails.isEmpty, let focusedBefore {
+                fails += h.settle(timeout: 5, stripCheck(count: n) { [self] s, f in
                     let fresh = f.windows.filter { !titlesBefore.contains($0.title) }
                     guard let w = fresh.first else { return ["no new window yet"] }
                     opened = w.title
-                    let inStrip = s.displays.flatMap { $0.columns.joined() }.contains { $0.id == UInt32(w.number) }
-                    return inStrip ? [] : ["\(w.title) is not in the strip"]
+                    guard let d = testStrip(s), let i = ids(d).firstIndex(of: UInt32(w.number)) else {
+                        return ["\(w.title) is not in the strip"]
+                    }
+                    column = i + 1
+                    return i == focusedBefore + 1 ? [] : ["\(w.title) is column \(i + 1), want \(focusedBefore + 2) (right of the focused column \(focusedBefore + 1))"]
                 }).map { "after opening: \($0)" }
             }
-            return (fails, "closed \(name): \(n - 1) columns, no hole; opened \(opened): tiled as column \(n)")
+            return (fails, "closed \(name): \(n - 1) columns, no hole; opened \(opened): column \(column), right of the focused column")
         }
     }
 
     // MARK: f. Float
 
     func float() {
-        record("f. toggle-float takes a window out of the strip and back") {
+        record(Name.float) {
             guard let (_, d) = current() else { return (["no test strip"], "") }
             let before = ids(d)
             let n = before.count
@@ -262,8 +304,10 @@ final class Scenarios {
                              s.frameWriteP50, s.frameWriteP95, s.commandLatencyP50, s.commandLatencyP95, s.framesWritten,
                              s.windowWrites, s.skippedWrites, s.coalescedWrites, s.axErrors, cli.p50, cli.p95, settle.p50, settle.p95)
         h.log("stats: \(details)")
-        add(.init(scenario: "h. Performance (striple stats)", result: s.axErrors > 0 ? .fail : .pass,
-                  details: s.axErrors > 0 ? "AX errors \(s.axErrors) (want 0). " + details : details))
+        let over = PerformanceBudget.check(frameWriteP95: s.frameWriteP95, settleP95: h.settleMs.isEmpty ? nil : settle.p95,
+                                           axErrors: s.axErrors)
+        add(.init(scenario: "h. Performance (striple stats)", result: over.isEmpty ? .pass : .fail,
+                  details: (over.isEmpty ? "" : over.joined(separator: "; ") + ". ") + details))
     }
 
     // MARK: g. Quit
@@ -293,4 +337,8 @@ struct Percentiles {
         p50 = w.percentile(50)
         p95 = w.percentile(95)
     }
+}
+
+extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

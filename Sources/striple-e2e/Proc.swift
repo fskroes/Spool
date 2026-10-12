@@ -69,6 +69,39 @@ enum Proc {
         return !p.isRunning
     }
 
+    /// The start time of a running process ("seconds.microseconds"), or nil when no process has this PID.
+    /// With the PID it names one process: the system reuses PIDs, not PID plus start time.
+    static func startTime(_ pid: Int32) -> String? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == pid else { return nil }
+        let t = info.kp_proc.p_un.__p_starttime
+        return "\(t.tv_sec).\(t.tv_usec)"
+    }
+
+    /// The executable of a running process, or nil.
+    static func executablePath(_ pid: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    /// SIGTERM to a process that is not our child, then SIGKILL after `wait` seconds. True when it ended.
+    @discardableResult
+    static func stopPID(_ pid: Int32, wait: Double) -> Bool {
+        let start = startTime(pid)
+        guard start != nil else { return true }
+        kill(pid, SIGTERM)
+        let gone = { startTime(pid) != start }
+        let deadline = Date().addingTimeInterval(wait)
+        while !gone() && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if gone() { return true }
+        kill(pid, SIGKILL)
+        Thread.sleep(forTimeInterval: 0.5)
+        return gone()
+    }
+
     /// Last resort for a process that ignored SIGTERM.
     static func forceKill(_ p: Process) {
         guard p.isRunning else { return }

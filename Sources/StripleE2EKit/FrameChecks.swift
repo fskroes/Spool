@@ -83,10 +83,21 @@ public enum FrameChecks {
     /// - parked columns on the left come first, then the visible ones, then parked columns on the right;
     /// - visible columns go left to right, and two neighbours that are both fully on the display have exactly
     ///   the inner gap between them;
-    /// - when all columns fit the work area, all are visible and the first starts at the left edge (no hole).
+    /// - when all columns fit the work area, all are visible and the first starts at the left edge (no hole);
+    /// - at least one column is visible, and a parked column keeps a sliver on the display (else macOS can move
+    ///   it to another display or forget which display it is on).
     public static func checkStrip(_ columns: [Column], geometry g: StripGeometry) -> [String] {
         var failures: [String] = []
         let places = columns.map { place($0.frame, geometry: g) }
+        if !columns.isEmpty, !places.contains(.visible) {
+            failures.append("no column is visible: all \(columns.count) are parked")
+        }
+        for (c, p) in zip(columns, places) where p != .visible {
+            let d = g.display, f = c.frame
+            if min(f.maxX, d.maxX) - max(f.minX, d.minX) <= 0 || min(f.maxY, d.maxY) - max(f.minY, d.minY) <= 0 {
+                failures.append("\(c.title) is parked off the display \(fmt(f)): no sliver stays on it")
+            }
+        }
         for (c, p) in zip(columns, places) where p == .visible {
             let f = c.frame
             if !near(Double(f.minY), Double(g.work.minY)) || !near(Double(f.height), Double(g.work.height)) {

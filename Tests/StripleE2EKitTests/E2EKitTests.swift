@@ -66,6 +66,27 @@ import Testing
         #expect(f.contains { $0.contains("B is parked") })
     }
 
+    @Test func allColumnsParkedFails() {
+        // The strip scrolled out of view: every window keeps only its sliver. Before, this passed.
+        let cols = [FrameChecks.Column(title: "A", frame: CGRect(x: -1015, y: 1328, width: 1016, height: 1274), proportion: 0.5),
+                    FrameChecks.Column(title: "B", frame: CGRect(x: 2055, y: 1328, width: 1016, height: 1274), proportion: 0.5),
+                    FrameChecks.Column(title: "C", frame: CGRect(x: 2055, y: 1328, width: 1016, height: 1274), proportion: 0.5)]
+        #expect(FrameChecks.checkStrip(cols, geometry: g).contains("no column is visible: all 3 are parked"))
+        #expect(FrameChecks.checkStrip([], geometry: g).isEmpty)
+    }
+
+    @Test func aParkedColumnWithoutASliverFails() {
+        // Fully past the right edge, or fully below the display: macOS can move it to another display.
+        for parked in [CGRect(x: 2056, y: 47, width: 1016, height: 1274), CGRect(x: 2055, y: 1329, width: 1016, height: 1274),
+                       CGRect(x: -1016, y: 1328, width: 1016, height: 1274)] {
+            let cols = [col("A", 8, 0.5), col("B", 1032, 0.5), .init(title: "C", frame: parked, proportion: 0.5)]
+            #expect(FrameChecks.checkStrip(cols, geometry: g).contains { $0.hasPrefix("C is parked off the display") }, "\(parked)")
+        }
+        // The 1 pt sliver of Layout.physical passes.
+        let ok = [col("A", 8, 0.5), col("B", 1032, 0.5), .init(title: "C", frame: CGRect(x: 2055, y: 1328, width: 1016, height: 1274), proportion: 0.5)]
+        #expect(FrameChecks.checkStrip(ok, geometry: g).isEmpty)
+    }
+
     @Test func swappedOrderFails() {
         let f = FrameChecks.checkStrip([col("B", 1032, 0.5), col("A", 8, 0.5)], geometry: g)
         #expect(f.contains { $0.hasPrefix("order") })
@@ -104,9 +125,9 @@ import Testing
 }
 
 @Suite struct SafetyCheckTests {
-    func entry(_ n: UInt32, pid: Int32, layer: Int = 0, _ r: CGRect) -> [String: Any] {
+    func entry(_ n: UInt32, pid: Int32, layer: Int = 0, owner: String? = nil, _ r: CGRect) -> [String: Any] {
         [kCGWindowNumber as String: NSNumber(value: n), kCGWindowOwnerPID as String: NSNumber(value: pid),
-         kCGWindowLayer as String: NSNumber(value: layer), kCGWindowOwnerName as String: "App\(pid)",
+         kCGWindowLayer as String: NSNumber(value: layer), kCGWindowOwnerName as String: owner ?? "App\(pid)",
          kCGWindowBounds as String: r.dictionaryRepresentation as NSDictionary]
     }
 
@@ -118,6 +139,18 @@ import Testing
         #expect(s.map(\.number) == [1])
         #expect(s.first?.bounds == CGRect(x: 0, y: 0, width: 100, height: 100))
         #expect(s.first?.owner == "App10")
+    }
+
+    @Test func snapshotComparesAppLayersBelowTheMenuBarAndSkipsSystemOwners() {
+        let r = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let list = [entry(1, pid: 10, layer: 3, r),     // a floating panel of an app
+                    entry(2, pid: 10, layer: 8, r),     // a modal panel
+                    entry(3, pid: 10, layer: 23, r),
+                    entry(4, pid: 10, layer: 24, r),    // the main menu level and up: not compared
+                    entry(5, pid: 10, layer: -1, r),
+                    entry(6, pid: 20, owner: "Dock", r),
+                    entry(7, pid: 21, owner: "Window Server", r)]
+        #expect(SafetyCheck.snapshot(list, excluding: []).map(\.number) == [1, 2, 3])
     }
 
     @Test func aMovedOrResizedWindowIsAChange() {
@@ -190,6 +223,19 @@ import Testing
         #expect(v.details.contains("AutoFill"))
     }
 
+    // An app can turn regular during the run (for example when it opens its first window). Regular before or
+    // after: a change fails.
+    @Test func anAppThatTurnedRegularDuringTheRunCounts() {
+        var after = helper(9, y: 1078)
+        after.regularApp = true
+        let v = SafetyCheck.verdict(before: [w(1), helper(9, y: 1092)], after: [w(1), after])
+        #expect(v.result == .fail)
+        #expect(v.details.hasPrefix("AutoFill (pid 92849, window 9)"))
+        var before = helper(9, y: 1092)
+        before.regularApp = true
+        #expect(SafetyCheck.verdict(before: [w(1), before], after: [w(1), helper(9, y: 1078)]).result == .fail)
+    }
+
     @Test func onlyBackgroundWindowsDoNotCountForTheRatio() {
         // Two background windows closed, the one app window stayed: the compare still proves the app window.
         let v = SafetyCheck.verdict(before: [w(1), helper(8, y: 0), helper(9, y: 0)], after: [w(1)])
@@ -213,12 +259,23 @@ import Testing
                     Report.Row(scenario: "c", result: .fail, details: "bad")]
         let md = Report.markdown(title: "T", rows: rows, notes: ["n"])
         #expect(md.contains("| a \\| b | PASS | one<br>two |"))
-        #expect(md.contains("Result: **FAIL** (1 of 2 checks failed)"))
+        #expect(md.contains("Result: **FAIL** (1 of 2 checks did not pass: 1 FAIL, 0 SKIP)"))
         #expect(md.contains("- n"))
         #expect(Report.exitCode(rows) == 1)
         #expect(Report.exitCode([rows[0]]) == 0)
         #expect(Report.exitCode([]) == 1)
         #expect(Report.exitCode([Report.Row(scenario: "s", result: .skip, details: "")]) == 1)
+    }
+
+    // The header and the exit code must agree: a SKIP proves nothing, so the header must not say PASS.
+    @Test func aSkipMakesTheHeaderFail() {
+        let rows = [Report.Row(scenario: "a", result: .pass, details: ""), Report.Row(scenario: "s", result: .skip, details: "")]
+        #expect(Report.markdown(title: "T", rows: rows, notes: []).contains("Result: **FAIL** (1 of 2 checks did not pass: 0 FAIL, 1 SKIP)"))
+        #expect(Report.markdown(title: "T", rows: [], notes: []).contains("Result: **FAIL** (no checks ran)"))
+        #expect(Report.markdown(title: "T", rows: [rows[0]], notes: []).contains("Result: **PASS** (1 checks)"))
+        for r in [rows, [], [rows[0]]] {
+            #expect(Report.markdown(title: "T", rows: r, notes: []).contains("**PASS**") == (Report.exitCode(r) == 0))
+        }
     }
 }
 
@@ -246,5 +303,52 @@ import Testing
         #expect(focused.hasSystemFocus(42))
         #expect(!focused.hasSystemFocus(7))
         #expect(!WindowReport(pid: 5, seq: 3, commandsDone: 1, windows: r.windows, active: false, key: 42).hasSystemFocus(42))
+    }
+}
+
+@Suite struct PerformanceBudgetTests {
+    @Test func aRunInTheBudgetPasses() {
+        #expect(PerformanceBudget.check(frameWriteP95: 5.76, settleP95: 420, axErrors: 0).isEmpty)
+        // No settle samples (every scenario failed before it settled): only the frame writes count.
+        #expect(PerformanceBudget.check(frameWriteP95: 11.68, settleP95: nil, axErrors: 0).isEmpty)
+    }
+
+    @Test func eachLimitFailsOnItsOwn() {
+        #expect(PerformanceBudget.check(frameWriteP95: 16, settleP95: 100, axErrors: 0) == ["frame write p95 16.00 ms, want < 16 ms"])
+        #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 2000, axErrors: 0) == ["settle p95 2000 ms, want < 2000 ms"])
+        #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 100, axErrors: 2) == ["AX errors 2, want 0"])
+        #expect(PerformanceBudget.check(frameWriteP95: 30, settleP95: 2500, axErrors: 1).count == 3)
+    }
+}
+
+@Suite struct E2ERunRecordTests {
+    let r = E2ERunRecord(home: "/tmp/striple-e2e-AbC123", runnerPID: 100, runnerStart: "1700000000.5",
+                         striplePID: 200, stripleStart: "1700000001.25")
+
+    @Test func anOrphanNeedsTheSamePIDAndStartTime() {
+        #expect(r.isOrphan(currentStart: "1700000001.25"))
+        // The PID now belongs to another process, or no process has it.
+        #expect(!r.isOrphan(currentStart: "1700009999.0"))
+        #expect(!r.isOrphan(currentStart: nil))
+        // Striple never started.
+        #expect(!E2ERunRecord(home: r.home, runnerPID: 100, runnerStart: "1").isOrphan(currentStart: "1"))
+    }
+
+    @Test func aLiveRunnerKeepsItsRun() {
+        #expect(r.runnerIsAlive(currentRunnerStart: "1700000000.5"))
+        #expect(!r.runnerIsAlive(currentRunnerStart: nil))
+        #expect(!r.runnerIsAlive(currentRunnerStart: "1700000000.6"))
+    }
+
+    @Test func onlyAFolderTheRunnerMadeIsDeletable() {
+        #expect(r.homeIsDeletable)
+        for home in ["/tmp/striple-e2e-", "/tmp/striple-e2e-x/../../Users", "/tmp/striple-e2e-..", "/Users/x",
+                     "/tmp/striple-e2e-a/b", "tmp/striple-e2e-a", "/private/tmp/striple-e2e-a"] {
+            #expect(!E2ERunRecord(home: home, runnerPID: 1, runnerStart: "1").homeIsDeletable, "\(home)")
+        }
+    }
+
+    @Test func roundTrip() throws {
+        #expect(try JSONDecoder().decode(E2ERunRecord.self, from: JSONEncoder().encode(r)) == r)
     }
 }

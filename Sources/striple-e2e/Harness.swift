@@ -38,6 +38,8 @@ final class Harness {
     private(set) var settleMs: [Double] = []
     /// Managed windows that are not test windows. Must stay empty.
     private(set) var foreignManaged: [String: String] = [:]
+    /// Commands that were not sent because the test window did not get the focus. Each scenario fails on them.
+    private(set) var focusFailures: [String] = []
 
     var cli: String { config.app.appendingPathComponent("Contents/Helpers/striple").path }
     var stripleBinary: String { config.app.appendingPathComponent("Contents/MacOS/Striple").path }
@@ -196,6 +198,13 @@ final class Harness {
             }
             if attempts > 1 {
                 log("focus: \(focused ? "got" : "did not get") the focus for window \(want) after \(attempts) attempts, frontmost \(frontmostApp())")
+            }
+            // Without the focus the command would act on another window: do not send it.
+            if !focused {
+                let why = "window \(want) did not get the focus within 10 s before `\(name)` (frontmost \(frontmostApp()))"
+                focusFailures.append(why)
+                log("striple \(name): not sent, \(why)")
+                return ProcResult(code: -1, out: "", err: why, ms: 0)
             }
         }
         let r = run([name])

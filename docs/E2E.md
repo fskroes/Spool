@@ -75,16 +75,22 @@ Frames may differ by 2 points (rounding).
 
 | Scenario | Checks |
 |---|---|
-| a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. Columns that are out of view are parked at the edge of the display. |
-| b. Focus | `focus-left` to the first column, then `focus-right` to the last. The focused column is fully in view after each step. |
+| a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. At least one column is visible, and the focused column is fully in view. Columns that are out of view are parked at the edge of the display and keep a sliver on it. If this scenario fails, b to f are SKIP: the strip is in an unknown state. |
+| b. Focus | `focus-left` to the first column, then `focus-right` to the last. The focused column is fully in view after each step. At the end, Striple's focus and the system focus (test app active, that window key) are on the last column. |
 | c. Move | `move-left` and `move-right` on a column. The order in `striple state` and the order of the frames change as expected. |
 | d. Widths | `cycle-width` twice, `toggle-full-width` twice, then `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. |
-| e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes a column. |
+| e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes the column directly to the right of the focused column ([SPEC.md](SPEC.md)). |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. Fails only when AX errors > 0. Timing is reported, never a failure. The runner adds the CLI round trip and the settle time it measured. |
+| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), or settle p95 ≥ 2 s (`PerformanceBudget`). |
 | g. Quit | SIGTERM to Striple. It exits with status 0 and every test window is fully on a display. |
 | Safety: other apps | See below. |
 | Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. |
+
+Before each command the runner gives a test window the focus, because Striple acts on the focused window. If the
+window does not get the focus within 10 seconds, the command is not sent and the scenario fails.
+
+The report header says PASS only when every row is PASS. A SKIP proves nothing, so it counts as a failure, the
+same as in the exit code.
 
 The width math comes from `Config()` defaults, the same as the config file of the run. The work area comes from
 `NSScreen.screens[0]`, converted to top-left coordinates (the coordinates of AX and `CGWindowList`).
@@ -97,21 +103,32 @@ The test runs on your work Mac, next to your own windows. These rules keep it aw
    Every path that adopts a window goes through one gate, `WindowTracker.isManageable`, which calls
    `Policy.isManageableApp`. With the list set, a window of another app is never adopted, so Striple never moves,
    resizes, parks, restores or focuses it.
-2. **Your windows are measured.** Before the test app starts, the runner records the bounds of every normal
-   (layer 0) window of other apps with `CGWindowListCopyWindowInfo`, also windows on other Spaces and minimized
-   windows. After Striple quit (the runner stops it first if needed, because Striple moves windows when it quits),
+2. **Your windows are measured.** Before the test app starts, the runner records the bounds of every window of
+   other apps below the menu bar level (layers 0 to 23: normal windows, floating and modal panels) with
+   `CGWindowListCopyWindowInfo`, also windows on other Spaces and minimized windows. System processes (the Dock,
+   the window server, Stage Manager and others in `SafetyCheck.systemOwners`) are left out. After Striple quit (the runner stops it first if needed, because Striple moves windows when it quits),
    it compares them: 0 points of change allowed. A window that closed or opened during the run is not a change.
    When fewer than half of the windows still exist, the result is SKIP, which counts as a failure: the compare
-   proves too little. Menu bar items and other high layers change on their own, so they are not compared.
-   Windows of background processes (not a regular app, for example the AutoFill helper of Safari) are compared,
-   but a change there is only listed under "Not counted": Striple manages only regular apps, and these
-   windows resize themselves. One run saw 5 AutoFill windows change by the same 14 points while no Striple
+   proves too little. The menu bar, status items and notifications (layer 24 and up) change on their own, so
+   they are not compared. Windows of background processes (not a regular app before or after the run, for
+   example the AutoFill helper of Safari) are compared, but a change there is only listed under "Not counted":
+   Striple manages only regular apps, and these windows resize themselves. An app that was regular before or
+   after counts as an app. One run saw 5 AutoFill windows change by the same 14 points while no Striple
    command touched them.
 3. **Your settings are not touched.** Striple starts with `STRIPLE_HOME` set to a new `/tmp/striple-e2e-XXXXXX`
    folder with a `config.json` (`onboardingDone: true`, other values default). The socket, config, session and logs
    are in that folder. The login item is not registered or changed, and Sparkle does not check for updates. The folder is deleted at the end.
 4. **Always clean up.** At the end, on a failure and on Ctrl-C, the runner quits the test app, sends SIGTERM to
    Striple (SIGKILL after 5 seconds), copies the engine log and deletes `STRIPLE_HOME`.
+5. **A crashed run is cleaned up by the next run.** While a run is active, the runner keeps
+   `/tmp/striple/e2e/active-run.json`: its own PID, the PID of the test Striple, the start time of each, and
+   `STRIPLE_HOME`. A crash or a SIGKILL of the runner leaves the file. The next run reads it in its preflight:
+   - If that runner still runs, the new run stops (exit 2). It does not touch a live run.
+   - If the process at the Striple PID has the same start time and is a `Striple` binary, it is the orphaned test
+     Striple: SIGTERM, then SIGKILL after 5 seconds. A PID that the system gave to another process is never
+     signalled, because its start time differs.
+   - The old `STRIPLE_HOME` is deleted, but only a `/tmp/striple-e2e-XXXXXX` folder.
+   - A test app that is left over is quit by its bundle ID.
 
 If you move one of your windows yourself during a run, the safety check fails and names the window. Run again.
 
@@ -142,4 +159,6 @@ Striple matches apps by bundle ID.
 - The test uses the main display only. With a second display, columns that are out of view can go to the edge of
   the other display; the gap check skips columns that are not fully on the main display.
 - The test app takes the focus during the run.
-- Timing numbers depend on the machine and on what else runs. They are reported, not checked.
+- Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
+  live runs measured a frame write p95 of 5.8 to 11.7 ms. A heavy load on the Mac can still make it fail. Run
+  again when other work used the CPU.

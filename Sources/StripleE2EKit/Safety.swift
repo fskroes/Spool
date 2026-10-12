@@ -24,24 +24,33 @@ public struct WindowSnapshot: Codable, Equatable, Sendable {
 
 /// The safety check: Striple must not move or resize a window of any other app.
 public enum SafetyCheck {
-    /// The normal window level. Only these windows can be managed by Striple. Higher levels (menu bar items,
-    /// Control Center, notifications) move by themselves, for example when Striple adds its menu bar icon.
-    public static let normalLayer = 0
+    /// The compared window levels: normal (0) up to, not with, the main menu level (24,
+    /// `kCGMainMenuWindowLevel`). So floating panels and modal windows of apps are compared too. The menu bar,
+    /// status items, Control Center and notifications (24 and up) move by themselves, for example when Striple
+    /// adds its menu bar icon.
+    public static let comparedLayers = 0..<24
 
-    /// The windows of other apps at the normal level, from a CGWindowList result. Windows of `excluding`
-    /// (the test app, Striple, the runner) are left out. `isRegularApp` tells the regular apps from background
-    /// processes (for example the AutoFill helper of Safari, which resizes its own windows).
+    /// System processes whose windows change by themselves (the Dock, the window server, Stage Manager).
+    /// They are not apps that Striple can manage.
+    public static let systemOwners: Set<String> = [
+        "Window Server", "Dock", "SystemUIServer", "Control Center", "Notification Center", "WindowManager",
+        "Spotlight", "loginwindow", "TextInputMenuAgent", "TextInputSwitcher",
+    ]
+
+    /// The windows of other apps in `comparedLayers`, from a CGWindowList result. Windows of `excluding`
+    /// (the test app, Striple, the runner) and of `systemOwners` are left out. `isRegularApp` tells the regular
+    /// apps from background processes (for example the AutoFill helper of Safari, which resizes its own windows).
     public static func snapshot(_ list: [[String: Any]], excluding: Set<Int32>,
                                 isRegularApp: (Int32) -> Bool = { _ in true }) -> [WindowSnapshot] {
         list.compactMap { w in
+            let owner = w[kCGWindowOwnerName as String] as? String ?? "?"
             guard let n = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                   let layer = (w[kCGWindowLayer as String] as? NSNumber)?.intValue,
-                  layer == normalLayer, !excluding.contains(pid),
+                  comparedLayers.contains(layer), !excluding.contains(pid), !systemOwners.contains(owner),
                   let dict = w[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary) else { return nil }
-            return WindowSnapshot(number: n, pid: pid, owner: w[kCGWindowOwnerName as String] as? String ?? "?",
-                                  layer: layer, bounds: bounds, regularApp: isRegularApp(pid))
+            return WindowSnapshot(number: n, pid: pid, owner: owner, layer: layer, bounds: bounds, regularApp: isRegularApp(pid))
         }
     }
 
@@ -63,17 +72,19 @@ public enum SafetyCheck {
         }
     }
 
-    /// The safety row of the report. FAIL when a window of a regular app moved or resized. SKIP (counts as a
-    /// failure) when fewer than half of those windows from before still exist after: then the compare proves too
-    /// little. Windows of background processes are compared too, but a change there is only listed: Striple
-    /// cannot write to them, and some (AutoFill) resize themselves.
+    /// The safety row of the report. FAIL when a window of a regular app moved or resized. The app counts as
+    /// regular when it was regular before or after: an app can change its activation policy during the run.
+    /// SKIP (counts as a failure) when fewer than half of the windows of regular apps from before still exist
+    /// after: then the compare proves too little. Windows of background processes are compared too, but a change
+    /// there is only listed: Striple cannot write to them, and some (AutoFill) resize themselves.
     public static func verdict(before: [WindowSnapshot], after: [WindowSnapshot]) -> (result: Report.Result, details: String) {
         let found = Set(after.map(\.number))
         let apps = before.filter(\.regularApp)
         let compared = apps.filter { found.contains($0.number) }.count
         let changed = changes(before: before, after: after)
-        let failed = changed.filter(\.before.regularApp)
-        let ignored = changed.filter { !$0.before.regularApp }
+        let isApp = { (c: Change) in c.before.regularApp || c.after.regularApp }
+        let failed = changed.filter(isApp)
+        let ignored = changed.filter { !isApp($0) }
         let background = ignored.isEmpty ? "" : "\nNot counted, \(ignored.count) window(s) of background processes changed "
             + "(Striple manages only regular apps):\n" + ignored.map(\.description).joined(separator: "\n")
         if !failed.isEmpty { return (.fail, failed.map(\.description).joined(separator: "\n") + background) }
@@ -108,8 +119,16 @@ public enum Report {
 
     public static func markdown(title: String, rows: [Row], notes: [String]) -> String {
         var out = "# \(title)\n\n"
-        let failed = rows.filter { $0.result == .fail }.count
-        out += failed == 0 ? "Result: **PASS** (\(rows.count) checks)\n\n" : "Result: **FAIL** (\(failed) of \(rows.count) checks failed)\n\n"
+        // The same rule as exitCode: only PASS passes. A SKIP proves nothing, so it is not a pass.
+        let fails = rows.filter { $0.result == .fail }.count
+        let skips = rows.filter { $0.result == .skip }.count
+        if rows.isEmpty {
+            out += "Result: **FAIL** (no checks ran)\n\n"
+        } else if fails + skips == 0 {
+            out += "Result: **PASS** (\(rows.count) checks)\n\n"
+        } else {
+            out += "Result: **FAIL** (\(fails + skips) of \(rows.count) checks did not pass: \(fails) FAIL, \(skips) SKIP)\n\n"
+        }
         out += "| Scenario | Result | Details |\n|---|---|---|\n"
         for r in rows { out += "| \(cell(r.scenario)) | \(r.result.rawValue) | \(cell(r.details)) |\n" }
         if !notes.isEmpty {

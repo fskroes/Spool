@@ -50,9 +50,41 @@ func parseConfig() -> RunConfig {
                      outDir: path("--out", URL(fileURLWithPath: "/tmp/striple/e2e/\(stamp)")))
 }
 
+/// A run that crashed (a trap, SIGKILL) leaves its record: its test Striple can still run, and its STRIPLE_HOME
+/// is still on disk. Stop and delete only what the record names, and only when its runner is gone.
+func reapOrphanedRun() {
+    let fm = FileManager.default
+    guard let data = fm.contents(atPath: E2ERunRecord.path) else { return }
+    guard let r = try? JSONDecoder().decode(E2ERunRecord.self, from: data) else {
+        print("striple-e2e: ignoring an unreadable \(E2ERunRecord.path)")
+        try? fm.removeItem(atPath: E2ERunRecord.path)
+        return
+    }
+    if r.runnerIsAlive(currentRunnerStart: Proc.startTime(r.runnerPID)) {
+        refuse("another E2E run is active (runner pid \(r.runnerPID)). Wait for it, or retry later.")
+    }
+    if let pid = r.striplePID, r.isOrphan(currentStart: Proc.startTime(pid)),
+       Proc.executablePath(pid)?.hasSuffix("/Contents/MacOS/Striple") == true {
+        print("striple-e2e: stopping the test Striple of an earlier run that did not end (pid \(pid))")
+        if !Proc.stopPID(pid, wait: 5) { refuse("cannot stop the test Striple (pid \(pid)) of an earlier run") }
+    }
+    if r.homeIsDeletable, fm.fileExists(atPath: r.home) {
+        print("striple-e2e: deleting \(r.home) of an earlier run that did not end")
+        try? fm.removeItem(atPath: r.home)
+    }
+    try? fm.removeItem(atPath: E2ERunRecord.path)
+}
+
+func writeRunRecord(_ r: E2ERunRecord) {
+    let url = URL(fileURLWithPath: E2ERunRecord.path)
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if let data = try? JSONEncoder().encode(r) { try? data.write(to: url, options: .atomic) }
+}
+
 /// Checks that make the run safe and meaningful. Any failure: exit 2, nothing started.
 func preflight(_ config: RunConfig) {
     let fm = FileManager.default
+    reapOrphanedRun()
     let app = config.app
     for p in ["Contents/MacOS/Striple", "Contents/Helpers/striple"] where !fm.isExecutableFile(atPath: app.appendingPathComponent(p).path) {
         refuse("\(app.path)/\(p) not found. Run `make app` first, or pass --app.")
@@ -104,6 +136,8 @@ let config = parseConfig()
 preflight(config)
 try? FileManager.default.createDirectory(at: config.outDir, withIntermediateDirectories: true)
 let home = makeTempHome()
+var runRecord = E2ERunRecord(home: home.path, runnerPID: getpid(), runnerStart: Proc.startTime(getpid()) ?? "?")
+writeRunRecord(runRecord)
 let harness = Harness(config: config, home: home)
 let scenarios = Scenarios(harness: harness)
 
@@ -116,6 +150,7 @@ func cleanupOnce() {
     guard !cleanedUp else { return }
     cleanedUp = true
     harness.cleanup()
+    try? FileManager.default.removeItem(atPath: E2ERunRecord.path)
 }
 var signalSources: [DispatchSourceSignal] = []
 for sig in [SIGINT, SIGTERM, SIGHUP] {
@@ -157,17 +192,26 @@ do {
         setupFailed("the test app did not show \(config.windowCount) windows within 10 s")
     } else {
         try harness.startStriple()
+        if let pid = harness.striple?.processIdentifier {
+            runRecord.striplePID = pid
+            runRecord.stripleStart = Proc.startTime(pid)
+            writeRunRecord(runRecord)
+        }
         if !harness.poll(timeout: 15, { harness.ping() }) {
             setupFailed("Striple did not answer on \(harness.socket) within 15 s")
         } else if let s = harness.state(), !s.accessibilityTrusted || !s.running {
             setupFailed("Striple runs but the engine is not running (Accessibility: \(s.accessibilityTrusted ? "granted" : "missing"))")
         } else {
-            scenarios.tiling()
-            scenarios.focus()
-            scenarios.move()
-            scenarios.widths()
-            scenarios.closeAndOpen()
-            scenarios.float()
+            if scenarios.tiling() {
+                scenarios.focus()
+                scenarios.move()
+                scenarios.widths()
+                scenarios.closeAndOpen()
+                scenarios.float()
+            } else {
+                // The strip is in an unknown state: their results would only repeat the tiling failure.
+                Scenarios.stripScenarios.forEach { scenarios.skip($0, because: "a. Tiling failed") }
+            }
             // Stats before the quit: they live in the Striple process.
             scenarios.performance()
             scenarios.quit()
