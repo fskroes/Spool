@@ -3,7 +3,7 @@
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
 
-.PHONY: build test bench release app icon dmg install uninstall run clean
+.PHONY: build test bench release app icon dmg install uninstall run clean e2e
 
 build:
 	swift build
@@ -22,6 +22,14 @@ release:
 # (scripts/make-signing-cert.sh), else ad hoc. SIGN_IDENTITY overrides. See docs/INSTALL.md.
 app:
 	./scripts/build-app.sh
+
+# Live end-to-end test: runs dist/Striple.app for real against the windows of a test app and checks
+# their frames. Never part of `make test`. Exit 2: refused (another Striple runs). See docs/E2E.md.
+# E2E_ARGS passes options to the runner, for example E2E_ARGS="--out /tmp/striple/e2e/mine".
+e2e: app
+	swift build --product striple-e2e
+	swift build --product striple-e2e-windows
+	"$$(swift build --show-bin-path)/striple-e2e" --app dist/Striple.app $(E2E_ARGS)
 
 # Draws the app icon into .build/icon/AppIcon.icns (make app does this when needed).
 icon:

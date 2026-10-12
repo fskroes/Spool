@@ -149,6 +149,10 @@ Only your user can connect: the file has mode 0600, and the app checks the user 
 To use a different socket (for tests or to debug), use `--socket <path>` or set `STRIPLE_SOCKET`.
 `--socket` has priority over `STRIPLE_SOCKET`. The path must be 103 bytes or less.
 
+Test only: when the app starts with `STRIPLE_HOME` set, the socket, config, session and logs are in that folder
+(logs in `$STRIPLE_HOME/Logs`), and `STRIPLE_MANAGE_ONLY` limits Striple to the windows of some apps. The live E2E
+test uses them. See [E2E.md](E2E.md). Do not use them for normal work.
+
 The tool waits a maximum of 2 seconds for an answer. `start`, `stop`, `toggle-engine` and `restart` wait a maximum of
 10 seconds, because the app first moves every window back into view and waits for the apps to answer.
 

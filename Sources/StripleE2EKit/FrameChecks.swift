@@ -1,0 +1,142 @@
+import CoreGraphics
+import Foundation
+
+/// Where Striple must put tiled windows on one display. All rects in global top-left coordinates.
+public struct StripGeometry: Equatable, Sendable {
+    /// The full display.
+    public var display: CGRect
+    /// The visible frame (no menu bar, no Dock) minus the outer gaps.
+    public var work: CGRect
+    public var gap: Double
+    /// Points of a parked window that stay on the display (config `layout.parkedSliver`).
+    public var sliver: Double
+
+    public init(display: CGRect, visible: CGRect, innerGap: Double,
+                outerTop: Double, outerBottom: Double, outerLeft: Double, outerRight: Double, sliver: Double) {
+        self.display = display
+        self.work = CGRect(x: Double(visible.minX) + outerLeft, y: Double(visible.minY) + outerTop,
+                           width: max(Double(visible.width) - outerLeft - outerRight, 1),
+                           height: max(Double(visible.height) - outerTop - outerBottom, 1))
+        self.gap = innerGap
+        self.sliver = sliver
+    }
+
+    /// The width of a column with a proportion of the usable width. Proportions include the gaps:
+    /// `n` columns of `1/n` fill the work area exactly (docs/SPEC.md).
+    public func columnWidth(_ proportion: Double) -> Double {
+        max(1, proportion * (Double(work.width) + gap) - gap)
+    }
+
+    /// The width of all columns side by side, with the gaps between them.
+    public func totalWidth(_ proportions: [Double]) -> Double {
+        proportions.map(columnWidth).reduce(0, +) + gap * Double(max(proportions.count - 1, 0))
+    }
+
+    /// True when all columns fit the work area: Striple then shows them all, from the left edge.
+    public func fits(_ proportions: [Double]) -> Bool { totalWidth(proportions) <= Double(work.width) + 0.5 }
+}
+
+/// Pure checks on reported window frames. Each returns a list of failures; empty means the check passed.
+public enum FrameChecks {
+    /// Rounding: AX and AppKit round frames to whole points, and Striple rounds origin and size apart.
+    public static let tolerance = 2.0
+
+    public static func near(_ a: Double, _ b: Double, _ tol: Double = tolerance) -> Bool { abs(a - b) <= tol }
+
+    static func fmt(_ v: Double) -> String { String(format: "%.1f", v) }
+    public static func describe(_ r: CGRect) -> String { fmt(r) }
+
+    static func fmt(_ r: CGRect) -> String {
+        "(\(fmt(Double(r.minX))), \(fmt(Double(r.minY))), \(fmt(Double(r.width)))x\(fmt(Double(r.height))))"
+    }
+
+    public enum Place: Int, Comparable, Sendable {
+        case parkedLeft = -1, visible = 0, parkedRight = 1
+        public static func < (a: Place, b: Place) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// Where a window is: parked (at most a sliver on the display), or visible. Striple parks columns that are
+    /// out of view at the side of the display, and at the bottom when no display is below.
+    public static func place(_ f: CGRect, geometry g: StripGeometry) -> Place {
+        let d = g.display
+        let limit = g.sliver + tolerance
+        let overlapX = Double(min(f.maxX, d.maxX) - max(f.minX, d.minX))
+        let overlapY = Double(min(f.maxY, d.maxY) - max(f.minY, d.minY))
+        guard overlapX <= limit || overlapY <= limit else { return .visible }
+        return f.midX < d.midX ? .parkedLeft : .parkedRight
+    }
+
+    /// One column of the strip as the runner expects it.
+    public struct Column: Equatable, Sendable {
+        public var title: String
+        public var frame: CGRect
+        public var proportion: Double
+        public init(title: String, frame: CGRect, proportion: Double) {
+            self.title = title
+            self.frame = frame
+            self.proportion = proportion
+        }
+    }
+
+    /// Checks a strip of single-window columns, given in strip order (left to right):
+    /// - a visible column has the top and the height of the work area, and the width of its proportion;
+    /// - parked columns on the left come first, then the visible ones, then parked columns on the right;
+    /// - visible columns go left to right, and two neighbours that are both fully on the display have exactly
+    ///   the inner gap between them;
+    /// - when all columns fit the work area, all are visible and the first starts at the left edge (no hole).
+    public static func checkStrip(_ columns: [Column], geometry g: StripGeometry) -> [String] {
+        var failures: [String] = []
+        let places = columns.map { place($0.frame, geometry: g) }
+        for (c, p) in zip(columns, places) where p == .visible {
+            let f = c.frame
+            if !near(Double(f.minY), Double(g.work.minY)) || !near(Double(f.height), Double(g.work.height)) {
+                failures.append("\(c.title): top/height \(fmt(Double(f.minY)))/\(fmt(Double(f.height))), want \(fmt(Double(g.work.minY)))/\(fmt(Double(g.work.height)))")
+            }
+            let want = g.columnWidth(c.proportion)
+            if !near(Double(f.width), want) {
+                failures.append("\(c.title): width \(fmt(Double(f.width))), want \(fmt(want)) (proportion \(String(format: "%.3f", c.proportion)))")
+            }
+        }
+        for i in places.indices.dropFirst() where places[i] < places[i - 1] {
+            failures.append("order: \(columns[i].title) is \(places[i]) but comes after \(columns[i - 1].title) (\(places[i - 1]))")
+        }
+        let visible = columns.indices.filter { places[$0] == .visible }
+        for (a, b) in zip(visible, visible.dropFirst()) {
+            let fa = columns[a].frame, fb = columns[b].frame
+            guard fb.minX > fa.minX else {
+                failures.append("order: \(columns[b].title) at x \(fmt(Double(fb.minX))) is not right of \(columns[a].title) at x \(fmt(Double(fa.minX)))")
+                continue
+            }
+            let inside = { (f: CGRect) in f.minX >= g.display.minX - tolerance && f.maxX <= g.display.maxX + tolerance }
+            guard inside(fa), inside(fb) else { continue }
+            let gap = Double(fb.minX - fa.maxX)
+            if !near(gap, g.gap) {
+                failures.append("gap \(columns[a].title) -> \(columns[b].title): \(fmt(gap)), want \(fmt(g.gap))")
+            }
+        }
+        if g.fits(columns.map(\.proportion)) {
+            if let hidden = columns.indices.first(where: { places[$0] != .visible }) {
+                failures.append("\(columns[hidden].title) is parked \(fmt(columns[hidden].frame)) but all columns fit")
+            } else if let first = columns.first, !near(Double(first.frame.minX), Double(g.work.minX)) {
+                failures.append("hole: first column \(first.title) starts at x \(fmt(Double(first.frame.minX))), want \(fmt(Double(g.work.minX)))")
+            }
+        }
+        return failures
+    }
+
+    /// The focused column must be fully in view: inside the work area, left to right.
+    public static func checkInView(_ title: String, _ f: CGRect, geometry g: StripGeometry) -> [String] {
+        let w = g.work
+        guard f.minX >= w.minX - tolerance, f.maxX <= w.maxX + tolerance else {
+            return ["\(title) \(fmt(f)) is not fully in view (work area x \(fmt(Double(w.minX)))...\(fmt(Double(w.maxX))))"]
+        }
+        return []
+    }
+
+    /// True when `f` is fully inside one of the display frames.
+    public static func isFullyOnScreen(_ f: CGRect, displays: [CGRect]) -> Bool {
+        displays.contains { d in
+            f.minX >= d.minX - tolerance && f.minY >= d.minY - tolerance && f.maxX <= d.maxX + tolerance && f.maxY <= d.maxY + tolerance
+        }
+    }
+}
