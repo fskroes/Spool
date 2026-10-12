@@ -358,6 +358,57 @@ import Testing
         #expect(store.config.layout.innerGap == 23)
     }
 
+    // Round 13 finding: a link target that was moved away stayed watched; the new file at the link target was not.
+    @Test func aNewFileAtTheLinkTargetIsWatchedAfterTheOldOneIsMovedAway() async throws {
+        let root = tempFile().deletingLastPathComponent()
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("home")
+        let repo = root.appendingPathComponent("repos/dotfiles")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        var c = Config()
+        c.layout.innerGap = 30
+        try c.encoded().write(to: repo.appendingPathComponent("striple.json"))
+        let url = home.appendingPathComponent("config.json")
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: "../repos/dotfiles/striple.json")
+        let store = ConfigStore(fileURL: url, watch: true, linkRetryDelay: 0.1)
+        #expect(store.config.layout.innerGap == 30)
+
+        // `mv ~/dotfiles ~/dotfiles.old && git clone …`: no event in the folder of the link.
+        try fm.moveItem(at: repo, to: root.appendingPathComponent("repos/dotfiles.old"))
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        c.layout.innerGap = 31
+        try c.encoded().write(to: repo.appendingPathComponent("striple.json"))
+        for _ in 0..<40 where store.config.layout.innerGap != 31 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 31)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        c.layout.innerGap = 32
+        try writeInPlace(c.encoded(), to: repo.appendingPathComponent("striple.json"))
+        for _ in 0..<40 where store.config.layout.innerGap != 32 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 32)
+    }
+
+    // Round 13 finding: a chain of 17 to 32 links (the kernel follows 32) was taken for a loop.
+    @Test func aLongChainOfLinksSavesToItsEnd() throws {
+        let url = tempFile()
+        let dir = url.deletingLastPathComponent()
+        let fm = FileManager.default
+        let real = dir.appendingPathComponent("real.json")
+        try Config().encoded().write(to: real)
+        var next = "real.json"
+        for i in 0..<20 {
+            try fm.createSymbolicLink(atPath: dir.appendingPathComponent("l\(i)").path, withDestinationPath: next)
+            next = "l\(i)"
+        }
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: next)
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 15 }
+        #expect(!store.hasProblem)
+        #expect(try Config.decode(Data(contentsOf: real)).layout.innerGap == 15)
+        #expect(try fm.destinationOfSymbolicLink(atPath: url.path) == next)
+    }
+
     // Round 12 finding: a link loop was replaced with a plain file.
     @Test func aLinkLoopIsNeverReplaced() throws {
         let url = tempFile()

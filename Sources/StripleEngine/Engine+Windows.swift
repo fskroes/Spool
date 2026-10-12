@@ -313,12 +313,15 @@ extension Engine {
 
     /// The strip a window belongs to: its display (by its centre, or the saved one) and its Space.
     /// nil when the display is disabled.
-    func stripKey(for id: WindowID, element: AXUIElement, preferredDisplay: String? = nil) -> StripKey? {
+    /// `needFrame`: nil when the frame cannot be read (a busy app, a closed window), instead of the main display.
+    func stripKey(for id: WindowID, element: AXUIElement, preferredDisplay: String? = nil, needFrame: Bool = false) -> StripKey? {
         let d: EngineDisplay?
         if let preferredDisplay, let saved = display(preferredDisplay) {
             d = saved
         } else if let f = AX.frame(element) {
             d = display(containing: CGPoint(x: f.midX, y: f.midY))
+        } else if needFrame {
+            return nil
         } else {
             d = displays.first
         }
@@ -806,7 +809,10 @@ extension Engine {
         let action = Policy.respaceAction(
             state: w.state, userFloating: w.userFloating, offDisplay: w.offDisplay, key: w.key,
             windowSpaces: w.state == .tiled ? Spaces.spaces(of: id) : [], activeSpaces: activeSpaces,
-            allSpaces: Spaces.all, here: { self.stripKey(for: id, element: w.element) }, isDisabled: { self.isDisabled($0) })
+            allSpaces: Spaces.all, here: { self.stripKey(for: id, element: w.element, needFrame: true) },
+            isDisabled: { self.isDisabled($0) })
+        // The window the user works with (dragged or moved in Mission Control) stays focused and in view.
+        let focused = focusedID == id
         switch action {
         case .stay:
             return []
@@ -823,20 +829,23 @@ extension Engine {
             if let m = metrics(from) { source.ensureFocusVisible(settings: config.layout, metrics: m) }
             strips[from] = source
             var strip = strips[to] ?? Strip()
-            strip.insert(w.info, width: width ?? .proportion(config.layout.defaultWidth), focus: false)
+            strip.insert(w.info, width: width ?? .proportion(config.layout.defaultWidth), focus: focused)
+            if focused, let m = metrics(to) { strip.ensureFocusVisible(settings: config.layout, metrics: m) }
             strips[to] = strip
             windows[id]?.key = to
             applier.forget(id)
             if relayoutNow {
                 relayout(from)
                 relayout(to)
+                if focused { updateFocusOverlays() }
             }
             return [from, to]
         case .tile(let to):
             log.log("respace: window \(id) of \(w.info.bundleID) is on a managed display again, it tiles")
             if w.key != to { windows[id]?.slot = nil }
             windows[id]?.key = to
-            putBack(id, focus: false)
+            putBack(id, focus: focused)
+            if focused { updateFocusOverlays() }
             return [to]
         }
     }

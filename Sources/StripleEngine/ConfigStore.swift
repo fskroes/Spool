@@ -24,8 +24,14 @@ public final class ConfigStore: ObservableObject {
     /// The file itself: an editor or a shell redirect that writes in place changes no folder entry.
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var reloadWork: DispatchWorkItem?
-    /// While `config.json` is a link to a file that does not exist yet: the next look for that file.
+    /// While `config.json` is a link: the next check that the watched file is still the link target.
     private var linkRetryWork: DispatchWorkItem?
+    /// The file `fileWatcher` watches (device and inode), nil when no file is watched.
+    private var watchedFile: FileID?
+    private struct FileID: Equatable {
+        let device: dev_t
+        let inode: ino_t
+    }
     private let linkRetryDelay: TimeInterval
     /// The file on disk did not decode. The next save keeps a copy of it first.
     private var fileIsBroken = false
@@ -146,7 +152,8 @@ public final class ConfigStore: ObservableObject {
     /// that folder, also when the folder is reached through another link (`~/.config -> ~/dotfiles/config`).
     nonisolated static func writeTarget(of url: URL) -> URL {
         var out = url
-        for _ in 0..<16 {
+        // The kernel follows up to 32 links (MAXSYMLINKS).
+        for _ in 0..<32 {
             guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: out.path) else { return out }
             if dest.hasPrefix("/") {
                 out = URL(fileURLWithPath: dest)
@@ -170,7 +177,7 @@ public final class ConfigStore: ObservableObject {
     /// Links that point to each other in a loop. A write would replace one of them with a plain file.
     struct LinkLoop: LocalizedError {
         let at: URL
-        var errorDescription: String? { "it is a link in a loop, at \(at.path)" }
+        var errorDescription: String? { "it is a link in a loop or a chain of more than 32 links, at \(at.path)" }
     }
 
     /// Makes the folder for `target` when it is Striple's own file, else checks that the user's folder exists.
@@ -264,19 +271,14 @@ public final class ConfigStore: ObservableObject {
         fileWatcher = nil
         linkRetryWork?.cancel()
         linkRetryWork = nil
+        watchedFile = nil
+        // A link target can come later (a dotfiles repo that is not cloned yet) or be moved away
+        // (`mv ~/dotfiles ~/dotfiles.old`). No event in the folder of the link tells, so check every few seconds.
+        if (try? FileManager.default.destinationOfSymbolicLink(atPath: fileURL.path)) != nil { scheduleLinkCheck() }
         let fd = open(fileURL.path, O_EVTONLY)
-        guard fd >= 0 else {
-            // A link to a file that does not exist yet (a dotfiles repo that is not cloned): no folder event tells
-            // when it comes, so look again after a few seconds.
-            if (try? FileManager.default.destinationOfSymbolicLink(atPath: fileURL.path)) != nil {
-                let work = DispatchWorkItem { [weak self] in
-                    MainActor.assumeIsolated { self?.scheduleReload() }
-                }
-                linkRetryWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + linkRetryDelay, execute: work)
-            }
-            return
-        }
+        guard fd >= 0 else { return }
+        var info = stat()
+        if fstat(fd, &info) == 0 { watchedFile = FileID(device: info.st_dev, inode: info.st_ino) }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename],
                                                                queue: .main)
         source.setEventHandler { [weak self] in
@@ -285,6 +287,21 @@ public final class ConfigStore: ObservableObject {
         source.setCancelHandler { close(fd) }
         source.resume()
         fileWatcher = source
+    }
+
+    private func scheduleLinkCheck() {
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.checkLinkTarget() }
+        }
+        linkRetryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + linkRetryDelay, execute: work)
+    }
+
+    /// Reloads and watches again when the file at the link target is not the watched one.
+    private func checkLinkTarget() {
+        var info = stat()
+        let now = stat(fileURL.path, &info) == 0 ? FileID(device: info.st_dev, inode: info.st_ino) : nil
+        if now != watchedFile { scheduleReload() } else { scheduleLinkCheck() }
     }
 
     private func scheduleReload() {
