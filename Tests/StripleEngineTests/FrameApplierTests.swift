@@ -15,6 +15,10 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     private var batches: [pid_t] = []
     private var settled: [pid_t] = []
     private var gates: [WindowID: Gate] = [:]
+    private var outcomes: [WindowID: [Bool]] = [:]
+
+    /// The results of the next writes of one window, in order; after them, `failing` decides.
+    func outcomes(_ id: WindowID, _ list: [Bool]) { lock.withLock { outcomes[id] = list } }
 
     /// Holds the next write of one window: `started` signals when the write begins, and the write ends after
     /// `release`. A gate holds one write only. The tests use gates to put events in a fixed order, without sleeps.
@@ -46,8 +50,15 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
         }
         let wait = delays[w.id] ?? delay
         if wait > 0 { Thread.sleep(forTimeInterval: wait) }
-        lock.withLock { log.append((w.pid, w.id, w.frame, previous)) }
-        return !failing.contains(w.id)
+        return lock.withLock {
+            log.append((w.pid, w.id, w.frame, previous))
+            if var list = outcomes[w.id], !list.isEmpty {
+                let ok = list.removeFirst()
+                outcomes[w.id] = list
+                return ok
+            }
+            return !failing.contains(w.id)
+        }
     }
 
     var writes: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] { lock.withLock { log } }
@@ -189,6 +200,22 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(applier.lastWritten(1) == rect(0))
     }
 
+    @Test func aFrameBackToTheOneInFlightReplacesTheNewerPendingFrame() {
+        // A is in flight, B waits, then the engine wants A again (scroll right, then back). A must be written
+        // again after B is dropped; skipping A as "in flight" would leave the window at B.
+        let writer = FakeWriter()
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(50))])
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        held.release.signal()
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.frames(1) == [rect(0), rect(0)])
+        #expect(applier.lastWritten(1) == rect(0))
+    }
+
     @Test func aFrameEqualToTheOneInFlightIsSkippedButWaitedFor() {
         let writer = FakeWriter()
         let first = writer.gate(1)
@@ -246,9 +273,11 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
         #expect(hung.started.wait(timeout: .now() + 2) == .success)
         let done = DispatchSemaphore(value: 0)
-        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { _ in done.signal() }
+        let time = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { ms in time.set(ms); done.signal() }
         applier.forgetApp(10)
         #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(time.get() == .some(nil), "a dropped frame has no frame-write time")
         #expect(writer.frames(1).isEmpty, "the wait ended while the app was still hung")
         hung.release.signal()
     }
@@ -307,14 +336,31 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
         #expect(first.started.wait(timeout: .now() + 2) == .success)
         let done = DispatchSemaphore(value: 0)
-        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { _ in done.signal() } // pending
+        let time = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { ms in time.set(ms); done.signal() } // pending
         applier.reset() // drops the pending frame
         first.release.signal()
         #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(time.get() == .some(nil), "a dropped frame has no frame-write time")
         #expect(writer.frames(1) == [rect(0)])
         // The app is idle again: a new frame is written.
         #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(2))], timeout: 1) != nil)
         #expect(writer.frames(1) == [rect(0), rect(2)])
+    }
+
+    @Test func aWriteThatLandsAfterAResetHasNoFrameWriteTime() {
+        // The engine stopped during the write: the caller is released, but the time is not a frame-write sample.
+        let writer = FakeWriter()
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        let done = DispatchSemaphore(value: 0)
+        let time = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))]) { ms in time.set(ms); done.signal() }
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        applier.reset()
+        held.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(time.get() == .some(nil))
     }
 
     @Test func forgetDuringAWriteMakesTheNextWriteOfThatFrameHappen() {
@@ -421,6 +467,7 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(applier.settleAndWait(timeout: 2))
         #expect(writer.frames(2) == [rect(0)])
         #expect(lock.withLock { timings }.count == 1, "only the write after the reset is measured")
+        #expect(applier.appCount == 1, "the new apply made the app current again: it stays when idle")
     }
 
     // The pid-reuse tests below hold writes with gates. Where a test checks that something does NOT happen, it
@@ -509,6 +556,25 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(t.allSatisfy { $0.latencyMs >= $0.axMs }, "the wait includes the AX call")
     }
 
+    @Test func anAppWithSomeGoodWritesInEachBatchIsNotFailing() {
+        // A closed window next to good ones: only a batch in which every write failed counts.
+        let writer = FakeWriter(failing: [2])
+        let applier = FrameApplier(writer: writer)
+        for x in 0..<3 {
+            applier.applyAndWait([FrameWrite(id: 1, pid: 11, frame: rect(CGFloat(x))), FrameWrite(id: 2, pid: 11, frame: rect(CGFloat(x)))])
+        }
+        #expect(applier.failingApps(threshold: 1).isEmpty)
+    }
+
+    @Test func oneGoodBatchStartsTheFailureCountAgain() {
+        let writer = FakeWriter()
+        writer.outcomes(1, [false, false, true, false])
+        let applier = FrameApplier(writer: writer)
+        for x in 0..<4 { applier.applyAndWait([FrameWrite(id: 1, pid: 11, frame: rect(CGFloat(x)))]) }
+        #expect(applier.failingApps(threshold: 2).isEmpty, "fail, fail, ok, fail: only 1 in a row")
+        #expect(applier.failingApps(threshold: 1) == [11])
+    }
+
     @Test func appsWhoseWritesAllFailAreReported() {
         let writer = FakeWriter(failing: [2])
         let applier = FrameApplier(writer: writer)
@@ -522,6 +588,14 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
     }
 }
 
+/// What a completion got: nil until it ran, then the time it was given (itself nil for a dropped frame).
+private final class TimeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Double??
+    func set(_ v: Double?) { lock.withLock { value = .some(v) } }
+    func get() -> Double?? { lock.withLock { value } }
+}
+
 /// The performance budget from docs/SPEC.md. It measures wall-clock time, so it runs only with `make bench`
 /// (STRIPLE_BENCH=1), not as a gate test. `appsAreWrittenInParallel` checks the parallel writes without a clock.
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["STRIPLE_BENCH"] != nil))
@@ -531,12 +605,15 @@ struct FrameApplierBenchmarkTests {
         let applier = FrameApplier(writer: writer)
         let ids = (1...6).map { WindowID($0) }
         _ = applier.applyAndWait(ids.map { FrameWrite(id: $0, pid: pid_t($0), frame: rect(-1)) }) // warm up the queues
-        var best = Double.infinity
-        for round in 0..<5 {
-            let ms = applier.applyAndWait(ids.map { FrameWrite(id: $0, pid: pid_t($0), frame: rect(CGFloat(round * 10 + Int($0)))) })!
-            best = min(best, ms)
+        var samples: [Double] = []
+        for round in 0..<100 {
+            samples.append(applier.applyAndWait(ids.map { FrameWrite(id: $0, pid: pid_t($0), frame: rect(CGFloat(round * 10 + Int($0)))) })!)
         }
-        print("Frame write, 6 apps x 2 ms AX latency: \(String(format: "%.2f", best)) ms (serial about 12 ms)")
-        #expect(best < 4, "6 apps x 2 ms took \(best) ms; serial would be about 12 ms")
+        // Nearest rank, as `striple stats` does.
+        let sorted = samples.sorted()
+        func p(_ q: Double) -> Double { sorted[max(Int((q / 100 * Double(sorted.count)).rounded(.up)) - 1, 0)] }
+        print(String(format: "Frame write, 6 apps x 2 ms AX latency, 100 rounds: p50 %.2f ms, p95 %.2f ms, max %.2f ms (serial about 12 ms)",
+                     p(50), p(95), sorted.last!))
+        #expect(p(95) < 4, "6 apps x 2 ms: p95 \(p(95)) ms; serial would be about 12 ms")
     }
 }

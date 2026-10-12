@@ -76,8 +76,9 @@ public final class FrameApplier: @unchecked Sendable {
         /// so when it is written, `landed` becomes the `queued` value at the time it was taken.
         var queued: UInt64 = 0
         var landed: UInt64 = 0
-        /// Run when `landed` reaches the number.
-        var waiters: [(upTo: UInt64, run: @Sendable () -> Void)] = []
+        /// Run when `landed` reaches the number. The argument is true when the frames were dropped by `forgetApp`
+        /// or `reset` and not written.
+        var waiters: [(upTo: UInt64, run: @Sendable (Bool) -> Void)] = []
         /// Batches in a row in which every write failed. One success sets it to 0.
         var failedBatches = 0
         /// Set by `reset` while a batch runs: the state goes away when the app is idle. A new `apply` clears it.
@@ -135,7 +136,7 @@ public final class FrameApplier: @unchecked Sendable {
 
     public func forgetApp(_ pid: pid_t) {
         let waiters = lock.withLock { apps.removeValue(forKey: pid)?.waiters ?? [] }
-        for w in waiters { w.run() }
+        for w in waiters { w.run(true) }
     }
 
     /// Apps whose last `threshold` batches all failed: their AX elements or observer are probably dead.
@@ -182,7 +183,7 @@ public final class FrameApplier: @unchecked Sendable {
                     apps[pid]!.failedBatches = 0
                     apps[pid]!.retired = true
                 } else {
-                    run += state.waiters.map(\.run)
+                    run += state.waiters.map { w -> @Sendable () -> Void in { w.run(true) } }
                     apps.removeValue(forKey: pid)
                 }
             }
@@ -194,7 +195,9 @@ public final class FrameApplier: @unchecked Sendable {
     /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every frame of this
     /// call is written, or replaced by a newer frame that is written, with the wall time in milliseconds.
     /// A frame merged into an app that was already busy is waited for too, but frames of later calls are not.
-    public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double) -> Void)? = nil) {
+    /// The time is nil when `forgetApp` or `reset` dropped a frame of this call: it is not a frame-write time.
+    public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double?) -> Void)? = nil) {
+        let dropped = Flag()
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
         var toStart: [(pid_t, DispatchQueue, UInt64)] = []
@@ -235,7 +238,10 @@ public final class FrameApplier: @unchecked Sendable {
             for pid in queuedFor.union(waitFor) {
                 guard let state = apps[pid], state.landed < state.queued else { continue }
                 group.enter()
-                apps[pid]!.waiters.append((state.queued, { group.leave() }))
+                apps[pid]!.waiters.append((state.queued, { wasDropped in
+                    if wasDropped { dropped.set() }
+                    group.leave()
+                }))
             }
         }
         for (pid, queue, generation) in toStart {
@@ -243,17 +249,28 @@ public final class FrameApplier: @unchecked Sendable {
         }
         guard let completion else { return }
         group.notify(queue: .global(qos: .userInteractive)) {
-            completion(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            completion(dropped.isSet ? nil : Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         }
     }
 
-    /// Like `apply`, but waits. Returns the wall time in milliseconds, or nil after `timeout` seconds
-    /// (an app that does not answer). Not for the main thread in a live tick.
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.withLock { value = true } }
+        var isSet: Bool { lock.withLock { value } }
+    }
+
+    /// Like `apply`, but waits. Returns the wall time in milliseconds (also when a frame was dropped), or nil
+    /// after `timeout` seconds (an app that does not answer). Not for the main thread in a live tick.
     @discardableResult
     public func applyAndWait(_ writes: [FrameWrite], timeout: Double = .infinity) -> Double? {
         let done = DispatchSemaphore(value: 0)
         let box = Box()
-        apply(writes) { ms in box.value = ms; done.signal() }
+        let start = DispatchTime.now().uptimeNanoseconds
+        apply(writes) { ms in
+            box.value = ms ?? Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            done.signal()
+        }
         if timeout.isFinite {
             guard done.wait(timeout: .now() + timeout) == .success else { return nil }
         } else {
@@ -273,7 +290,8 @@ public final class FrameApplier: @unchecked Sendable {
                 guard var state = apps[pid], state.generation == generation, !state.pending.isEmpty else {
                     // Nothing left: everything queued is written or was dropped by `reset`.
                     if let state = apps[pid], state.generation == generation {
-                        idle = state.waiters.map(\.run)
+                        let wasReset = state.retired
+                        idle = state.waiters.map { w -> @Sendable () -> Void in { w.run(wasReset) } }
                         if state.retired {
                             apps.removeValue(forKey: pid)
                         } else {
@@ -326,7 +344,9 @@ public final class FrameApplier: @unchecked Sendable {
                 if results.contains(where: \.ok) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
                 apps[pid]!.landed = max(apps[pid]!.landed, upTo)
                 let landed = apps[pid]!.landed
-                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map(\.run)
+                // After a reset the batch was written, but the frames it waited for may have been dropped.
+                let wasReset = resets != resetsAtTake
+                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map { w -> @Sendable () -> Void in { w.run(wasReset) } }
                 apps[pid]!.waiters.removeAll { $0.upTo <= landed }
                 return ready
             }

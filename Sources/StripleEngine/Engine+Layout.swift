@@ -54,8 +54,7 @@ extension Engine {
         if !writes.isEmpty {
             let start = pendingCommandStart
             pendingCommandStart = nil
-            let recorder = self.recorder
-            applier.apply(writes) { ms in recorder.record(frameMs: ms, commandStart: start) }
+            applier.apply(writes, completion: Self.recordTick(recorder, commandStart: start))
         }
         updateOverlays()
         if settled && swipe == nil {

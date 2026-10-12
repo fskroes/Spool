@@ -153,6 +153,6 @@ test in `Tests/`.
 | Metric | Budget | How it is measured |
 |---|---|---|
 | Layout compute, 50 columns | < 50 µs | `LayoutBenchmarkTests` |
-| Frame write, 6 apps at 2 ms AX latency each | < 4 ms parallel, against 12 ms serial | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer |
+| Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints p50, p95 and max |
 | Idle | no display link and no timer when nothing moves | `AnimatorTests` |
 | Live frame cost | p50 and p95 reported | `striple stats` |

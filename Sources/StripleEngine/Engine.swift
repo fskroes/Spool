@@ -273,10 +273,19 @@ public final class Engine: ObservableObject {
 
     /// Forgets every window and app in the applier and the per-app stats. Apps can quit while the engine is stopped,
     /// and a new app can then get the same pid: it must not inherit the old app's samples.
-    /// Reset the applier first: after that, a batch that is still running records no timings.
-    nonisolated static func resetWriteState(applier: FrameApplier, recorder: StatsRecorder) {
+    /// Reset the applier first: after that, a batch that is still running records no timings. In the other order,
+    /// a batch that lands between the two calls would put its app back into the stats. `between` runs between the
+    /// two calls; only tests use it, to land a batch there.
+    nonisolated static func resetWriteState(applier: FrameApplier, recorder: StatsRecorder, between: () -> Void = {}) {
         applier.reset()
+        between()
         recorder.forgetAllApps()
+    }
+
+    /// The completion of a tick's frame writes: records the frame-write time and the command latency, but not when
+    /// the applier dropped a frame (the app quit or the engine stopped): then no frame was written.
+    nonisolated static func recordTick(_ recorder: StatsRecorder, commandStart: Double?) -> @Sendable (Double?) -> Void {
+        { ms in if let ms { recorder.record(frameMs: ms, commandStart: commandStart) } }
     }
 
     /// Forgets all windows. Does not move them.
