@@ -66,6 +66,22 @@ make install                                    # build, then install
 2. It copies `dist/Striple.app` to `/Applications`. If you cannot write to `/Applications`, it uses `~/Applications`.
 3. It makes the link `~/.local/bin/striple` to `Striple.app/Contents/Helpers/striple`. If `~/.local/bin` is not on your `PATH`, it tells you the line to add to `~/.zshrc`.
 
+### Install a published release
+
+Releases are at [fskroes/striple-releases](https://github.com/fskroes/striple-releases/releases). Download with `curl`, not with a browser:
+
+```sh
+curl -fsSL -o /tmp/Striple.dmg https://github.com/fskroes/striple-releases/releases/latest/download/Striple.dmg
+hdiutil attach -nobrowse -readonly -mountpoint /tmp/striple-dmg /tmp/Striple.dmg
+ditto /tmp/striple-dmg/Striple.app /Applications/Striple.app
+hdiutil detach /tmp/striple-dmg && rm /tmp/Striple.dmg
+ln -sf /Applications/Striple.app/Contents/Helpers/striple ~/.local/bin/striple
+```
+
+Why: a browser adds the quarantine flag (`com.apple.quarantine`) to a download. For an app with that flag, Gatekeeper accepts only Apple and Developer ID signatures. Striple is signed with the local certificate, so `spctl -a -t exec` says `rejected` and macOS does not open it. `curl` does not add the flag. Gatekeeper checks only apps with the flag, so the app opens. If you downloaded with a browser: System Settings > Privacy & Security > "Open Anyway" (needs an admin password), or `xattr -dr com.apple.quarantine /Applications/Striple.app`.
+
+Sparkle updates do not have this problem: Sparkle removes the quarantine flag from the update before it installs it.
+
 ## First run
 
 1. Open Striple: `open /Applications/Striple.app`. Striple has no Dock icon. It shows in the menu bar.

@@ -8,6 +8,8 @@ import Testing
 private final class FakeWriter: FrameWriter, @unchecked Sendable {
     let delay: Double
     let failing: Set<WindowID>
+    /// Per-window delay, used instead of `delay` for these windows.
+    var delays: [WindowID: Double] = [:]
     private let lock = NSLock()
     private var log: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] = []
     private var batches: [pid_t] = []
@@ -25,13 +27,24 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     func frames(_ id: WindowID) -> [CGRect] { lock.withLock { log.filter { $0.id == id }.map(\.frame) } }
 
     func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
-        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        let wait = delays[w.id] ?? delay
+        if wait > 0 { Thread.sleep(forTimeInterval: wait) }
         lock.withLock { log.append((w.pid, w.id, w.frame, previous)) }
         return !failing.contains(w.id)
     }
 
     var writes: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] { lock.withLock { log } }
     var batchCount: Int { lock.withLock { batches.count } }
+}
+
+private final class Box<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    init(_ value: T) { stored = value }
+    var value: T {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
 }
 
 private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, height: 100) }
@@ -253,6 +266,44 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         // The app is idle again: a new frame is written.
         #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(2))], timeout: 1) != nil)
         #expect(writer.frames(1) == [rect(0), rect(2)])
+    }
+
+    @Test func aDrainOfAForgottenAppDoesNotFinishTheCallsOfANewAppWithTheSamePid() {
+        // App 10 is removed while its slow write runs. A new app gets pid 10 at once. The old drain ends first;
+        // it must not mark the new app's frame as written.
+        let writer = FakeWriter()
+        writer.delays = [1: 0.25, 2: 0.5]
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        Thread.sleep(forTimeInterval: 0.03)
+        applier.forgetApp(10)
+        let done = DispatchSemaphore(value: 0)
+        let early = Box<Bool>(false)
+        applier.apply([FrameWrite(id: 2, pid: 10, frame: rect(0))]) { _ in
+            early.value = writer.frames(2).isEmpty
+            done.signal()
+        }
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(!early.value, "the call finished before its frame was written")
+        #expect(writer.frames(2) == [rect(0)])
+    }
+
+    @Test func noTimingIsReportedForAnAppThatWasForgottenDuringItsBatch() {
+        // removeApp forgets the app in the applier and then in the stats. A batch that was running must not add
+        // the app to the stats again.
+        let writer = FakeWriter(delay: 0.05)
+        let lock = NSLock()
+        var timings: [FrameApplier.WriteTiming] = []
+        let applier = FrameApplier(writer: writer) { t in lock.withLock { timings.append(t) } }
+        applier.apply([FrameWrite(id: 1, pid: 9, frame: rect(0)), FrameWrite(id: 2, pid: 9, frame: rect(0))])
+        Thread.sleep(forTimeInterval: 0.02)
+        applier.forgetApp(9)
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(writer.writes.count == 2, "the batch that was running finished")
+        #expect(lock.withLock { timings }.isEmpty)
+        // A new app with the same pid is measured again.
+        applier.applyAndWait([FrameWrite(id: 3, pid: 9, frame: rect(0))], timeout: 1)
+        #expect(lock.withLock { timings }.map(\.pid) == [9])
     }
 
     @Test func eachWriteReportsItsAppTheAXTimeAndTheWait() {
