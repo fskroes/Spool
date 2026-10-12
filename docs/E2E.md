@@ -78,33 +78,37 @@ fails its scenario with the last failures it saw. Frames may differ by 2 points 
 
 Every strip check of a to f also checks:
 
-- The scroll and the x of every column. The runner calculates the scroll of the default center mode `onOverflow`
-  itself: 0 when all columns fit, else the focused column centred but never past the ends of the strip. The strip
-  x of a column is the left edge of the work area + its position in the strip - scroll. The runner rounds the x
-  and the width to whole points, as `Layout.pixelAligned` does. Then it applies the rule of `Layout.physical`
-  again (`StripGeometry.shownX`):
-  - A column fully on the display is at its strip x.
+- The scroll and the frame of every column. The runner calculates the scroll of the default center mode
+  `onOverflow` itself: 0 when all columns fit, else the focused column centred but never past the ends of the
+  strip. The strip x of a column is the left edge of the work area + its position in the strip - scroll. Then
+  `StripGeometry.expected` gives the frame Striple must write. It is a second copy of `Layout.physical` and
+  `Layout.park`, so the check does not trust the code it checks. It rounds the x and the width to whole points,
+  as `Layout.pixelAligned` does:
+  - A column fully on the display is at its strip x, at the top of the work area, with the work-area height.
   - A column that hangs over an edge with no display there stays at its strip x. Its gap to the next column is
     checked too.
   - A column that hangs toward another display is moved to that edge, or parked when its middle is past the edge.
-  - A column past an edge (less than `layout.parkedSliver` on the display) is parked.
+  - A column past an edge (less than `layout.parkedSliver` on the display) is parked:
+    - With a display on one side only, every parked column goes to the free side.
+    - With displays on both sides, it stays inside the display horizontally (at its left or right edge) and
+      goes to the bottom.
+    - Else it goes to the sliver of its side: at the bottom, or at the same y when a display is below.
+    - A parked column keeps its size.
 
-  A column that is visible where it must be parked, or parked where it must be visible, fails.
+  The x, the y, the width and the height must match, with 2 points for rounding. One exception: macOS can stop
+  a window that Striple parks at the bottom higher than Striple asked. It keeps the title bar on the screen
+  (28 points on the test display). So the y of such a window may be up to 40 points higher
+  (`FrameChecks.titleBarStop`).
 
-  The runner reads a window as parked as `Layout.park` puts it (`FrameChecks.place`). Striple parks at the
-  bottom of the display, unless a display is below it and none is at the left or the right. A display is a
-  neighbour when its edge is at most 2 points from the edge of the main display and the two overlap by more than
-  2 points along that edge (the rule of `Displays.make`).
-  - Parks at the bottom: Striple moves the window down. With a free side, it also moves it to that side, so at
-    most `layout.parkedSliver` + 2 points of the width stay on the display. macOS can stop the window higher
-    than Striple asked: it keeps the title bar on the screen (28 points on the test display). So the runner
-    asks only that the top is more than 2 points below the top of the work area.
-  - Parks at the side: Striple keeps the y. Parked means at most `layout.parkedSliver` + 2 points of the width
-    on the display.
-  - A window with nothing on the display counts as parked, and then fails the sliver check.
+  A display is a neighbour when its edge is at most 2 points from the edge of the main display and the two
+  overlap by more than 2 points along that edge (the rule of `Displays.make`).
 
-  So a column at the top of the work area with only 1 to 3 points of its width on the display is visible, not
-  parked, as in `Layout.physical`.
+  The order, gap and "all fit" checks use the places that `expected` gives. Only when the runner has no scroll
+  (a strip window is missing, or the focused column does not exist, which fails already) does it read the place
+  from the frame alone (`FrameChecks.place`). With a display below only, a visible column with at most
+  `layout.parkedSliver` + 2 points on the display then reads as parked.
+- The focus. When the test app is frontmost and its key window is in the strip, that window is in Striple's
+  focused column. The expected scroll follows that column, so the two must agree.
 - The windows. Each window of the test app is a column or floats, never both and never neither.
 - The count. The runner expects the number of windows it opened and closed. It never takes the count from
   `striple state`, so a lost column fails and does not change what the next scenario expects.
@@ -200,5 +204,5 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   check of the parked side order is skipped then.
 - The test app takes the focus during the run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  two live runs on 2026-10-12 (after the round 5 fixes) measured a frame write p95 of 4.50 and 4.87 ms and a settle p95 of 833 and 825 ms. A heavy load on the Mac can still make it fail. Run
+  two live runs on 2026-10-12 (after the round 6 fixes) measured a frame write p95 of 4.81 and 4.72 ms and a settle p95 of 946 and 850 ms. A heavy load on the Mac can still make it fail. Run
   again when other work used the CPU.

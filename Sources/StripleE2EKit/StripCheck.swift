@@ -41,7 +41,8 @@ public enum StripCheck {
 
     /// The failures; empty when the strip is as expected. `strip` is nil when no strip holds a test window.
     /// `floating` are the test windows Striple floats. `proportion` gives the column width the runner expects
-    /// for a window. The frames must match the scroll of the default center mode `onOverflow`.
+    /// for a window. The frames must match the scroll of the default center mode `onOverflow` for Striple's
+    /// focused column, and that column must hold the key window when the test app is frontmost.
     public static func failures(_ strip: StripView?, _ report: WindowReport, floating: [UInt32], expect: StripExpectation,
                                 geometry: StripGeometry, proportion: (UInt32) -> Double) -> [String] {
         guard let strip else { return ["no strip holds a test window"] }
@@ -64,6 +65,12 @@ public enum StripCheck {
         }
         if let want = expect.focusedColumn, strip.focusedColumn != want {
             failures.append("focused column \(strip.focusedColumn + 1), want \(want + 1)")
+        }
+        // The expected scroll follows Striple's focused column, so that column must be the one the user sees
+        // focused: when the test app is frontmost and a strip window is key, it is the key window.
+        if report.active, let key = report.key.map(UInt32.init), inStrip.contains(key), ids.indices.contains(strip.focusedColumn),
+           ids[strip.focusedColumn] != key {
+            failures.append("\(title(key, report)) is the key window, but Striple's focused column \(strip.focusedColumn + 1) is \(title(ids[strip.focusedColumn], report))")
         }
         var columns: [FrameChecks.Column] = []
         for id in ids {

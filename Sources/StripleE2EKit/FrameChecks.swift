@@ -84,6 +84,38 @@ public struct StripGeometry: Equatable, Sendable {
         return x
     }
 
+    /// Where Striple puts a column with left edge `x` and width `width` (from the strip and the scroll): its frame
+    /// and its place. A port of `Layout.physical` and `Layout.park`, written again so the E2E check does not trust
+    /// the code it checks:
+    /// - shown (`shownX`): at the work-area top, with the work-area height;
+    /// - parked toward a side with a display there and none on the other side: at the free side instead;
+    /// - displays on both sides: inside the display horizontally (at its right or left edge), at the bottom;
+    /// - else at the sliver of its side, at the bottom, or at the same y when a display is below.
+    /// The size stays. Rounded to whole points like `Layout.pixelAligned`.
+    public func expected(x: Double, width: Double) -> (frame: CGRect, place: FrameChecks.Place) {
+        let x = x.rounded(), w = width.rounded()
+        let top = Double(work.minY).rounded(), h = Double(work.height).rounded()
+        let d0 = Double(display.minX), d1 = Double(display.maxX), bottom = Double(display.maxY) - sliver
+        if let shown = shownX(x, width: w) {
+            return (CGRect(x: shown, y: top, width: w, height: h), .visible)
+        }
+        var right = x + w > d1
+        if right && neighborRight && !neighborLeft { right = false }
+        if !right && neighborLeft && !neighborRight { right = true }
+        let px: Double, py: Double
+        if neighborLeft && neighborRight {
+            px = right ? max(d1 - w, d0) : d0
+            py = bottom
+        } else {
+            px = right ? d1 - sliver : d0 - w + sliver
+            py = neighborBelow ? top : bottom
+        }
+        return (CGRect(x: px, y: py, width: w, height: h), right ? .parkedRight : .parkedLeft)
+    }
+
+    /// True when `expected` parks a column at the bottom edge: its y there is `display.maxY - sliver`.
+    public var parksAtTheBottom: Bool { !neighborBelow || (neighborLeft && neighborRight) }
+
     /// Which sides of `frame` touch another display, with the 2 pt tolerance of the engine (Displays.make).
     public static func neighbors(of frame: CGRect, among displays: [CGRect]) -> (left: Bool, right: Bool, below: Bool) {
         let others = displays.filter { $0 != frame }
@@ -93,16 +125,16 @@ public struct StripGeometry: Equatable, Sendable {
                 others.contains { abs($0.minX - frame.maxX) <= 2 && overlapsVertically($0) },
                 others.contains { abs($0.minY - frame.maxY) <= 2 && overlapsHorizontally($0) })
     }
-
-    /// True when Striple parks hidden columns at the bottom edge (Layout.park): no display below, or displays
-    /// on both sides. Else it parks them at a side and keeps their y.
-    public var parksAtTheBottom: Bool { !neighborBelow || (neighborLeft && neighborRight) }
 }
 
 /// Pure checks on reported window frames. Each returns a list of failures; empty means the check passed.
 public enum FrameChecks {
     /// Rounding: AX and AppKit round frames to whole points, and Striple rounds origin and size apart.
     public static let tolerance = 2.0
+
+    /// How much higher than `display.maxY - sliver` macOS can stop a window that Striple parks at the bottom:
+    /// macOS keeps the title bar on the screen. Seen live: 28 pt (y 1301 on a 1329 pt high display).
+    public static let titleBarStop = 40.0
 
     public static func near(_ a: Double, _ b: Double, _ tol: Double = tolerance) -> Bool { abs(a - b) <= tol }
 
@@ -118,12 +150,15 @@ public enum FrameChecks {
         public static func < (a: Place, b: Place) -> Bool { a.rawValue < b.rawValue }
     }
 
-    /// Where a window is: parked, or visible. It follows Layout.park:
+    /// Where a window is, from its frame only: parked, or visible. `checkStrip` uses it only without a scroll;
+    /// with a scroll it compares each frame with `StripGeometry.expected`. It follows Layout.park:
     /// - Striple parks at the bottom (`parksAtTheBottom`): it moves the window down, and with a free side also
-    ///   to a sliver at that side. macOS can stop the window lower than the engine asked (the title bar stays
-    ///   on screen; 28 pt on a 2056x1329 display), so the y says only "moved down from the work-area top".
-    ///   A column at the work-area top with 1 to 3 pt on the display is visible: Layout.physical leaves it there.
-    /// - Else (a display below only) Striple parks at the side and keeps the y, so the x says it.
+    ///   to a sliver at that side. macOS can stop the window higher than the engine asked (`titleBarStop`), so
+    ///   the y says only "moved down from the work-area top". A column at the work-area top with 1 to 3 pt on
+    ///   the display is visible: Layout.physical leaves it there.
+    /// - Else (a display below only) Striple parks at the side and keeps the y, so only the x can say it. A
+    ///   visible column with at most `sliver` + 2 pt on the display then reads as parked: the frame alone
+    ///   cannot tell the two apart.
     /// A window with nothing on the display counts as parked (and then fails the sliver check).
     public static func place(_ f: CGRect, geometry g: StripGeometry) -> Place {
         let d = g.display
@@ -165,25 +200,34 @@ public enum FrameChecks {
     /// - when all columns fit the work area, all are visible and the first starts at the left edge (no hole);
     /// - at least one column is visible, and a parked column keeps a sliver on the display (else macOS can move
     ///   it to another display or forget which display it is on);
-    /// - with a `scroll`: each column is where the strip and the scroll put it (x = work area left + its
-    ///   position in the strip - scroll), moved or parked at an edge as `StripGeometry.shownX` says.
+    /// - with a `scroll`: each column has the frame `StripGeometry.expected` gives for where the strip and the
+    ///   scroll put it (x = work area left + its position in the strip - scroll): x, y, width and height, shown
+    ///   or parked. The y of a column parked at the bottom can be up to `titleBarStop` higher. The other checks
+    ///   then use the expected places, not `place`.
     public static func checkStrip(_ columns: [Column], geometry g: StripGeometry, scroll: Double? = nil) -> [String] {
         var failures: [String] = []
-        let places = columns.map { place($0.frame, geometry: g) }
+        var places = columns.map { place($0.frame, geometry: g) }
         if let scroll {
             for (i, x0) in g.positions(columns.map(\.proportion)).enumerated() {
                 let c = columns[i], f = c.frame
                 let at = Double(g.work.minX) + x0 - scroll
                 let why = "(strip x \(fmt(at)), scroll \(fmt(scroll)))"
-                switch (g.shownX(at, width: g.columnWidth(c.proportion)), places[i]) {
-                case (nil, .visible):
-                    failures.append("\(c.title) is visible at x \(fmt(Double(f.minX))), want it parked \(why)")
-                case (let want?, let p) where p != .visible:
-                    failures.append("\(c.title) is parked \(fmt(f)), want it on the display at x \(fmt(want)) \(why)")
-                case (let want?, _) where !near(Double(f.minX), want):
-                    failures.append("\(c.title): x \(fmt(Double(f.minX))), want \(fmt(want)) \(why)")
-                default:
-                    break
+                let (want, p) = g.expected(x: at, width: g.columnWidth(c.proportion))
+                places[i] = p
+                let parked = p == .visible ? "" : "parked \(p == .parkedLeft ? "left" : "right") "
+                if !near(Double(f.minX), Double(want.minX)) {
+                    failures.append("\(c.title): x \(fmt(Double(f.minX))), want \(parked)at x \(fmt(Double(want.minX))) \(why)")
+                }
+                let y = Double(f.minY), wantY = Double(want.minY)
+                if p != .visible && g.parksAtTheBottom {
+                    if y < wantY - titleBarStop || y > wantY + tolerance {
+                        failures.append("\(c.title): y \(fmt(y)), want \(parked)at y \(fmt(wantY)) (macOS can stop it up to \(fmt(titleBarStop)) pt higher) \(why)")
+                    }
+                } else if !near(y, wantY) {
+                    failures.append("\(c.title): y \(fmt(y)), want \(parked)at y \(fmt(wantY)) \(why)")
+                }
+                if !near(Double(f.width), Double(want.width)) || !near(Double(f.height), Double(want.height)) {
+                    failures.append("\(c.title): size \(fmt(Double(f.width)))x\(fmt(Double(f.height))), want \(fmt(Double(want.width)))x\(fmt(Double(want.height))) (proportion \(String(format: "%.3f", c.proportion)))")
                 }
             }
         }
@@ -196,7 +240,8 @@ public enum FrameChecks {
                 failures.append("\(c.title) is parked off the display \(fmt(f)): no sliver stays on it")
             }
         }
-        for (c, p) in zip(columns, places) where p == .visible {
+        // With a scroll, the frame comparison above checked the visible columns already.
+        for (c, p) in zip(columns, places) where p == .visible && scroll == nil {
             let f = c.frame
             if !near(Double(f.minY), Double(g.work.minY)) || !near(Double(f.height), Double(g.work.height)) {
                 failures.append("\(c.title): top/height \(fmt(Double(f.minY)))/\(fmt(Double(f.height))), want \(fmt(Double(g.work.minY)))/\(fmt(Double(g.work.height)))")
