@@ -9,6 +9,9 @@ let package = Package(
         .executable(name: "StripleApp", targets: ["StripleApp"]),
         .executable(name: "striple", targets: ["striple-cli"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
+    ],
     targets: [
         .target(name: "StripleCore"),
         .target(
@@ -24,7 +27,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "StripleApp",
-            dependencies: ["StripleCore", "StripleEngine"],
+            dependencies: [
+                "StripleCore",
+                "StripleEngine",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             linkerSettings: [.linkedFramework("ServiceManagement")]
         ),
         .executableTarget(name: "striple-cli", dependencies: ["StripleCore"]),

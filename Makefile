@@ -3,7 +3,7 @@
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
 
-.PHONY: build test bench release app install run clean
+.PHONY: build test bench release app icon dmg install uninstall run clean
 
 build:
 	swift build
@@ -18,13 +18,26 @@ bench:
 release:
 	swift build -c release
 
-# Builds dist/Striple.app (signed ad hoc unless SIGN_IDENTITY is set).
+# Builds dist/Striple.app. Signs with "Striple Local Signing" when that identity exists
+# (scripts/make-signing-cert.sh), else ad hoc. SIGN_IDENTITY overrides. See docs/INSTALL.md.
 app:
 	./scripts/build-app.sh
+
+# Draws the app icon into .build/icon/AppIcon.icns (make app does this when needed).
+icon:
+	swift scripts/make-icon.swift .build/icon
+
+# Makes dist/Striple-<version>.dmg from dist/Striple.app.
+dmg: app
+	./scripts/make-dmg.sh
 
 # Copies the app to /Applications and links the CLI to ~/.local/bin/striple.
 install: app
 	./scripts/install.sh
+
+# Removes the app and the CLI link. Keeps settings and logs.
+uninstall:
+	./scripts/install.sh --uninstall
 
 run: app
 	open dist/Striple.app
