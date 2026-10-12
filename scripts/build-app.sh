@@ -2,9 +2,8 @@
 # Builds and signs dist/Striple.app. Used by `make app`.
 #
 # Environment (all optional):
-#   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when that
-#                          identity is in the keychain (see scripts/make-signing-cert.sh),
-#                          else "-" (ad hoc).
+#   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when
+#                          scripts/make-signing-cert.sh made it, else "-" (ad hoc).
 #   STRIPLE_ARCHS          architectures to build. Default: "arm64 x86_64" (universal).
 #   STRIPLE_FEED_URL       Sparkle appcast URL (https). Set together with STRIPLE_ED_PUBLIC_KEY.
 #   STRIPLE_ED_PUBLIC_KEY  Sparkle EdDSA public key (from Sparkle's generate_keys).
@@ -16,7 +15,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 readonly BUNDLE_ID="com.fskroes.Striple"
-readonly LOCAL_IDENTITY="Striple Local Signing"
+# shellcheck source=signing-env.sh
+source "$ROOT/scripts/signing-env.sh"
 readonly AGENT_PLIST="com.fskroes.Striple.agent.plist"
 readonly DIST="$ROOT/dist"
 readonly APP="$DIST/Striple.app"
@@ -45,11 +45,13 @@ if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
     [[ "$FEED_URL" == https://* ]] || die "STRIPLE_FEED_URL must use https"
 fi
 
-# Signing identity.
+# Signing identity. LOCAL: the self-signed identity of make-signing-cert.sh (by its SHA-1, so a
+# certificate with the same name in another keychain is never used).
+LOCAL=0
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     IDENTITY=$SIGN_IDENTITY
-elif [[ "$(security find-identity -v -p codesigning 2>/dev/null || true)" == *"\"$LOCAL_IDENTITY\""* ]]; then
-    IDENTITY=$LOCAL_IDENTITY
+elif IDENTITY=$(striple_signing_identity); then
+    LOCAL=1
 else
     IDENTITY="-"
 fi
@@ -57,7 +59,7 @@ fi
 # Apple Development). With ad hoc or the self-signed local identity there is no Team ID,
 # so library validation under the hardened runtime would refuse to load Sparkle.
 SIGN_FLAGS=(--force --sign "$IDENTITY")
-if [[ "$IDENTITY" != "-" && "$IDENTITY" != "$LOCAL_IDENTITY" ]]; then
+if [[ "$IDENTITY" != "-" && $LOCAL -eq 0 && "$IDENTITY" != "$STRIPLE_SIGNING_NAME" ]]; then
     SIGN_FLAGS+=(--options runtime --timestamp)
 fi
 
@@ -137,7 +139,11 @@ if [[ "$IDENTITY" == "-" ]]; then
     warn "signing ad hoc. macOS forgets the Accessibility grant after each rebuild."
     warn "run scripts/make-signing-cert.sh once to get a stable local identity (see docs/INSTALL.md)."
 fi
-log "Signing with identity: $IDENTITY"
+if [[ $LOCAL -eq 1 ]]; then
+    log "Signing with identity: $STRIPLE_SIGNING_NAME ($IDENTITY)"
+else
+    log "Signing with identity: $IDENTITY"
+fi
 SPARKLE="$CONTENTS/Frameworks/Sparkle.framework"
 sign() { codesign "${SIGN_FLAGS[@]}" "$@"; }
 for xpc in "$SPARKLE"/Versions/B/XPCServices/*.xpc; do
@@ -158,6 +164,11 @@ sign "$APP"
 log "Verifying"
 plutil -lint "$PLIST" "$CONTENTS/Library/LaunchAgents/$AGENT_PLIST"
 codesign --verify --deep --strict "$APP"
+if [[ $LOCAL -eq 1 ]]; then
+    # The Accessibility permission stays only while the requirement names the certificate, not a cdhash.
+    [[ "$(codesign -d -r - "$APP" 2>&1)" == *"identifier \"$BUNDLE_ID\" and certificate leaf = H\""* ]] \
+        || die "the designated requirement does not name the local certificate"
+fi
 [[ -e "$SPARKLE/Versions/B/Sparkle" ]] || die "Sparkle binary missing in the bundle"
 
 SIZE=$(du -sh "$APP" | cut -f1)

@@ -30,7 +30,7 @@ You can change the build with these environment variables:
 
 | Variable | Default | Use |
 |---|---|---|
-| `SIGN_IDENTITY` | `Striple Local Signing` if it is in your keychain, else `-` (ad hoc) | The codesign identity. |
+| `SIGN_IDENTITY` | the local identity from `make-signing-cert.sh` if it exists, else `-` (ad hoc) | The codesign identity. |
 | `STRIPLE_ARCHS` | `arm64 x86_64` | For example `STRIPLE_ARCHS=arm64 make app` for a faster build. |
 | `STRIPLE_FEED_URL` | not set | The Sparkle appcast URL (https). See "Updates". |
 | `STRIPLE_ED_PUBLIC_KEY` | not set | The Sparkle public EdDSA key. See "Updates". |
@@ -100,32 +100,40 @@ Make a self-signed code signing certificate one time. Then each build has the sa
 The script:
 
 1. Makes an RSA key and a certificate with the "Code Signing" extended key usage (`/usr/bin/openssl`, valid 10 years).
-2. Imports them into your login keychain (`security import`). Only `codesign` can use the key without a prompt.
-3. Trusts the certificate for code signing (`security add-trusted-cert -p codeSign`). macOS asks for your login password.
-4. Deletes the key files from `.build/signing-cert`.
+2. Makes a separate keychain, `~/Library/Keychains/striple-signing.keychain-db`, with a random password. The keychain does not lock itself.
+3. Puts that password in your login keychain as the item "Striple Local Signing keychain". Only `/usr/bin/security` can read it without a prompt.
+4. Imports the identity into the new keychain. Only `codesign` can use the key, and `set-key-partition-list` stops the "allow access" prompt.
+5. Adds the new keychain to your keychain search list. `codesign` finds identities only in keychains on that list.
+6. Signs a test file and checks that its designated requirement names the certificate hash.
+7. Deletes the key files from `.build/signing-cert`.
 
-When you run the script again, it first checks the identity. If it is valid, the script does nothing. If the certificate is there but step 3 did not finish (for example, you cancelled the password prompt), the script does only step 3 again. If the certificate is there without its private key, the script tells you how to remove it.
+The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain.
 
-After that, `make app` uses the identity automatically. Give the Accessibility permission one more time after the first build with the new identity.
+When you run the script again and the identity works, the script does nothing. If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove` first.
+
+After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
 
 Check the identity:
 
 ```sh
-security find-identity -v -p codesigning            # shows "Striple Local Signing"
-codesign -d -r - /Applications/Striple.app          # the designated requirement
+security find-identity -p codesigning ~/Library/Keychains/striple-signing.keychain-db
+codesign -d -r - /Applications/Striple.app
+# designated => identifier "com.fskroes.Striple" and certificate leaf = H"b608fa4f..."
 ```
 
-Remove the identity:
+`security find-identity -v` does not show the identity, because `-v` shows only trusted identities. That is correct and does not stop signing.
+
+Remove the identity (the keychain, its password item and its search list entry):
 
 ```sh
-security delete-identity -c "Striple Local Signing"
+./scripts/make-signing-cert.sh --remove
 ```
 
 Notes:
 
 - The local identity has no Apple Team ID. Thus `build-app.sh` does not use the hardened runtime with it. With the hardened runtime, library validation would block Sparkle.framework.
 - The certificate is only on your Mac. Other people cannot check it. To give Striple to other people, use a Developer ID certificate and notarization: `SIGN_IDENTITY="Developer ID Application: ..." make app`. With a Developer ID identity, `build-app.sh` adds `--options runtime --timestamp`. Notarization (`xcrun notarytool`) is not in the scripts.
-- Your Mac can have rules (MDM) that stop changes to the keychain or to trust settings. Then use ad hoc signing and give the permission again after each build.
+- On this Mac (Intune managed) the script works: no MDM profile stops a user keychain or user Accessibility grants. If a Mac has rules that stop it, use ad hoc signing and give the permission again after each build.
 
 ## Launch at login and restart after a crash
 
