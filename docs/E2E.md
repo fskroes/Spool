@@ -41,7 +41,7 @@ You can also start the runner directly after a build:
 - The screen must be unlocked.
 - During the run, the test app comes to the front a few times. Do not type: your keys can go to a test window.
   If you click another app, the runner gives the focus back to the test window before each command, except in
-  scenario b: there a lost focus fails the scenario.
+  scenarios b, c and d: there a lost focus fails the scenario.
 
 ## Exit codes
 
@@ -78,9 +78,17 @@ fails its scenario with the last failures it saw. Frames may differ by 2 points 
 
 Every strip check of a to f also checks:
 
-- The scroll. The runner calculates the scroll of the default center mode `onOverflow` itself: 0 when all
-  columns fit, else the focused column centred but never past the ends of the strip. Each column that must be
-  fully on the display is there, at x = left edge of the work area + its position in the strip - scroll.
+- The scroll and the x of every column. The runner calculates the scroll of the default center mode `onOverflow`
+  itself: 0 when all columns fit, else the focused column centred but never past the ends of the strip. The strip
+  x of a column is the left edge of the work area + its position in the strip - scroll. Then the runner applies
+  the rule of `Layout.physical` again (`StripGeometry.shownX`):
+  - A column fully on the display is at its strip x.
+  - A column that hangs over an edge with no display there stays at its strip x. Its gap to the next column is
+    checked too.
+  - A column that hangs toward another display is moved to that edge, or parked when its middle is past the edge.
+  - A column past an edge (less than `layout.parkedSliver` on the display) is parked.
+
+  A column that is visible where it must be parked, or parked where it must be visible, fails.
 - The windows. Each window of the test app is a column or floats, never both and never neither.
 - The count. The runner expects the number of windows it opened and closed. It never takes the count from
   `striple state`, so a lost column fails and does not change what the next scenario expects.
@@ -89,17 +97,17 @@ Every strip check of a to f also checks:
 |---|---|
 | a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. At least one column is visible, and the focused column is fully in view. Columns that are out of view are parked at the edge of the display and keep a sliver on it. If this scenario fails, b to f are SKIP: the strip is in an unknown state. |
 | b. Focus | `focus-window` on the last column, then `focus-left` to the first column and `focus-right` back to the last: always 2 × (columns - 1) steps. After each step the focused column is fully in view at the expected scroll, and Striple's focus and the system focus (test app active, that window key) are on it. In this scenario the runner does not give the focus back: a step that loses it fails. |
-| c. Move | `move-left` and `move-right` on a column. The order in `striple state` and the order of the frames change as expected. |
-| d. Widths | `cycle-width` twice, `toggle-full-width` twice, then `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. |
-| e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes the column directly to the right of the focused column ([SPEC.md](SPEC.md)). |
+| c. Move | `focus-window` on the focused column, then `move-left` to the first place and `move-right` to the last. The order in `striple state` and the order of the frames change as expected. The moved window keeps the focus after each step: the runner does not give it back, so a lost focus fails. |
+| d. Widths | `focus-window` on the focused column, then `cycle-width` twice, `toggle-full-width` twice, and `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. The order, the focused column and the focus do not change: the runner does not give the focus back. |
+| e. Close and open | Needs 3 or more columns. The test app closes the window of column 2: the other columns close the hole and keep their order. The runner gives the focus to column 1. The test app opens one more window: it becomes column 2, directly to the right of the focused column, and not at the end ([SPEC.md](SPEC.md)). The other columns keep their order. |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 19 settles (a 1, b 5, c 4, d 5, e 2, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 19 samples is the slowest one. |
-| g. Quit | SIGTERM to Striple. It exits with status 0. The test app shows the same windows as before the SIGTERM, as many as the runner expects, and each is fully on a display. |
+| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 20 settles (a 1, b 5, c 4, d 5, e 3, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 20 samples is the second slowest one. |
+| g. Quit | SIGTERM to Striple. Before it, at least one test window must be off screen (parked or over an edge), else the quit has nothing to restore and the scenario fails. Striple exits with status 0. The test app shows the same windows as before the SIGTERM, as many as the runner expects, and each is fully on a display. |
 | Safety: other apps | See below. |
 | Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. SKIP when the runner read no state (`ManagedCheck.verdict`). |
 
-Before each command (except in scenario b) the runner gives a test window the focus, because Striple acts on the
-focused window. If the window does not get the focus within 10 seconds, the command is not sent and the scenario
+Before each command (except in scenarios b, c and d) the runner gives a test window the focus, because Striple
+acts on the focused window. If the window does not get the focus within 10 seconds, the command is not sent and the scenario
 fails.
 
 The report header says PASS only when every row is PASS. A SKIP proves nothing, so it counts as a failure, the
@@ -170,9 +178,11 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
 
 ## Limits
 
-- The test uses the main display only. With a second display, columns that are out of view can go to the edge of
-  the other display; the gap check skips columns that are not fully on the main display.
+- The test uses the main display only. With a display next to it, Striple moves a column that hangs toward that
+  display to the edge, over the column next to it: the gap check skips a column at such an edge, but its x is
+  still checked. With a display on one side only, Striple parks every hidden column on the free side, so the
+  check of the parked side order is skipped then.
 - The test app takes the focus during the run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  two live runs on 2026-10-12 (after the round 3 fixes) measured a frame write p95 of 4.79 and 4.71 ms and a settle p95 of 962 and 865 ms. A heavy load on the Mac can still make it fail. Run
+  two live runs on 2026-10-12 (after the round 4 fixes) measured a frame write p95 of 4.95 and 4.05 ms and a settle p95 of 827 and 787 ms. A heavy load on the Mac can still make it fail. Run
   again when other work used the CPU.

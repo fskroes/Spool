@@ -75,10 +75,12 @@ final class Harness {
         let main = NSScreen.screens[0]
         let h = main.frame.height
         let g = layout
-        return StripGeometry(display: Coordinates.topLeft(main.frame, primaryHeight: h),
+        let display = Coordinates.topLeft(main.frame, primaryHeight: h)
+        let n = StripGeometry.neighbors(of: display, among: displayFrames())
+        return StripGeometry(display: display,
                              visible: Coordinates.topLeft(main.visibleFrame, primaryHeight: h), innerGap: g.innerGap,
                              outerTop: g.outerGaps.top, outerBottom: g.outerGaps.bottom, outerLeft: g.outerGaps.left,
-                             outerRight: g.outerGaps.right, sliver: g.parkedSliver)
+                             outerRight: g.outerGaps.right, sliver: g.parkedSliver, neighborLeft: n.left, neighborRight: n.right)
     }
 
     func displayFrames() -> [CGRect] {
