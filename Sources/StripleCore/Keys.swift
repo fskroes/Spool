@@ -114,10 +114,12 @@ public enum DefaultBindings {
             .focusRight: [KeyCombo(KeyCode.l, co), KeyCombo(KeyCode.right, co)],
             .focusFirst: [KeyCombo(KeyCode.left, coc)],
             .focusLast: [KeyCombo(KeyCode.right, coc)],
-            .moveLeft: [KeyCombo(KeyCode.h, cos), KeyCombo(KeyCode.left, cos)],
-            .moveDown: [KeyCombo(KeyCode.j, cos), KeyCombo(KeyCode.down, cos)],
-            .moveUp: [KeyCombo(KeyCode.k, cos), KeyCombo(KeyCode.up, cos)],
-            .moveRight: [KeyCombo(KeyCode.l, cos), KeyCombo(KeyCode.right, cos)],
+            // No ⌃⌥⇧ + arrow: macOS 15 and later use Fn ⌃⌥⇧ + arrow for window tiling, and arrow keys
+            // always send the Fn flag.
+            .moveLeft: [KeyCombo(KeyCode.h, cos)],
+            .moveDown: [KeyCombo(KeyCode.j, cos)],
+            .moveUp: [KeyCombo(KeyCode.k, cos)],
+            .moveRight: [KeyCombo(KeyCode.l, cos)],
             .moveFirst: [KeyCombo(KeyCode.left, cocs)],
             .moveLast: [KeyCombo(KeyCode.right, cocs)],
             .cycleWidth: [KeyCombo(KeyCode.r, co)],

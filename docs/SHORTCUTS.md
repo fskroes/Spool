@@ -27,10 +27,10 @@ The key names below are for a US layout. The Settings page shows the names for y
 | Focus place 7 | `⌃⌥7` | `striple focus-index-7` |
 | Focus place 8 | `⌃⌥8` | `striple focus-index-8` |
 | Focus last place | `⌃⌥9` | `striple focus-index-9` |
-| Move column left | `⌃⌥⇧H` or `⌃⌥⇧←` | `striple move-left` |
-| Move column right | `⌃⌥⇧L` or `⌃⌥⇧→` | `striple move-right` |
-| Move window up in stack | `⌃⌥⇧K` or `⌃⌥⇧↑` | `striple move-up` |
-| Move window down in stack | `⌃⌥⇧J` or `⌃⌥⇧↓` | `striple move-down` |
+| Move column left | `⌃⌥⇧H` | `striple move-left` |
+| Move column right | `⌃⌥⇧L` | `striple move-right` |
+| Move window up in stack | `⌃⌥⇧K` | `striple move-up` |
+| Move window down in stack | `⌃⌥⇧J` | `striple move-down` |
 | Move column to first place | `⌃⌥⇧⌘←` | `striple move-first` |
 | Move column to last place | `⌃⌥⇧⌘→` | `striple move-last` |
 | Move column to place 1 | `⌃⌥⇧1` | `striple move-to-index-1` |
@@ -60,6 +60,16 @@ The key names below are for a US layout. The Settings page shows the names for y
 | Start / stop the window manager | `⌃⌥Q` | `striple toggle-engine` |
 <!-- shortcuts:end -->
 
+### Shortcuts that macOS uses
+
+macOS 15 and later use these arrow combinations for window tiling and Spaces (macOS 26, read with
+`CGSGetSymbolicHotKeyValue`): `⌃` + arrow, `⌃⇧` + arrow and `⌃⌥⇧` + arrow. Apple writes the tiling ones
+with Fn (for example Fn-Control-Option-Shift-Left Arrow, see
+[Mac window tiling icons and keyboard shortcuts](https://support.apple.com/guide/mac-help/mchl9674d0b0/mac)),
+but arrow keys always send the Fn flag. So Striple has no defaults on these combinations, and
+**Settings > Shortcuts** shows a warning if you record one. To use `⌃⌥⇧` + arrow for "move", first turn off
+the macOS shortcut in **System Settings > Keyboard > Keyboard Shortcuts > Windows**.
+
 ## Trackpad
 
 | Gesture | Action |
@@ -73,7 +83,7 @@ When Striple uses a finger count, turn off the macOS gesture that uses the same 
 
 | Action | Result |
 |---|---|
-| Drag a tiled window and drop it | The window moves to the gap where you drop it. On another display it joins that display's strip. |
+| Drag a tiled window and drop it | The window moves to the gap where you drop it. On another display it joins that display's strip. Only the window you pressed the mouse on can be dragged; windows that move because Striple scrolls the strip are never taken for a drag. |
 | Resize a tiled window from its edge | The column takes the new width. |
 | Move the pointer over a window (Focus follows mouse, off by default) | That window gets focus. |
 
