@@ -198,8 +198,18 @@ import Testing
         #expect(SafetyCheck.verdict(before: [w(1), w(2), w(3)], after: [w(1, x: 1)]).result == .fail)
     }
 
-    @Test func noWindowsPass() {
-        #expect(SafetyCheck.verdict(before: [], after: [w(1)]).result == .pass)
+    @Test func noWindowsToCompareIsASkip() {
+        // Nothing to compare proves nothing: before, this was a PASS.
+        #expect(SafetyCheck.verdict(before: [], after: [w(1)]).result == .skip)
+        // Only background windows: also nothing that Striple could have moved.
+        #expect(SafetyCheck.verdict(before: [helper(9, y: 0)], after: [helper(9, y: 0)]).result == .skip)
+    }
+
+    @Test func noSnapshotBeforeTheRunIsASkip() {
+        // The setup failed before the snapshot (for example codesign of the test app): no compare was possible.
+        let v = SafetyCheck.verdict(before: nil, after: [w(1)])
+        #expect(v.result == .skip)
+        #expect(v.details.contains("no snapshot"))
     }
 
     func helper(_ n: UInt32, y: Double) -> WindowSnapshot {
@@ -306,6 +316,149 @@ import Testing
     }
 }
 
+@Suite struct ManagedCheckTests {
+    @Test func noStateReadIsASkip() {
+        #expect(ManagedCheck.verdict(statesRead: 0, foreign: [:]).result == .skip)
+    }
+
+    @Test func statesWithOnlyTestWindowsPass() {
+        let v = ManagedCheck.verdict(statesRead: 40, foreign: [:])
+        #expect(v.result == .pass)
+        #expect(v.details.contains("40"))
+    }
+
+    @Test func aForeignWindowFails() {
+        let v = ManagedCheck.verdict(statesRead: 3, foreign: ["7": "com.apple.Safari \"Start\""])
+        #expect(v.result == .fail)
+        #expect(v.details == "7: com.apple.Safari \"Start\"")
+        // Also when the state read that saw it is the only one.
+        #expect(ManagedCheck.verdict(statesRead: 0, foreign: ["7": "x"]).result == .fail)
+    }
+}
+
+@Suite struct StripCheckTests {
+    let g = StripGeometry(display: CGRect(x: 0, y: 0, width: 2056, height: 1329),
+                          visible: CGRect(x: 0, y: 39, width: 2056, height: 1290), innerGap: 8,
+                          outerTop: 8, outerBottom: 8, outerLeft: 8, outerRight: 8, sliver: 1)
+    /// Windows 1, 2, 3 at half width; 3 is out of view on the right (parked with a 1 pt sliver).
+    var report: WindowReport {
+        WindowReport(pid: 1, seq: 1, commandsDone: 0, windows: [
+            ReportedWindow(title: "E2E 1", number: 1, frame: CGRect(x: 8, y: 47, width: 1016, height: 1274)),
+            ReportedWindow(title: "E2E 2", number: 2, frame: CGRect(x: 1032, y: 47, width: 1016, height: 1274)),
+            ReportedWindow(title: "E2E 3", number: 3, frame: CGRect(x: 2055, y: 1328, width: 1016, height: 1274)),
+        ])
+    }
+    let strip = StripView(columns: [[1], [2], [3]], focusedColumn: 0)
+
+    func check(_ s: StripView?, _ e: StripExpectation, _ r: WindowReport? = nil) -> [String] {
+        StripCheck.failures(s, r ?? report, expect: e, geometry: g, proportion: { _ in 0.5 })
+    }
+
+    @Test func theExpectedStripPasses() {
+        #expect(check(strip, .init(count: 3, order: [1, 2, 3], focusedColumn: 0)).isEmpty)
+    }
+
+    @Test func noStripFails() {
+        #expect(check(nil, .init(count: 3)) == ["no strip holds a test window"])
+    }
+
+    @Test func aWrongColumnCountFails() {
+        #expect(check(strip, .init(count: 2)).contains("strip has 3 columns, want 2"))
+    }
+
+    @Test func aWrongOrderFails() {
+        // Scenario c: move-left did nothing to the order.
+        #expect(check(strip, .init(count: 3, order: [2, 1, 3])).contains { $0.hasPrefix("order [\"E2E 1\", \"E2E 2\"") })
+    }
+
+    @Test func aWrongFocusedColumnFails() {
+        #expect(check(strip, .init(count: 3, focusedColumn: 1)).contains("focused column 1, want 2"))
+    }
+
+    @Test func aColumnWithTwoWindowsFails() {
+        let s = StripView(columns: [[1, 3], [2]], focusedColumn: 0)
+        #expect(check(s, .init(count: 2)).contains("a column holds 2 windows"))
+    }
+
+    @Test func aStripWindowTheAppDoesNotShowFails() {
+        let s = StripView(columns: [[1], [2], [9]], focusedColumn: 0)
+        #expect(check(s, .init(count: 3)).contains("window 9 is in the strip but the test app does not show it"))
+    }
+
+    @Test func aFocusedColumnOutOfViewFails() {
+        // Focus on the parked column 3: it must be scrolled into view.
+        let s = StripView(columns: [[1], [2], [3]], focusedColumn: 2)
+        #expect(check(s, .init(count: 3)).contains { $0.hasPrefix("E2E 3") })
+        #expect(check(s, .init(count: 3, focusedInView: false)).isEmpty)
+    }
+
+    @Test func aFocusedColumnThatDoesNotExistFails() {
+        // Before, the in-view check was skipped without a failure.
+        let s = StripView(columns: [[1], [2], [3]], focusedColumn: 5)
+        #expect(check(s, .init(count: 3)).contains("focused column 6 does not exist (3 columns)"))
+        let empty = StripView(columns: [], focusedColumn: 0)
+        #expect(check(empty, .init(count: 0)).contains("focused column 1 does not exist (0 columns)"))
+    }
+
+    @Test func focusNeedsStripleAndTheSystem() {
+        var r = report
+        r.active = true
+        r.key = 2
+        #expect(StripCheck.hasFocus(2, stripleFocus: 2, report: r))
+        #expect(!StripCheck.hasFocus(2, stripleFocus: 1, report: r), "Striple focus elsewhere")
+        r.active = false
+        #expect(!StripCheck.hasFocus(2, stripleFocus: 2, report: r), "test app not frontmost")
+        r.active = true
+        r.key = 1
+        #expect(!StripCheck.hasFocus(2, stripleFocus: 2, report: r), "another window is key")
+        #expect(!StripCheck.hasFocus(2, stripleFocus: 2, report: nil), "no report")
+    }
+}
+
+@Suite struct SettleTrackerTests {
+    /// `#expect` cannot call a mutating method, so the tests feed the tracker through this box.
+    final class Feed {
+        var tracker = SettleTracker()
+        func callAsFunction(_ w: [ReportedWindow], failures: [String], now: Double) -> Bool {
+            tracker.observe(w, failures: failures, now: now)
+        }
+    }
+
+    let a = [ReportedWindow(title: "A", number: 1, x: 0, y: 0, w: 10, h: 10)]
+    let b = [ReportedWindow(title: "A", number: 1, x: 5, y: 0, w: 10, h: 10)]
+
+    @Test func settlesAfterTheFramesStayStillFor250ms() {
+        let t = Feed()
+        #expect(!t(a, failures: [], now: 0))
+        #expect(!t(a, failures: [], now: 0.2))
+        #expect(t.tracker.last == ["frames did not stay still"])
+        #expect(t(a, failures: [], now: 0.25))
+        #expect(t.tracker.last.isEmpty)
+    }
+
+    @Test func aMoveRestartsTheWait() {
+        let t = Feed()
+        #expect(!t(a, failures: [], now: 0))
+        #expect(!t(b, failures: [], now: 0.2)) // still animating
+        #expect(!t(b, failures: [], now: 0.4))
+        #expect(t(b, failures: [], now: 0.45))
+    }
+
+    @Test func aFailedCheckRestartsTheWaitAndIsReported() {
+        let t = Feed()
+        #expect(!t(a, failures: [], now: 0))
+        #expect(!t(a, failures: ["strip has 2 columns, want 3"], now: 0.2))
+        #expect(t.tracker.last == ["strip has 2 columns, want 3"])
+        #expect(!t(a, failures: [], now: 0.3))
+        #expect(!t(a, failures: [], now: 0.5))
+        #expect(t(a, failures: [], now: 0.55))
+    }
+
+    @Test func nothingObservedReportsNoFrames() {
+        #expect(SettleTracker().last == ["no frame report from the test app"])
+    }
+}
+
 @Suite struct PerformanceBudgetTests {
     @Test func aRunInTheBudgetPasses() {
         #expect(PerformanceBudget.check(frameWriteP95: 5.76, settleP95: 420, axErrors: 0).isEmpty)
@@ -318,6 +471,23 @@ import Testing
         #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 2000, axErrors: 0) == ["settle p95 2000 ms, want < 2000 ms"])
         #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 100, axErrors: 2) == ["AX errors 2, want 0"])
         #expect(PerformanceBudget.check(frameWriteP95: 30, settleP95: 2500, axErrors: 1).count == 3)
+    }
+
+    @Test func nothingMeasuredIsASkip() {
+        // Tiling failed: no frames, no settles. Zeros must not pass.
+        let none = PerformanceBudget.verdict(frameWriteP95: 0, settleP95: nil, axErrors: 0, framesWritten: 0)
+        #expect(none.result == .skip)
+        #expect(none.failures == ["nothing to measure: Striple wrote no frames, no settle was timed"])
+        #expect(PerformanceBudget.verdict(frameWriteP95: 0, settleP95: 300, axErrors: 0, framesWritten: 0).result == .skip)
+        #expect(PerformanceBudget.verdict(frameWriteP95: 4, settleP95: nil, axErrors: 0, framesWritten: 50).result == .skip)
+    }
+
+    @Test func theVerdictPassesInTheBudgetAndFailsOnATimeout() {
+        #expect(PerformanceBudget.verdict(frameWriteP95: 4.75, settleP95: 980, axErrors: 0, framesWritten: 699).result == .pass)
+        let slow = PerformanceBudget.verdict(frameWriteP95: 4.75, settleP95: 980, axErrors: 0, framesWritten: 699, settleTimeouts: 1)
+        #expect(slow.result == .fail)
+        #expect(slow.failures == ["1 settle(s) reached their timeout"])
+        #expect(PerformanceBudget.verdict(frameWriteP95: 20, settleP95: 980, axErrors: 0, framesWritten: 699).result == .fail)
     }
 }
 

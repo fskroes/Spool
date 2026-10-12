@@ -74,10 +74,12 @@ public enum SafetyCheck {
 
     /// The safety row of the report. FAIL when a window of a regular app moved or resized. The app counts as
     /// regular when it was regular before or after: an app can change its activation policy during the run.
-    /// SKIP (counts as a failure) when fewer than half of the windows of regular apps from before still exist
-    /// after: then the compare proves too little. Windows of background processes are compared too, but a change
+    /// SKIP (counts as a failure) when nothing proves the windows stayed: `before` is nil (the setup failed
+    /// before the snapshot), there are no windows of regular apps, or fewer than half of them still exist
+    /// after. Windows of background processes are compared too, but a change
     /// there is only listed: Striple cannot write to them, and some (AutoFill) resize themselves.
-    public static func verdict(before: [WindowSnapshot], after: [WindowSnapshot]) -> (result: Report.Result, details: String) {
+    public static func verdict(before: [WindowSnapshot]?, after: [WindowSnapshot]) -> (result: Report.Result, details: String) {
+        guard let before else { return (.skip, "no snapshot of the windows of other apps was taken before the run") }
         let found = Set(after.map(\.number))
         let apps = before.filter(\.regularApp)
         let compared = apps.filter { found.contains($0.number) }.count
@@ -88,12 +90,25 @@ public enum SafetyCheck {
         let background = ignored.isEmpty ? "" : "\nNot counted, \(ignored.count) window(s) of background processes changed "
             + "(Striple manages only regular apps):\n" + ignored.map(\.description).joined(separator: "\n")
         if !failed.isEmpty { return (.fail, failed.map(\.description).joined(separator: "\n") + background) }
-        if apps.isEmpty { return (.pass, "no windows of other apps to compare" + background) }
+        if apps.isEmpty {
+            return (.skip, "no windows of other apps to compare, so nothing proves that none moved. Open a window of "
+                    + "another app and run again." + background)
+        }
         let counts = "\(compared) of \(apps.count) windows of other apps compared"
         if compared * 2 < apps.count {
             return (.skip, "\(counts): too many windows closed during the run to prove that none moved. Run again." + background)
         }
         return (.pass, "\(counts), 0 px allowed: none moved or resized" + background)
+    }
+}
+
+/// The second safety row: every window in every `striple state` was a test window. SKIP when no state was read,
+/// because then nothing was checked. `foreign` maps a window to its bundle ID and title.
+public enum ManagedCheck {
+    public static func verdict(statesRead: Int, foreign: [String: String]) -> (result: Report.Result, details: String) {
+        if !foreign.isEmpty { return (.fail, foreign.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\n")) }
+        if statesRead == 0 { return (.skip, "no `striple state` was read, so nothing was checked") }
+        return (.pass, "every window in \(statesRead) `striple state` reads had bundle ID \(E2EIDs.windowsBundleID)")
     }
 }
 

@@ -19,6 +19,20 @@ public enum PerformanceBudget {
         }
         return failures
     }
+
+    /// The row of scenario h. SKIP when there is nothing to measure: no frame was written, or no settle was
+    /// timed (the strip scenarios did not run). Then the numbers would be zeros and prove nothing.
+    /// `settleTimeouts` settles ended at their timeout; their time is in `settleP95` too.
+    public static func verdict(frameWriteP95: Double, settleP95: Double?, axErrors: Int, framesWritten: Int,
+                               settleTimeouts: Int = 0) -> (result: Report.Result, failures: [String]) {
+        var missing: [String] = []
+        if framesWritten == 0 { missing.append("Striple wrote no frames") }
+        if settleP95 == nil { missing.append("no settle was timed") }
+        if !missing.isEmpty { return (.skip, ["nothing to measure: " + missing.joined(separator: ", ")]) }
+        var failures = check(frameWriteP95: frameWriteP95, settleP95: settleP95, axErrors: axErrors)
+        if settleTimeouts > 0 { failures.append("\(settleTimeouts) settle(s) reached their timeout") }
+        return (failures.isEmpty ? .pass : .fail, failures)
+    }
 }
 
 /// What the runner writes while a run is active, so the next run can stop a test Striple and delete a

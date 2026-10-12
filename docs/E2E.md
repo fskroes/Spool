@@ -49,6 +49,7 @@ You can also start the runner directly after a build:
 | 0 | All checks passed. |
 | 1 | A check failed. The report tells which and why. |
 | 2 | The test did not start: another Striple runs, no Accessibility permission, the screen is locked, or a binary is missing. Nothing was started. Retry later. |
+| 130 | The runner got SIGINT (Ctrl-C), SIGTERM or SIGHUP. It cleaned up (rule 4 in [Safety](#safety)) and wrote no report. |
 
 `make e2e` prints `make: *** [e2e] Error 1` or `Error 2` with the code of the runner.
 
@@ -70,8 +71,9 @@ The folder also has:
 ## What it checks
 
 The test app opens 3 windows. Striple tiles them as columns on the main display. Each check polls the frames
-until they are correct and did not change for 250 ms, for a maximum of 3 seconds (10 seconds for the first tiling).
-Frames may differ by 2 points (rounding).
+until they are correct and did not change for 250 ms (`SettleTracker`), for a maximum of 3 seconds (10 seconds
+for the first tiling, 5 seconds after the test app opens a window in scenario e). A check that reaches its maximum
+fails its scenario with the last failures it saw. Frames may differ by 2 points (rounding).
 
 | Scenario | Checks |
 |---|---|
@@ -81,10 +83,10 @@ Frames may differ by 2 points (rounding).
 | d. Widths | `cycle-width` twice, `toggle-full-width` twice, then `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. |
 | e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes the column directly to the right of the focused column ([SPEC.md](SPEC.md)). |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), or settle p95 ≥ 2 s (`PerformanceBudget`). |
+| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 16 settles, so the p95 (nearest rank) is the slowest one. |
 | g. Quit | SIGTERM to Striple. It exits with status 0 and every test window is fully on a display. |
 | Safety: other apps | See below. |
-| Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. |
+| Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. SKIP when the runner read no state (`ManagedCheck.verdict`). |
 
 Before each command the runner gives a test window the focus, because Striple acts on the focused window. If the
 window does not get the focus within 10 seconds, the command is not sent and the scenario fails.
@@ -108,8 +110,8 @@ The test runs on your work Mac, next to your own windows. These rules keep it aw
    `CGWindowListCopyWindowInfo`, also windows on other Spaces and minimized windows. System processes (the Dock,
    the window server, Stage Manager and others in `SafetyCheck.systemOwners`) are left out. After Striple quit (the runner stops it first if needed, because Striple moves windows when it quits),
    it compares them: 0 points of change allowed. A window that closed or opened during the run is not a change.
-   When fewer than half of the windows still exist, the result is SKIP, which counts as a failure: the compare
-   proves too little. The menu bar, status items and notifications (layer 24 and up) change on their own, so
+   The result is SKIP, which counts as a failure, when the compare proves too little: no snapshot was taken
+   before the run, no window of a regular app was open, or fewer than half of these windows still exist. The menu bar, status items and notifications (layer 24 and up) change on their own, so
    they are not compared. Windows of background processes (not a regular app before or after the run, for
    example the AutoFill helper of Safari) are compared, but a change there is only listed under "Not counted":
    Striple manages only regular apps, and these windows resize themselves. An app that was regular before or
@@ -146,7 +148,8 @@ Do not use these for normal work.
 
 `striple-e2e-windows --count <n> --report <file> --commands <file>` is a normal AppKit app. The runner puts it in
 `.build/e2e/StripleE2EWindows.app` with bundle ID `com.fskroes.Striple.e2e-windows` and signs it ad hoc, because
-Striple matches apps by bundle ID.
+Striple matches apps by bundle ID. It replaces a bundle at that path only when its `Info.plist` has the test
+bundle ID. With another app at that path, the runner does not touch it: the Setup row fails (exit 1).
 
 - It opens `n` titled, resizable windows `E2E 1` … `E2E n` on the main display.
 - Every 100 ms it writes the report file atomically: its PID, the visible windows (title, window number, frame in
@@ -160,5 +163,5 @@ Striple matches apps by bundle ID.
   the other display; the gap check skips columns that are not fully on the main display.
 - The test app takes the focus during the run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  live runs measured a frame write p95 of 5.8 to 11.7 ms. A heavy load on the Mac can still make it fail. Run
+  live runs on 2026-10-12 measured a frame write p95 of 4.75 and 5.67 ms. A heavy load on the Mac can still make it fail. Run
   again when other work used the CPU.

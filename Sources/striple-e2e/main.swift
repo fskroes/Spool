@@ -177,7 +177,8 @@ var notes: [String] = [
     "Logs: `run.log`, `striple-stdout.log`, `engine.log`, `windows-app.log` in this folder.",
 ]
 
-var before: [WindowSnapshot] = []
+/// Nil until the snapshot was taken: a setup failure before it must not look like "nothing moved".
+var before: [WindowSnapshot]?
 func setupFailed(_ why: String) {
     scenarios.add(.init(scenario: "Setup", result: .fail, details: why))
 }
@@ -185,7 +186,7 @@ func setupFailed(_ why: String) {
 do {
     let bundle = try harness.makeWindowsBundle()
     before = otherWindows(excluding: [getpid()])
-    harness.log("recorded \(before.count) windows of other apps")
+    harness.log("recorded \(before?.count ?? 0) windows of other apps")
     try harness.startWindowsApp(bundle)
     let opened = harness.poll(timeout: 10) { (harness.frames()?.windows.count ?? 0) == config.windowCount }
     if !opened {
@@ -231,13 +232,10 @@ var exclude: Set<Int32> = [getpid()]
 if let p = harness.windowsAppPID { exclude.insert(p) }
 if let p = harness.striple?.processIdentifier { exclude.insert(p) }
 let after = otherWindows(excluding: exclude)
-let safety = SafetyCheck.verdict(before: before.filter { !exclude.contains($0.pid) }, after: after)
+let safety = SafetyCheck.verdict(before: before?.filter { !exclude.contains($0.pid) }, after: after)
 scenarios.add(.init(scenario: "Safety: windows of other apps did not move or resize", result: safety.result, details: safety.details))
-scenarios.add(.init(scenario: "Safety: Striple managed only test windows",
-                    result: harness.foreignManaged.isEmpty ? .pass : .fail,
-                    details: harness.foreignManaged.isEmpty
-                        ? "every window in every `striple state` had bundle ID \(E2EIDs.windowsBundleID)"
-                        : harness.foreignManaged.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\n")))
+let managed = ManagedCheck.verdict(statesRead: harness.statesRead, foreign: harness.foreignManaged)
+scenarios.add(.init(scenario: "Safety: Striple managed only test windows", result: managed.result, details: managed.details))
 
 cleanupOnce()
 notes.append(FileManager.default.fileExists(atPath: home.path)

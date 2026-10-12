@@ -29,13 +29,21 @@ final class Harness {
     let commandsFile: URL
     private(set) var striple: Process?
     private(set) var windowsApp: Process?
+    /// Guards `striple`, `windowsApp` and `stopping`. Cleanup can run on a signal queue while the main thread
+    /// starts a process: a process starts only before cleanup began, and cleanup sees every process that started.
+    private let lifecycle = NSLock()
+    private var stopping = false
     private var logHandle: FileHandle?
     let layout = Config().layout
 
     /// Wall time of each CLI call that sent a command, in ms (process start included).
     private(set) var cliCommandMs: [Double] = []
-    /// Time from a command to settled frames, in ms.
+    /// Time from a command to settled frames, in ms. A settle that reached its timeout adds its full time.
     private(set) var settleMs: [Double] = []
+    /// Settles that reached their timeout.
+    private(set) var settleTimeouts = 0
+    /// `striple state` calls that returned a state. The managed-windows safety row needs at least one.
+    private(set) var statesRead = 0
     /// Managed windows that are not test windows. Must stay empty.
     private(set) var foreignManaged: [String: String] = [:]
     /// Commands that were not sent because the test window did not get the focus. Each scenario fails on them.
@@ -85,7 +93,15 @@ final class Harness {
         let fm = FileManager.default
         let app = config.bundleDir.appendingPathComponent("\(E2EIDs.windowsAppName).app")
         let macos = app.appendingPathComponent("Contents/MacOS")
-        if fm.fileExists(atPath: app.path) { try fm.removeItem(at: app) }
+        if fm.fileExists(atPath: app.path) {
+            // Replace only a test app bundle that the runner made, never another app with the same name.
+            let plist = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))
+            guard plist?["CFBundleIdentifier"] as? String == E2EIDs.windowsBundleID else {
+                throw E2EError.setup("\(app.path) exists and is not the test app (\(E2EIDs.windowsBundleID)). "
+                                     + "Move it away or pass another --bundle-dir.")
+            }
+            try fm.removeItem(at: app)
+        }
         try fm.createDirectory(at: macos, withIntermediateDirectories: true)
         try fm.copyItem(at: config.windowsBinary, to: macos.appendingPathComponent(E2EIDs.windowsExecutable))
         let plist: [String: Any] = [
@@ -110,6 +126,9 @@ final class Harness {
         FileManager.default.createFile(atPath: commandsFile.path, contents: nil)
         try? FileManager.default.removeItem(at: reportFile)
         let exe = app.appendingPathComponent("Contents/MacOS/\(E2EIDs.windowsExecutable)").path
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
+        guard !stopping else { throw E2EError.setup("the run was stopped before the test app started") }
         windowsApp = try Proc.start(exe, ["--count", "\(config.windowCount)", "--report", reportFile.path, "--commands", commandsFile.path],
                                     env: ProcessInfo.processInfo.environment, log: config.outDir.appendingPathComponent("windows-app.log"))
     }
@@ -145,6 +164,9 @@ final class Harness {
         env["STRIPLE_HOME"] = home.path
         env["STRIPLE_MANAGE_ONLY"] = E2EIDs.windowsBundleID
         env.removeValue(forKey: "STRIPLE_SOCKET")
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
+        guard !stopping else { throw E2EError.setup("the run was stopped before Striple started") }
         striple = try Proc.start(stripleBinary, [], env: env, log: config.outDir.appendingPathComponent("striple-stdout.log"))
     }
 
@@ -162,6 +184,7 @@ final class Harness {
     func state() -> EngineState? {
         let r = run(["state", "--json"])
         guard r.code == 0, let resp = try? JSONDecoder().decode(IPCResponse.self, from: Data(r.out.utf8)), let s = resp.state else { return nil }
+        statesRead += 1
         // The safety net next to the CGWindowList check: Striple may only manage test windows.
         for w in s.displays.flatMap({ $0.columns.joined() }) + s.floating where w.bundleID != E2EIDs.windowsBundleID {
             foreignManaged["\(w.id)"] = "\(w.bundleID) \"\(w.title)\""
@@ -225,7 +248,7 @@ final class Harness {
 
     /// True when Striple and the system both have `id` focused (test app frontmost, window key).
     func hasFocus(_ id: UInt32) -> Bool {
-        state()?.focusedWindow?.id == id && frames()?.hasSystemFocus(Int(id)) == true
+        StripCheck.hasFocus(id, stripleFocus: state()?.focusedWindow?.id, report: frames())
     }
 
     /// The test window Striple had focused last; used to give focus back after the user clicked elsewhere.
@@ -252,40 +275,31 @@ final class Harness {
         return condition()
     }
 
-    /// Waits until `check` passes on frames that did not change for 250 ms (the animation is over).
-    /// Returns the failures of the last try; empty when it settled and passed.
+    /// Waits until `check` passes on frames that did not change for 250 ms (the animation is over), see
+    /// `SettleTracker`. Returns the failures of the last try; empty when it settled and passed.
     func settle(timeout: Double = 3, _ check: (WindowReport) -> [String]) -> [String] {
         let start = Date()
-        let deadline = start.addingTimeInterval(timeout)
-        var stableSince: (Date, [ReportedWindow])?
-        var last = ["no frame report from the test app"]
-        while Date() < deadline {
-            if let f = frames() {
-                let failures = check(f)
-                if failures.isEmpty {
-                    if let (t, w) = stableSince, w == f.windows {
-                        if Date().timeIntervalSince(t) >= 0.25 {
-                            settleMs.append(Date().timeIntervalSince(start) * 1000)
-                            return []
-                        }
-                    } else {
-                        stableSince = (Date(), f.windows)
-                    }
-                    last = ["frames did not stay still"]
-                } else {
-                    stableSince = nil
-                    last = failures
-                }
+        var tracker = SettleTracker()
+        while Date().timeIntervalSince(start) < timeout {
+            if let f = frames(), tracker.observe(f.windows, failures: check(f), now: Date().timeIntervalSince(start)) {
+                settleMs.append(Date().timeIntervalSince(start) * 1000)
+                return []
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        return last
+        settleMs.append(Date().timeIntervalSince(start) * 1000)
+        settleTimeouts += 1
+        return tracker.last
     }
 
     // MARK: Cleanup
 
     /// Quits the test app and Striple and deletes the temporary STRIPLE_HOME. Safe to call more than once.
     func cleanup() {
+        lifecycle.lock()
+        stopping = true
+        let windowsApp = self.windowsApp, striple = self.striple
+        lifecycle.unlock()
         if let p = windowsApp, p.isRunning {
             _ = send(.quit, timeout: 2)
             if !Proc.terminate(p, wait: 3) { Proc.forceKill(p) }

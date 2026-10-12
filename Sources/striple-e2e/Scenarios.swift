@@ -30,40 +30,23 @@ final class Scenarios {
     /// The window of the focused column, or nil when the state has no such column. Never traps.
     func focusedID(_ d: EngineState.DisplayState) -> UInt32? { ids(d)[safe: d.focusedColumn] }
 
-    func title(_ id: UInt32, _ f: WindowReport?) -> String { f?.window(number: Int(id))?.title ?? "window \(id)" }
+    func title(_ id: UInt32, _ f: WindowReport?) -> String { StripCheck.title(id, f) }
 
-    /// A check for `settle`: the strip has `count` single-window columns (in `order` when given), the frames
-    /// follow the layout rules, and with `focusedInView` the focused column is fully in view.
+    /// The strip as the pure checks in StripleE2EKit see it.
+    func view(_ d: EngineState.DisplayState) -> StripView {
+        StripView(columns: d.columns.map { $0.map(\.id) }, focusedColumn: d.focusedColumn)
+    }
+
+    /// A check for `settle`: `StripCheck.failures` on the current state, plus `extra` when a test strip exists.
     func stripCheck(count: Int, order: [UInt32]? = nil, focusedColumn: Int? = nil, focusedInView: Bool = true,
                     extra: ((EngineState, WindowReport) -> [String])? = nil) -> (WindowReport) -> [String] {
+        let expect = StripExpectation(count: count, order: order, focusedColumn: focusedColumn, focusedInView: focusedInView)
         return { f in
             guard let s = self.h.state() else { return ["striple state failed"] }
-            guard let d = self.testStrip(s) else { return ["no strip holds a test window"] }
-            var failures: [String] = []
-            if let bad = d.columns.first(where: { $0.count != 1 }) {
-                failures.append("a column holds \(bad.count) windows")
-            }
-            let ids = self.ids(d)
-            if ids.count != count { failures.append("strip has \(ids.count) columns, want \(count)") }
-            if let order, ids != order {
-                failures.append("order \(ids.map { self.title($0, f) }), want \(order.map { self.title($0, f) })")
-            }
-            if let focusedColumn, d.focusedColumn != focusedColumn {
-                failures.append("focused column \(d.focusedColumn + 1), want \(focusedColumn + 1)")
-            }
-            var columns: [FrameChecks.Column] = []
-            for id in ids {
-                guard let w = f.window(number: Int(id)) else {
-                    failures.append("window \(id) is in the strip but the test app does not show it")
-                    continue
-                }
-                columns.append(.init(title: w.title, frame: w.frame, proportion: self.proportion(id)))
-            }
-            failures += FrameChecks.checkStrip(columns, geometry: self.g)
-            if focusedInView, ids.indices.contains(d.focusedColumn), let w = f.window(number: Int(ids[d.focusedColumn])) {
-                failures += FrameChecks.checkInView(w.title, w.frame, geometry: self.g)
-            }
-            if let extra { failures += extra(s, f) }
+            let strip = self.testStrip(s)
+            var failures = StripCheck.failures(strip.map(self.view), f, expect: expect, geometry: self.g,
+                                               proportion: self.proportion)
+            if strip != nil, let extra { failures += extra(s, f) }
             return failures
         }
     }
@@ -147,7 +130,7 @@ final class Scenarios {
             // Striple's focus and the system focus (test app active, that window key) must both be on the column.
             if fails.isEmpty, !h.poll(timeout: 3, { [self] in
                 guard let (s, d) = current(), let want = ids(d)[safe: col] else { return false }
-                return s.focusedWindow?.id == want && h.frames()?.hasSystemFocus(Int(want)) == true
+                return StripCheck.hasFocus(want, stripleFocus: s.focusedWindow?.id, report: h.frames())
             }) {
                 let id = current()?.0.focusedWindow?.id
                 let f = h.frames()
@@ -304,10 +287,12 @@ final class Scenarios {
                              s.frameWriteP50, s.frameWriteP95, s.commandLatencyP50, s.commandLatencyP95, s.framesWritten,
                              s.windowWrites, s.skippedWrites, s.coalescedWrites, s.axErrors, cli.p50, cli.p95, settle.p50, settle.p95)
         h.log("stats: \(details)")
-        let over = PerformanceBudget.check(frameWriteP95: s.frameWriteP95, settleP95: h.settleMs.isEmpty ? nil : settle.p95,
-                                           axErrors: s.axErrors)
-        add(.init(scenario: "h. Performance (striple stats)", result: over.isEmpty ? .pass : .fail,
-                  details: (over.isEmpty ? "" : over.joined(separator: "; ") + ". ") + details))
+        let v = PerformanceBudget.verdict(frameWriteP95: s.frameWriteP95, settleP95: h.settleMs.isEmpty ? nil : settle.p95,
+                                          axErrors: s.axErrors, framesWritten: s.framesWritten,
+                                          settleTimeouts: h.settleTimeouts)
+        add(.init(scenario: "h. Performance (striple stats)", result: v.result,
+                  details: (v.failures.isEmpty ? "" : v.failures.joined(separator: "; ") + ". ") + details
+                      + "; \(h.settleMs.count) settles, \(h.settleTimeouts) at the timeout"))
     }
 
     // MARK: g. Quit
