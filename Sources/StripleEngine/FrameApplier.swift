@@ -64,6 +64,20 @@ public final class FrameApplier: @unchecked Sendable {
         var queuedAt: UInt64
     }
 
+    private struct Waiter {
+        let upTo: UInt64
+        var dropped = false
+        let run: @Sendable (Bool) -> Void
+    }
+
+    /// A frame being written. `again` is set when a later `apply` wanted the same frame while it was in flight:
+    /// that call was not queued, so a failed write queues `again` instead.
+    private struct InFlight {
+        let frame: CGRect
+        let token: UInt64
+        var again: Pending?
+    }
+
     private struct AppState {
         let queue: DispatchQueue
         /// Unique per state. A drain of a removed app can still run when a new app gets the same pid; it compares
@@ -77,8 +91,9 @@ public final class FrameApplier: @unchecked Sendable {
         var queued: UInt64 = 0
         var landed: UInt64 = 0
         /// Run when `landed` reaches the number. The argument is true when the frames were dropped by `forgetApp`
-        /// or `reset` and not written.
-        var waiters: [(upTo: UInt64, run: @Sendable (Bool) -> Void)] = []
+        /// or `reset` and not written. `reset` sets `dropped` on every waiter it finds: a frame the waiter waits
+        /// for is gone, also when a later batch of the same app makes `landed` reach the number.
+        var waiters: [Waiter] = []
         /// Batches in a row in which every write failed. One success sets it to 0.
         var failedBatches = 0
         /// Set by `reset` while a batch runs: the state goes away when the app is idle. A new `apply` clears it.
@@ -93,7 +108,7 @@ public final class FrameApplier: @unchecked Sendable {
     /// Frames taken out of `pending` that the app's queue is writing now.
     /// The frame being written to each window, with the token of that write. `forget` and `reset` drop the entry;
     /// a write whose token is gone then does not change `written` when it lands.
-    private var inFlight: [WindowID: (frame: CGRect, token: UInt64)] = [:]
+    private var inFlight: [WindowID: InFlight] = [:]
     private var nextToken: UInt64 = 0
     /// Counts `reset` calls. A batch taken before a reset reports no timings.
     private var resets: UInt64 = 0
@@ -182,6 +197,7 @@ public final class FrameApplier: @unchecked Sendable {
                     apps[pid]!.pendingOrder.removeAll()
                     apps[pid]!.failedBatches = 0
                     apps[pid]!.retired = true
+                    for i in apps[pid]!.waiters.indices { apps[pid]!.waiters[i].dropped = true }
                 } else {
                     run += state.waiters.map { w -> @Sendable () -> Void in { w.run(true) } }
                     apps.removeValue(forKey: pid)
@@ -203,15 +219,20 @@ public final class FrameApplier: @unchecked Sendable {
         var toStart: [(pid_t, DispatchQueue, UInt64)] = []
         lock.withLock {
             var queuedFor = Set<pid_t>()
-            var waitFor = Set<pid_t>()
             for w in writes {
                 let pendingSame = apps[w.pid]?.pending[w.id]
                 // Compare with the newest frame the window will have: the one in flight, else the written one.
                 // A frame equal to an older written frame must still be written after the one in flight.
-                if pendingSame == nil, (inFlight[w.id]?.frame ?? written[w.id]) == w.frame {
+                if pendingSame == nil, let f = inFlight[w.id], f.frame == w.frame, apps[w.pid] != nil {
+                    // Already being written: not written twice, but this call waits for it, and a failed write
+                    // is queued again for this call (else the window could keep a wrong frame).
                     counters.skipped += 1
-                    // Already being written: callers that wait must wait for it to land.
-                    if inFlight[w.id] != nil { waitFor.insert(w.pid) }
+                    inFlight[w.id]!.again = Pending(write: w, queuedAt: start)
+                    queuedFor.insert(w.pid)
+                    continue
+                }
+                if pendingSame == nil, inFlight[w.id] == nil, written[w.id] == w.frame {
+                    counters.skipped += 1
                     continue
                 }
                 if apps[w.pid] == nil {
@@ -235,13 +256,13 @@ public final class FrameApplier: @unchecked Sendable {
             guard completion != nil else { return }
             // A frame in flight belongs to a batch taken at or before the current `queued`, so waiting for
             // `queued` covers it.
-            for pid in queuedFor.union(waitFor) {
+            for pid in queuedFor {
                 guard let state = apps[pid], state.landed < state.queued else { continue }
                 group.enter()
-                apps[pid]!.waiters.append((state.queued, { wasDropped in
+                apps[pid]!.waiters.append(Waiter(upTo: state.queued) { wasDropped in
                     if wasDropped { dropped.set() }
                     group.leave()
-                }))
+                })
             }
         }
         for (pid, queue, generation) in toStart {
@@ -290,8 +311,7 @@ public final class FrameApplier: @unchecked Sendable {
                 guard var state = apps[pid], state.generation == generation, !state.pending.isEmpty else {
                     // Nothing left: everything queued is written or was dropped by `reset`.
                     if let state = apps[pid], state.generation == generation {
-                        let wasReset = state.retired
-                        idle = state.waiters.map { w -> @Sendable () -> Void in { w.run(wasReset) } }
+                        idle = state.waiters.map { w -> @Sendable () -> Void in { w.run(w.dropped) } }
                         if state.retired {
                             apps.removeValue(forKey: pid)
                         } else {
@@ -305,7 +325,7 @@ public final class FrameApplier: @unchecked Sendable {
                 let items = state.pendingOrder.compactMap { id -> (Pending, CGRect?, UInt64)? in
                     guard let p = state.pending[id] else { return nil }
                     nextToken += 1
-                    inFlight[id] = (p.write.frame, nextToken)
+                    inFlight[id] = InFlight(frame: p.write.frame, token: nextToken)
                     return (p, written[id], nextToken)
                 }
                 state.pending.removeAll(keepingCapacity: true)
@@ -335,18 +355,24 @@ public final class FrameApplier: @unchecked Sendable {
                     counters.windowWrites += 1
                     if !r.ok { counters.errors += 1 }
                     // `forget` or `reset` ran during the write: what the window has is not known any more.
-                    guard inFlight[r.id]?.token == r.token else { continue }
+                    guard let f = inFlight[r.id], f.token == r.token else { continue }
                     inFlight.removeValue(forKey: r.id)
-                    if r.ok { written[r.id] = r.frame } else { written.removeValue(forKey: r.id) }
+                    if r.ok {
+                        written[r.id] = r.frame
+                    } else {
+                        written.removeValue(forKey: r.id)
+                        if let again = f.again, apps[pid]?.generation == generation, apps[pid]!.pending[r.id] == nil {
+                            apps[pid]!.pending[r.id] = again
+                            apps[pid]!.pendingOrder.append(r.id)
+                        }
+                    }
                 }
                 guard apps[pid]?.generation == generation else { return [] }
                 if let onWrite, resets == resetsAtTake { timings.forEach(onWrite) }
                 if results.contains(where: \.ok) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
                 apps[pid]!.landed = max(apps[pid]!.landed, upTo)
                 let landed = apps[pid]!.landed
-                // After a reset the batch was written, but the frames it waited for may have been dropped.
-                let wasReset = resets != resetsAtTake
-                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map { w -> @Sendable () -> Void in { w.run(wasReset) } }
+                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map { w -> @Sendable () -> Void in { w.run(w.dropped) } }
                 apps[pid]!.waiters.removeAll { $0.upTo <= landed }
                 return ready
             }

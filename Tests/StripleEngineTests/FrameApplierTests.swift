@@ -363,6 +363,83 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(time.get() == .some(nil))
     }
 
+    @Test func aFrameDroppedByResetHasNoTimeAlsoWhenTheEngineStartsAgainAtOnce() {
+        // A in flight, B pending, reset drops B, then the engine starts again with C for the same app. C's
+        // batch lands after B's waiter number: B's call must still get nil, B was never written.
+        let writer = FakeWriter()
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        let done = DispatchSemaphore(value: 0)
+        let b = TimeBox(), c = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { ms in b.set(ms); done.signal() }
+        applier.reset()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(2))]) { ms in c.set(ms); done.signal() }
+        held.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(b.get() == .some(nil), "B was dropped")
+        #expect(c.get().flatMap { $0 } != nil, "C was written after the reset")
+        #expect(writer.frames(1) == [rect(0), rect(2)])
+    }
+
+    @Test func aFrameAskedForAgainWhileItsWriteFailsIsWrittenAgain() {
+        // The end of an animation repeats the last frame while it is in flight. If that write fails, the frame
+        // must be written again for the second call, else the window keeps a wrong frame.
+        let writer = FakeWriter()
+        writer.outcomes(1, [false, true])
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        let done = DispatchSemaphore(value: 0)
+        let time = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))]) { ms in time.set(ms); done.signal() }
+        held.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(writer.frames(1) == [rect(0), rect(0)])
+        #expect(applier.lastWritten(1) == rect(0), "the call returned after its frame landed")
+        #expect(time.get().flatMap { $0 } != nil)
+    }
+
+    @Test func aFrameAskedForAgainWhileItsWriteSucceedsIsWrittenOnce() {
+        let writer = FakeWriter()
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        held.release.signal()
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.frames(1) == [rect(0)])
+        #expect(applier.stats.skipped == 1)
+    }
+
+    @Test func aWindowQueuedAgainAfterResetIsWrittenOnceInTheBatch() {
+        // reset drops B from the pending list too: else C (same window) is in the batch order twice.
+        let writer = FakeWriter()
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))])
+        applier.reset()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(2))])
+        held.release.signal()
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.frames(1) == [rect(0), rect(2)])
+    }
+
+    @Test func aFailedWriteMakesTheOldFrameBeWrittenAgain() {
+        // A written, B failed: the window has an unknown frame, so A again is not skipped.
+        let writer = FakeWriter()
+        writer.outcomes(1, [true, false])
+        let applier = FrameApplier(writer: writer)
+        for x in [0, 1, 0] { applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(CGFloat(x)))]) }
+        #expect(writer.frames(1) == [rect(0), rect(1), rect(0)])
+    }
+
     @Test func forgetDuringAWriteMakesTheNextWriteOfThatFrameHappen() {
         // The user drops a window while Striple's write to it is in flight. The relayout sends the same frame
         // again after the old write lands: it must be written, the window is where the user dropped it.
