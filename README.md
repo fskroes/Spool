@@ -141,4 +141,5 @@ make e2e      # live end-to-end test on real windows of a test app (docs/E2E.md)
 
 - Window focus uses private SkyLight calls, as other window managers on macOS do. A future macOS can change them; Striple then falls back to normal app activation.
 - Trackpad swipes use the private MultitouchSupport framework.
+- On a Mac that your employer manages, ask IT before you use Striple. See [Use on a managed work Mac](docs/INSTALL.md#use-on-a-managed-work-mac).
 - Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. Updates come from [fskroes/striple-releases](https://github.com/fskroes/striple-releases). See [docs/RELEASING.md](docs/RELEASING.md).

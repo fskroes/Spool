@@ -209,6 +209,59 @@ Striple uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from Swif
 
 To publish a release, see [RELEASING.md](RELEASING.md).
 
+## Use on a managed work Mac
+
+A window manager controls the windows of all your apps. On a Mac that your employer manages, ask before you
+use it. This section lists what Striple does, what the Mac allows, and who decides.
+
+### What Striple does on the Mac
+
+| Item | Striple |
+|---|---|
+| Permission | Accessibility only. You give it in System Settings > Privacy & Security. It is not given automatically. |
+| Admin rights | Not necessary. It is a normal app in `/Applications` or `~/Applications`. No kernel or system extension, no daemon, no installer package. For launch at login it registers its own user LaunchAgent (see [Launch at login](#launch-at-login-and-restart-after-a-crash)). |
+| Keyboard | Global shortcuts with `RegisterEventHotKey`. Striple does not read what you type. It asks only for the time since the last input (`CGEventSource.secondsSinceLastEventType`). |
+| Mouse and trackpad | A listen-only event tap for trackpad gestures, and global monitors for mouse down and mouse up. |
+| Private frameworks | SkyLight (window focus) and MultitouchSupport (trackpad swipes). See "Known limits" in the [README](../README.md). |
+| Network | Only Sparkle update checks: the feed on github.com in `Packaging/updates.env`. A build with `STRIPLE_UPDATES=off make app` has no feed and makes no network calls. |
+| Data | Config and state in `~/Library/Application Support/Striple`, logs in `~/Library/Logs/Striple`. Only the update check leaves the Mac. |
+
+### What the Mac allows (technical controls)
+
+You can see the device profiles without admin rights: `system_profiler SPConfigurationProfileDataType`. On the
+NN Mac where Striple was made (2026-10-12) the result was:
+
+| Control | Result | Effect on Striple |
+|---|---|---|
+| Gatekeeper (`AllowIdentifiedDevelopers = 1`) | Apps from identified developers are allowed | A self-signed app with the quarantine flag is blocked. See [Install a published release](#install-a-published-release). |
+| Privacy (TCC) profiles | They only allow access for named apps (OneDrive, Edge, Defender, Intune and others). No profile denies Accessibility. | You can give Striple the Accessibility permission. |
+| App block lists | None | Striple can run. |
+| Security tools | Microsoft Defender and Zscaler are installed | They can see and report the app. |
+
+A technical control that allows something is not a policy that permits it. These checks show only that Striple
+can run.
+
+### What the policy says
+
+| Source | What it says |
+|---|---|
+| ServiceNow KB0011506, KB0022286 | Software requests go through the Packaging process in the ServiceNow portal. Software that is not packaged is not a reason for local admin rights. |
+| ServiceNow KB0029698 | Proctoring software is not allowed. |
+| Window managers, Accessibility tools | No knowledge article covers them (search on 2026-10-12). |
+
+### Who decides
+
+The decision is not Striple's to make. It is yours and NN IT's. Before you use Striple on a work Mac, do one of
+these:
+
+1. Make a software request in the ServiceNow portal (Packaging). Give this text:
+   "Striple: a scrolling window manager for macOS, built from source by me. It needs the Accessibility
+   permission. No admin rights, no extensions, no network except update checks on github.com
+   (off when built with STRIPLE_UPDATES=off)."
+2. Ask your Business Security Officer (BSO) if a self-built Accessibility app is permitted.
+
+Until you have an answer, use Striple only on a Mac that you own.
+
 ## Uninstall
 
 ```sh
