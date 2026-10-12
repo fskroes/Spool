@@ -278,9 +278,13 @@ public final class ConfigStore: ObservableObject {
         let fd = open(fileURL.path, O_EVTONLY)
         var info = stat()
         guard fd >= 0 else {
-            // A file that cannot be opened (no read permission) is still known, so the link check does not reload
-            // it every few seconds.
-            if stat(fileURL.path, &info) == 0 { watchedFile = FileID(device: info.st_dev, inode: info.st_ino) }
+            // A file that cannot be opened (no read permission) is still known, so the check does not reload it
+            // every few seconds. `chmod`, `chown` or an ACL change makes it readable with no event, also for a plain
+            // file, so the check tries to open it again.
+            if stat(fileURL.path, &info) == 0 {
+                watchedFile = FileID(device: info.st_dev, inode: info.st_ino)
+                if linkRetryWork == nil { scheduleLinkCheck() }
+            }
             return
         }
         if fstat(fd, &info) == 0 { watchedFile = FileID(device: info.st_dev, inode: info.st_ino) }
@@ -302,11 +306,20 @@ public final class ConfigStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + linkRetryDelay, execute: work)
     }
 
-    /// Reloads and watches again when the file at the link target is not the watched one.
+    /// Reloads and watches again when the file at the link target is not the watched one, or when the known file
+    /// that could not be opened can be opened now.
     private func checkLinkTarget() {
         var info = stat()
         let now = stat(fileURL.path, &info) == 0 ? FileID(device: info.st_dev, inode: info.st_ino) : nil
-        if now != watchedFile { scheduleReload() } else { scheduleLinkCheck() }
+        if now != watchedFile { return scheduleReload() }
+        if now != nil, fileWatcher == nil {
+            let fd = open(fileURL.path, O_EVTONLY)
+            if fd >= 0 {
+                close(fd)
+                return scheduleReload()
+            }
+        }
+        scheduleLinkCheck()
     }
 
     private func scheduleReload() {

@@ -860,6 +860,8 @@ extension Engine {
             if w.key != to { windows[id]?.slot = nil }
             windows[id]?.key = to
             putBack(id, focus: focused)
+            // As in `.move`: focus on a window that went to a Space not on screen is not shown.
+            if focused, let w = windows[id], w.state == .tiled, let key = w.key, !isActive(key) { focusedID = nil }
             if focused { updateFocusOverlays() }
             return [to]
         }

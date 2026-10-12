@@ -389,6 +389,60 @@ import Testing
         #expect(store.config.layout.innerGap == 32)
     }
 
+    // Round 15 finding: a link target that could not be read and is then made readable in place (`chmod`, `chown`,
+    // same inode) was never loaded or watched.
+    @Test func aLinkTargetMadeReadableInPlaceIsLoadedAndWatched() async throws {
+        let url = tempFile()
+        let fm = FileManager.default
+        let folder = url.deletingLastPathComponent().appendingPathComponent("dotfiles")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let target = folder.appendingPathComponent("striple.json")
+        var c = Config()
+        c.layout.innerGap = 40
+        try c.encoded().write(to: target)
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: target.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path) }
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: "dotfiles/striple.json")
+        let store = ConfigStore(fileURL: url, watch: true, linkRetryDelay: 0.1)
+        #expect(store.config.layout.innerGap != 40)
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        for _ in 0..<40 where store.config.layout.innerGap != 40 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 40)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        c.layout.innerGap = 41
+        try writeInPlace(c.encoded(), to: target)
+        for _ in 0..<40 where store.config.layout.innerGap != 41 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 41)
+    }
+
+    // Round 15 finding: a plain config.json that could not be read was not loaded when it was made readable.
+    @Test func aPlainFileMadeReadableInPlaceIsLoadedAndWatched() async throws {
+        let url = tempFile()
+        let fm = FileManager.default
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var c = Config()
+        c.layout.innerGap = 42
+        try c.encoded().write(to: url)
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+        let store = ConfigStore(fileURL: url, watch: true, linkRetryDelay: 0.1)
+        #expect(store.config.layout.innerGap != 42)
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        for _ in 0..<40 where store.config.layout.innerGap != 42 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 42)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        c.layout.innerGap = 43
+        try writeInPlace(c.encoded(), to: url)
+        for _ in 0..<40 where store.config.layout.innerGap != 43 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 43)
+    }
+
     // Round 13 finding: a chain of 17 to 32 links (the kernel follows 32) was taken for a loop.
     @Test func aLongChainOfLinksSavesToItsEnd() throws {
         let url = tempFile()
