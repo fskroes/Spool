@@ -200,8 +200,15 @@ final class Harness {
 
     /// Sends a Striple command. Strip commands go to the strip of the focused window, or of the display under the
     /// mouse when Striple has no focused window (the user clicked another app). So first make sure a test
-    /// window has Striple's focus.
-    func command(_ name: String, focus: UInt32? = nil) -> ProcResult {
+    /// window has Striple's focus. With `repair: false` (scenario b checks the focus itself) a window without
+    /// the focus is a failure: the command is not sent and the focus is not given back.
+    func command(_ name: String, focus: UInt32? = nil, repair: Bool = true) -> ProcResult {
+        if !repair, let want = focus ?? currentTestFocus(), !hasFocus(want) {
+            let why = "window \(want) did not have the focus before `\(name)` (frontmost \(frontmostApp()))"
+            focusFailures.append(why)
+            log("striple \(name): not sent, \(why)")
+            return ProcResult(code: -1, out: "", err: why, ms: 0)
+        }
         if let want = focus ?? currentTestFocus(), !hasFocus(want) {
             // Striple acts on the system focus (for example toggle-float). When the user works in another app,
             // give the focus back first; ask again for up to 10 s.

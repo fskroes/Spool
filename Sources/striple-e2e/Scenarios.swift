@@ -10,10 +10,14 @@ final class Scenarios {
     private(set) var rows: [Report.Row] = []
     /// The column width of each window, as the runner expects it after the commands it sent.
     private var proportions: [UInt32: Double] = [:]
+    /// The number of test windows, from the windows the runner opened and closed. Never read from Striple's
+    /// state: a lost or extra column must fail, not change what the next scenario expects.
+    private(set) var expected: Int
 
     init(harness: Harness) {
         h = harness
         g = harness.geometry()
+        expected = harness.config.windowCount
     }
 
     func proportion(_ id: UInt32) -> Double { proportions[id] ?? h.layout.defaultWidth }
@@ -26,9 +30,6 @@ final class Scenarios {
     }
 
     func ids(_ d: EngineState.DisplayState) -> [UInt32] { d.columns.compactMap { $0.first?.id } }
-
-    /// The window of the focused column, or nil when the state has no such column. Never traps.
-    func focusedID(_ d: EngineState.DisplayState) -> UInt32? { ids(d)[safe: d.focusedColumn] }
 
     func title(_ id: UInt32, _ f: WindowReport?) -> String { StripCheck.title(id, f) }
 
@@ -44,7 +45,8 @@ final class Scenarios {
         return { f in
             guard let s = self.h.state() else { return ["striple state failed"] }
             let strip = self.testStrip(s)
-            var failures = StripCheck.failures(strip.map(self.view), f, expect: expect, geometry: self.g,
+            let floating = s.floating.filter { $0.bundleID == E2EIDs.windowsBundleID }.map(\.id)
+            var failures = StripCheck.failures(strip.map(self.view), f, floating: floating, expect: expect, geometry: self.g,
                                                proportion: self.proportion)
             if strip != nil, let extra { failures += extra(s, f) }
             return failures
@@ -54,6 +56,21 @@ final class Scenarios {
     func current() -> (EngineState, EngineState.DisplayState)? {
         guard let s = h.state(), let d = testStrip(s) else { return nil }
         return (s, d)
+    }
+
+    /// The column order at the start of a scenario, or the failure when the strip does not have `expected`
+    /// columns of one window each (the scenario then does not start).
+    func startOrder(atLeast minimum: Int = 2) -> (order: [UInt32], focused: Int, failure: String?) {
+        guard let (_, d) = current() else { return ([], 0, "no test strip") }
+        let order = ids(d)
+        if order.count != expected || d.columns.contains(where: { $0.count != 1 }) {
+            return (order, d.focusedColumn, "strip has \(d.columns.map(\.count)) windows per column, want \(expected) columns of 1")
+        }
+        if expected < minimum { return (order, d.focusedColumn, "need \(minimum) columns, have \(expected)") }
+        if !order.indices.contains(d.focusedColumn) {
+            return (order, d.focusedColumn, "focused column \(d.focusedColumn + 1) of \(order.count) does not exist")
+        }
+        return (order, d.focusedColumn, nil)
     }
 
     /// Runs one scenario and adds its row. Returns true when it passed.
@@ -95,7 +112,7 @@ final class Scenarios {
     /// Returns true when the strip is tiled. The later strip scenarios need that start.
     func tiling() -> Bool {
         record("a. Tiling: 3 windows become columns") {
-            let n = h.config.windowCount
+            let n = expected
             let fails = h.settle(timeout: 10, stripCheck(count: n))
             let f = h.frames()
             let widths = f?.windows.map { String(format: "%.0f", $0.w) }.joined(separator: ", ") ?? "?"
@@ -108,50 +125,55 @@ final class Scenarios {
 
     func focus() {
         record(Name.focus) {
-            guard let (_, d) = current() else { return (["no test strip"], "") }
-            let n = d.columns.count
-            guard let start = focusedID(d) else { return (["focused column \(d.focusedColumn + 1) of \(n) does not exist"], "") }
+            let (order, _, bad) = startOrder()
+            if let bad { return ([bad], "") }
+            let n = order.count
             var fails: [String] = []
+            // Start on the last column, so the steps never depend on where scenario a left the focus:
+            // n - 1 focus-left steps to column 1, then n - 1 focus-right steps back.
+            let last = order[n - 1]
+            h.run(["focus-window", "\(last)"])
+            if !h.poll(timeout: 3, { h.hasFocus(last) }) { fails.append("start: " + focusState(last)) }
+            if fails.isEmpty {
+                fails += h.settle(stripCheck(count: n, order: order, focusedColumn: n - 1)).map { "start on column \(n): \($0)" }
+            }
+            var col = n - 1
             var steps = 0
-            var col = d.focusedColumn
-            h.lastTestFocus = start
-            while col > 0 && fails.isEmpty {
-                _ = h.command("focus-left")
-                col -= 1
+            func step(_ name: String, _ delta: Int) {
+                guard fails.isEmpty else { return }
+                // No focus repair: a step that does not leave the system focus on its column is a failure.
+                _ = h.command(name, focus: order[col], repair: false)
+                col += delta
                 steps += 1
-                fails += h.settle(stripCheck(count: n, focusedColumn: col)).map { "focus-left to \(col + 1): \($0)" }
+                fails += h.settle(stripCheck(count: n, order: order, focusedColumn: col)).map { "\(name) to \(col + 1): \($0)" }
+                if fails.isEmpty, !h.poll(timeout: 3, { h.hasFocus(order[col]) }) {
+                    fails.append("\(name) to \(col + 1): " + focusState(order[col]))
+                }
             }
-            while col < n - 1 && fails.isEmpty {
-                _ = h.command("focus-right")
-                col += 1
-                steps += 1
-                fails += h.settle(stripCheck(count: n, focusedColumn: col)).map { "focus-right to \(col + 1): \($0)" }
-            }
-            // Striple's focus and the system focus (test app active, that window key) must both be on the column.
-            if fails.isEmpty, !h.poll(timeout: 3, { [self] in
-                guard let (s, d) = current(), let want = ids(d)[safe: col] else { return false }
-                return StripCheck.hasFocus(want, stripleFocus: s.focusedWindow?.id, report: h.frames())
-            }) {
-                let id = current()?.0.focusedWindow?.id
-                let f = h.frames()
-                fails.append("column \(col + 1): Striple focus \(id.map(String.init) ?? "none"), "
-                             + "system focus: test app active \(f?.active ?? false), key window \(f?.key.map(String.init) ?? "none")")
-            }
-            if let (_, d) = current(), let id = focusedID(d) { h.lastTestFocus = id }
-            return (fails, "\(steps) focus steps, each focused column fully in view; Striple and system focus on column \(col + 1)")
+            for _ in 1..<n { step("focus-left", -1) }
+            for _ in 1..<n { step("focus-right", 1) }
+            h.lastTestFocus = order[col]
+            return (fails, "\(steps) focus steps from column \(n) to 1 and back; after each, the focused column is in view "
+                    + "at the expected scroll, and Striple and the system focus are on it")
         }
+    }
+
+    /// Why `id` does not have the focus, for a failure.
+    private func focusState(_ id: UInt32) -> String {
+        let f = h.frames()
+        return "\(title(id, f)) has no focus: Striple focus \(h.state()?.focusedWindow.map { "\($0.id)" } ?? "none"), "
+            + "test app active \(f?.active ?? false), key window \(f?.key.map(String.init) ?? "none")"
     }
 
     // MARK: c. Move
 
     func move() {
         record(Name.move) {
-            guard let (_, d) = current() else { return (["no test strip"], "") }
-            var order = ids(d)
-            var col = d.focusedColumn
+            let start = startOrder()
+            if let bad = start.failure { return ([bad], "") }
+            var order = start.order
+            var col = start.focused
             let n = order.count
-            guard n >= 2 else { return (["need 2 columns, have \(n)"], "") }
-            guard order.indices.contains(col) else { return (["focused column \(col + 1) of \(n) does not exist"], "") }
             var fails: [String] = []
             var moves: [String] = []
             // Move the focused column to the far left, then back to the far right.
@@ -173,9 +195,10 @@ final class Scenarios {
 
     func widths() {
         record(Name.widths) {
-            guard let (_, d) = current() else { return (["no test strip"], "") }
-            let n = d.columns.count
-            guard let id = focusedID(d) else { return (["focused column \(d.focusedColumn + 1) of \(n) does not exist"], "") }
+            let start = startOrder(atLeast: 1)
+            if let bad = start.failure { return ([bad], "") }
+            let n = start.order.count
+            let id = start.order[start.focused]
             let presets = h.layout.presetWidths.sorted()
             var fails: [String] = []
             var seen: [String] = []
@@ -209,15 +232,15 @@ final class Scenarios {
 
     func closeAndOpen() {
         record(Name.closeAndOpen) {
-            guard let (_, d) = current() else { return (["no test strip"], "") }
-            let before = ids(d)
+            let start = startOrder()
+            if let bad = start.failure { return ([bad], "") }
+            let before = start.order
             let n = before.count
-            guard n >= 2 else { return (["need 2 columns, have \(n)"], "") }
             // The middle (or second) column: closing it would leave a hole between two others.
             let victim = before[min(1, n - 1)]
             let name = title(victim, h.frames())
             var fails: [String] = []
-            if !h.send(.close(title: name)) { fails.append("the test app did not close \(name)") }
+            if !h.send(.close(title: name)) { fails.append("the test app did not close \(name)") } else { expected -= 1 }
             if fails.isEmpty {
                 if h.lastTestFocus == victim { h.lastTestFocus = before.first { $0 != victim } }
                 let rest = before.filter { $0 != victim }
@@ -227,7 +250,9 @@ final class Scenarios {
             // docs/SPEC.md: a new window opens directly to the right of the focused column.
             let focusedBefore = current()?.1.focusedColumn
             if fails.isEmpty, focusedBefore == nil { fails.append("no test strip after closing \(name)") }
-            if fails.isEmpty, !h.send(.open) { fails.append("the test app did not open a window") }
+            if fails.isEmpty {
+                if h.send(.open) { expected += 1 } else { fails.append("the test app did not open a window") }
+            }
             var opened = "?"
             var column = 0
             if fails.isEmpty, let focusedBefore {
@@ -250,10 +275,10 @@ final class Scenarios {
 
     func float() {
         record(Name.float) {
-            guard let (_, d) = current() else { return (["no test strip"], "") }
-            let before = ids(d)
+            let start = startOrder()
+            if let bad = start.failure { return ([bad], "") }
+            let before = start.order
             let n = before.count
-            guard n >= 2 else { return (["need 2 columns, have \(n)"], "") }
             let id = before[1]
             let name = title(id, h.frames())
             var fails: [String] = []
@@ -299,16 +324,22 @@ final class Scenarios {
 
     func quit() {
         record("g. SIGTERM: every test window ends fully on screen") {
+            // The windows to check: the same ones before and after the quit, as many as the runner opened.
+            let shown = Set(h.frames()?.windows.map(\.number) ?? [])
+            var fails: [String] = []
+            if shown.count != expected { fails.append("before SIGTERM the test app shows \(shown.count) windows, want \(expected)") }
             let pid = h.striple?.processIdentifier ?? 0
-            guard h.stopStriple(wait: 5) else { return (["Striple (pid \(pid)) did not quit within 5 s of SIGTERM"], "") }
+            guard h.stopStriple(wait: 5) else { return (fails + ["Striple (pid \(pid)) did not quit within 5 s of SIGTERM"], "") }
             let code = h.striple?.terminationStatus ?? -1
             let displays = h.displayFrames()
-            var fails = h.settle { f in
-                f.windows.filter { !FrameChecks.isFullyOnScreen($0.frame, displays: displays) }
+            fails += h.settle { f in
+                let now = Set(f.windows.map(\.number))
+                let changed = now == shown ? [] : ["the test app shows windows \(now.sorted()), want the same as before SIGTERM \(shown.sorted())"]
+                return changed + f.windows.filter { !FrameChecks.isFullyOnScreen($0.frame, displays: displays) }
                     .map { "\($0.title) \(FrameChecks.describe($0.frame)) is not fully on screen" }
             }
             if code != 0 { fails.append("Striple exit status \(code), want 0") }
-            return (fails, "Striple quit with status \(code); \(h.frames()?.windows.count ?? 0) windows fully on screen")
+            return (fails, "Striple quit with status \(code); the same \(shown.count) windows, all fully on screen")
         }
     }
 }
@@ -322,8 +353,4 @@ struct Percentiles {
         p50 = w.percentile(50)
         p95 = w.percentile(95)
     }
-}
-
-extension Array {
-    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

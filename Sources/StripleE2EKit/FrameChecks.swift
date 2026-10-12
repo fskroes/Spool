@@ -34,6 +34,26 @@ public struct StripGeometry: Equatable, Sendable {
 
     /// True when all columns fit the work area: Striple then shows them all, from the left edge.
     public func fits(_ proportions: [Double]) -> Bool { totalWidth(proportions) <= Double(work.width) + 0.5 }
+
+    /// The left edge of each column from the start of the strip, with the inner gaps.
+    public func positions(_ proportions: [Double]) -> [Double] {
+        var x = 0.0
+        return proportions.map { p in
+            defer { x += columnWidth(p) + gap }
+            return x
+        }
+    }
+
+    /// The scroll of the default center mode `onOverflow` (docs/SPEC.md F7): 0 when all columns fit, else the
+    /// focused column centred, but never past the ends of the strip. The same rule as `Strip.ensureFocusVisible`,
+    /// written again here so the E2E check does not trust the code it checks.
+    public func expectedScroll(_ proportions: [Double], focused: Int) -> Double {
+        guard proportions.indices.contains(focused) else { return 0 }
+        let view = Double(work.width), total = totalWidth(proportions)
+        guard total > view + 0.5 else { return 0 }
+        let centred = positions(proportions)[focused] - (view - columnWidth(proportions[focused])) / 2
+        return min(max(centred, 0), total - view)
+    }
 }
 
 /// Pure checks on reported window frames. Each returns a list of failures; empty means the check passed.
@@ -85,10 +105,27 @@ public enum FrameChecks {
     ///   the inner gap between them;
     /// - when all columns fit the work area, all are visible and the first starts at the left edge (no hole);
     /// - at least one column is visible, and a parked column keeps a sliver on the display (else macOS can move
-    ///   it to another display or forget which display it is on).
-    public static func checkStrip(_ columns: [Column], geometry g: StripGeometry) -> [String] {
+    ///   it to another display or forget which display it is on);
+    /// - with a `scroll`: a column whose frame should be fully on the display is visible there, at
+    ///   x = work area left + its position in the strip - scroll. Columns that hang over an edge are not
+    ///   compared: Striple moves them to the edge when another display is on that side.
+    public static func checkStrip(_ columns: [Column], geometry g: StripGeometry, scroll: Double? = nil) -> [String] {
         var failures: [String] = []
         let places = columns.map { place($0.frame, geometry: g) }
+        if let scroll {
+            let d = g.display
+            let onDisplay = { (minX: Double, maxX: Double) in minX >= Double(d.minX) - tolerance && maxX <= Double(d.maxX) + tolerance }
+            for (i, x0) in g.positions(columns.map(\.proportion)).enumerated() {
+                let c = columns[i], f = c.frame
+                let want = Double(g.work.minX) + x0 - scroll
+                guard onDisplay(want, want + g.columnWidth(c.proportion)) else { continue }
+                if places[i] != .visible {
+                    failures.append("\(c.title) is parked \(fmt(f)), want it on the display at x \(fmt(want)) (scroll \(fmt(scroll)))")
+                } else if !near(Double(f.minX), want) {
+                    failures.append("\(c.title): x \(fmt(Double(f.minX))), want \(fmt(want)) (scroll \(fmt(scroll)))")
+                }
+            }
+        }
         if !columns.isEmpty, !places.contains(.visible) {
             failures.append("no column is visible: all \(columns.count) are parked")
         }

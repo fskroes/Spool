@@ -152,14 +152,20 @@ func cleanupOnce() {
     harness.cleanup()
     try? FileManager.default.removeItem(atPath: E2ERunRecord.path)
 }
+// The signal and the report never both end the run: see ExitGate.
+let exitGate = ExitGate()
 var signalSources: [DispatchSourceSignal] = []
 for sig in [SIGINT, SIGTERM, SIGHUP] {
     signal(sig, SIG_IGN)
     let s = DispatchSource.makeSignalSource(signal: sig, queue: .global())
     s.setEventHandler {
+        guard exitGate.claim(.signal) else {
+            FileHandle.standardError.write(Data("striple-e2e: signal \(sig) ignored, the report is being written\n".utf8))
+            return
+        }
         FileHandle.standardError.write(Data("striple-e2e: stopped by signal \(sig), cleaning up\n".utf8))
         cleanupOnce()
-        exit(130)
+        _exit(130)
     }
     s.resume()
     signalSources.append(s)
@@ -242,6 +248,10 @@ notes.append(FileManager.default.fileExists(atPath: home.path)
     ? "Cleanup: could not delete STRIPLE_HOME `\(home.path)`."
     : "Cleanup: test app quit, Striple stopped, STRIPLE_HOME deleted.")
 
+// A signal came first: its handler cleans up and exits 130. Write no report and wait for that exit.
+if !exitGate.claim(.report) {
+    while true { pause() }
+}
 let reportURL = config.outDir.appendingPathComponent("report.md")
 let markdown = Report.markdown(title: "Striple E2E \(config.outDir.lastPathComponent)", rows: scenarios.rows, notes: notes)
 try? Data(markdown.utf8).write(to: reportURL)

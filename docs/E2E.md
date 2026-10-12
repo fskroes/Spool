@@ -40,7 +40,8 @@ You can also start the runner directly after a build:
   so Striple gets the permission of the terminal.
 - The screen must be unlocked.
 - During the run, the test app comes to the front a few times. Do not type: your keys can go to a test window.
-  If you click another app, the runner gives the focus back to the test window before each command.
+  If you click another app, the runner gives the focus back to the test window before each command, except in
+  scenario b: there a lost focus fails the scenario.
 
 ## Exit codes
 
@@ -49,7 +50,7 @@ You can also start the runner directly after a build:
 | 0 | All checks passed. |
 | 1 | A check failed. The report tells which and why. |
 | 2 | The test did not start: another Striple runs, no Accessibility permission, the screen is locked, or a binary is missing. Nothing was started. Retry later. |
-| 130 | The runner got SIGINT (Ctrl-C), SIGTERM or SIGHUP. It cleaned up (rule 4 in [Safety](#safety)) and wrote no report. |
+| 130 | The runner got SIGINT (Ctrl-C), SIGTERM or SIGHUP. It cleaned up (rule 4 in [Safety](#safety)) and wrote no report. A signal that comes after the runner started to write the report is ignored: the run ends with the code of the report. |
 
 `make e2e` prints `make: *** [e2e] Error 1` or `Error 2` with the code of the runner.
 
@@ -75,21 +76,31 @@ until they are correct and did not change for 250 ms (`SettleTracker`), for a ma
 for the first tiling, 5 seconds after the test app opens a window in scenario e). A check that reaches its maximum
 fails its scenario with the last failures it saw. Frames may differ by 2 points (rounding).
 
+Every strip check of a to f also checks:
+
+- The scroll. The runner calculates the scroll of the default center mode `onOverflow` itself: 0 when all
+  columns fit, else the focused column centred but never past the ends of the strip. Each column that must be
+  fully on the display is there, at x = left edge of the work area + its position in the strip - scroll.
+- The windows. Each window of the test app is a column or floats, never both and never neither.
+- The count. The runner expects the number of windows it opened and closed. It never takes the count from
+  `striple state`, so a lost column fails and does not change what the next scenario expects.
+
 | Scenario | Checks |
 |---|---|
 | a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. At least one column is visible, and the focused column is fully in view. Columns that are out of view are parked at the edge of the display and keep a sliver on it. If this scenario fails, b to f are SKIP: the strip is in an unknown state. |
-| b. Focus | `focus-left` to the first column, then `focus-right` to the last. The focused column is fully in view after each step. At the end, Striple's focus and the system focus (test app active, that window key) are on the last column. |
+| b. Focus | `focus-window` on the last column, then `focus-left` to the first column and `focus-right` back to the last: always 2 × (columns - 1) steps. After each step the focused column is fully in view at the expected scroll, and Striple's focus and the system focus (test app active, that window key) are on it. In this scenario the runner does not give the focus back: a step that loses it fails. |
 | c. Move | `move-left` and `move-right` on a column. The order in `striple state` and the order of the frames change as expected. |
 | d. Widths | `cycle-width` twice, `toggle-full-width` twice, then `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. |
 | e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes the column directly to the right of the focused column ([SPEC.md](SPEC.md)). |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 16 settles, so the p95 (nearest rank) is the slowest one. |
-| g. Quit | SIGTERM to Striple. It exits with status 0 and every test window is fully on a display. |
+| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 19 settles (a 1, b 5, c 4, d 5, e 2, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 19 samples is the slowest one. |
+| g. Quit | SIGTERM to Striple. It exits with status 0. The test app shows the same windows as before the SIGTERM, as many as the runner expects, and each is fully on a display. |
 | Safety: other apps | See below. |
 | Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. SKIP when the runner read no state (`ManagedCheck.verdict`). |
 
-Before each command the runner gives a test window the focus, because Striple acts on the focused window. If the
-window does not get the focus within 10 seconds, the command is not sent and the scenario fails.
+Before each command (except in scenario b) the runner gives a test window the focus, because Striple acts on the
+focused window. If the window does not get the focus within 10 seconds, the command is not sent and the scenario
+fails.
 
 The report header says PASS only when every row is PASS. A SKIP proves nothing, so it counts as a failure, the
 same as in the exit code.
@@ -163,5 +174,5 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   the other display; the gap check skips columns that are not fully on the main display.
 - The test app takes the focus during the run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  live runs on 2026-10-12 measured a frame write p95 of 4.75 and 5.67 ms. A heavy load on the Mac can still make it fail. Run
+  two live runs on 2026-10-12 (after the round 3 fixes) measured a frame write p95 of 4.79 and 4.71 ms and a settle p95 of 962 and 865 ms. A heavy load on the Mac can still make it fail. Run
   again when other work used the CPU.

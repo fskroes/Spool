@@ -40,8 +40,9 @@ public enum StripCheck {
     }
 
     /// The failures; empty when the strip is as expected. `strip` is nil when no strip holds a test window.
-    /// `proportion` gives the column width the runner expects for a window.
-    public static func failures(_ strip: StripView?, _ report: WindowReport, expect: StripExpectation,
+    /// `floating` are the test windows Striple floats. `proportion` gives the column width the runner expects
+    /// for a window. The frames must match the scroll of the default center mode `onOverflow`.
+    public static func failures(_ strip: StripView?, _ report: WindowReport, floating: [UInt32], expect: StripExpectation,
                                 geometry: StripGeometry, proportion: (UInt32) -> Double) -> [String] {
         guard let strip else { return ["no strip holds a test window"] }
         var failures: [String] = []
@@ -50,6 +51,14 @@ public enum StripCheck {
         }
         let ids = strip.ids
         if ids.count != expect.count { failures.append("strip has \(ids.count) columns, want \(expect.count)") }
+        // Every window of the test app is in the strip or floats, never both, never neither.
+        let inStrip = Set(strip.columns.joined()), floats = Set(floating)
+        for id in inStrip.intersection(floats).sorted() {
+            failures.append("\(title(id, report)) is in the strip and floats")
+        }
+        for w in report.windows where !inStrip.contains(UInt32(w.number)) && !floats.contains(UInt32(w.number)) {
+            failures.append("\(w.title) is shown by the test app but is not in the strip and does not float")
+        }
         if let order = expect.order, ids != order {
             failures.append("order \(ids.map { title($0, report) }), want \(order.map { title($0, report) })")
         }
@@ -64,7 +73,10 @@ public enum StripCheck {
             }
             columns.append(.init(title: w.title, frame: w.frame, proportion: proportion(id)))
         }
-        failures += FrameChecks.checkStrip(columns, geometry: geometry)
+        // The scroll needs every column; a missing window is already a failure above.
+        let scroll = columns.count == ids.count && ids.indices.contains(strip.focusedColumn)
+            ? geometry.expectedScroll(columns.map(\.proportion), focused: strip.focusedColumn) : nil
+        failures += FrameChecks.checkStrip(columns, geometry: geometry, scroll: scroll)
         if expect.focusedInView {
             if !ids.indices.contains(strip.focusedColumn) {
                 failures.append("focused column \(strip.focusedColumn + 1) does not exist (\(ids.count) columns)")

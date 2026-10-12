@@ -95,6 +95,66 @@ import Testing
         #expect(g2.contains { $0.contains("A is parkedLeft but comes after B") })
     }
 
+    @Test func positionsAndTheOnOverflowScroll() {
+        #expect(g.positions([0.5, 0.5, 0.5]) == [0, 1024, 2048])
+        // All fit: no scroll, whatever the focus.
+        #expect(g.expectedScroll([0.5, 0.5], focused: 1) == 0)
+        // Three half columns (3064 pt in a 2040 pt view): the focused column centred, clamped at the ends.
+        #expect(g.expectedScroll([0.5, 0.5, 0.5], focused: 0) == 0)
+        #expect(g.expectedScroll([0.5, 0.5, 0.5], focused: 1) == 512)
+        #expect(g.expectedScroll([0.5, 0.5, 0.5], focused: 2) == 1024)
+        #expect(g.expectedScroll([0.5, 0.5, 0.5], focused: 3) == 0)
+        // Like the engine, a strip at most 0.5 pt wider than the view counts as fitting: no scroll.
+        let justOver = [0.5, 0.5 + 0.4 / 2048]
+        #expect(g.totalWidth(justOver) > 2040 && g.totalWidth(justOver) < 2040.5)
+        #expect(g.expectedScroll(justOver, focused: 1) == 0)
+    }
+
+    /// Three half columns, focus on the middle one: scroll 512, the outer two hang over the edges.
+    var centred: [FrameChecks.Column] { [col("A", -504, 0.5), col("B", 520, 0.5), col("C", 1544, 0.5)] }
+
+    @Test func framesAtTheExpectedScrollPass() {
+        #expect(FrameChecks.checkStrip(centred, geometry: g, scroll: 512).isEmpty)
+        // Focus on the last column: A is parked at the left, B and C fill the view.
+        let parked = CGRect(x: -1015, y: 1328, width: 1016, height: 1274)
+        let last = [FrameChecks.Column(title: "A", frame: parked, proportion: 0.5), col("B", 8, 0.5), col("C", 1032, 0.5)]
+        #expect(FrameChecks.checkStrip(last, geometry: g, scroll: 1024).isEmpty)
+    }
+
+    @Test func aStripAtTheWrongScrollFails() {
+        // The frames of scroll 512, but the focus on the last column wants 1024: B must be at x 8.
+        let f = FrameChecks.checkStrip(centred, geometry: g, scroll: 1024)
+        #expect(f.contains("B: x 520.0, want 8.0 (scroll 1024.0)"))
+        #expect(f.contains("C: x 1544.0, want 1032.0 (scroll 1024.0)"))
+        // Without a scroll the same frames pass: before, a wrong scroll was not seen.
+        #expect(FrameChecks.checkStrip(centred, geometry: g).isEmpty)
+    }
+
+    @Test func aColumnParkedWhereItShouldBeOnTheDisplayFails() {
+        let parked = CGRect(x: 2055, y: 1328, width: 1016, height: 1274)
+        let cols = [col("A", 8, 0.5), col("B", 1032, 0.5), .init(title: "C", frame: parked, proportion: 0.5)]
+        // Focus on C: scroll 1024 puts C at x 1032, on the display.
+        #expect(FrameChecks.checkStrip(cols, geometry: g, scroll: 1024).contains { $0.hasPrefix("C is parked") && $0.contains("want it on the display at x 1032.0") })
+    }
+
+    /// The tolerance is 2 pt (rounding): 2 pt off passes, 3 pt off fails, for every frame check.
+    @Test(arguments: [(2.0, true), (-2.0, true), (3.0, false), (-3.0, false)])
+    func toleranceBoundary(off: Double, passes: Bool) {
+        func ok(_ cols: [FrameChecks.Column], scroll: Double? = nil) -> Bool { FrameChecks.checkStrip(cols, geometry: g, scroll: scroll).isEmpty }
+        var wide = col("A", 8, 0.5)
+        wide.frame.size.width += off
+        #expect(ok([wide, col("B", 1032 + max(off, 0), 0.5)]) == passes, "width")
+        #expect(ok([col("A", 8, 0.5, y: 47 + off)]) == passes, "top")
+        #expect(ok([col("A", 8, 0.5, h: 1274 + off)]) == passes, "height")
+        #expect(ok([col("A", 8, 0.5), col("B", 1032 + off, 0.5)]) == passes, "gap")
+        #expect(ok([col("A", 8 + off, 0.5), col("B", 1032 + off, 0.5)]) == passes, "hole / left edge")
+        #expect(ok([col("A", -504, 0.5), col("B", 520 + off, 0.5), col("C", 1544 + off, 0.5)], scroll: 512) == passes, "x at the scroll")
+        let right = CGRect(x: 1032 + abs(off), y: 47, width: 1016, height: 1274)
+        let left = CGRect(x: 8 - abs(off), y: 47, width: 1016, height: 1274)
+        #expect(FrameChecks.checkInView("A", right, geometry: g).isEmpty == passes, "in view, right edge")
+        #expect(FrameChecks.checkInView("A", left, geometry: g).isEmpty == passes, "in view, left edge")
+    }
+
     @Test func partlyVisibleColumnsSkipTheGapCheckOnly() {
         // The third column hangs over the right edge: Striple leaves it there when no display is to the right.
         let cols = [col("A", -500, 0.5), col("B", 524, 0.5), col("C", 1548, 0.5)]
@@ -351,7 +411,11 @@ import Testing
     let strip = StripView(columns: [[1], [2], [3]], focusedColumn: 0)
 
     func check(_ s: StripView?, _ e: StripExpectation, _ r: WindowReport? = nil) -> [String] {
-        StripCheck.failures(s, r ?? report, expect: e, geometry: g, proportion: { _ in 0.5 })
+        check(s, e, r, floating: [])
+    }
+
+    func check(_ s: StripView?, _ e: StripExpectation, _ r: WindowReport? = nil, floating: [UInt32]) -> [String] {
+        StripCheck.failures(s, r ?? report, floating: floating, expect: e, geometry: g, proportion: { _ in 0.5 })
     }
 
     @Test func theExpectedStripPasses() {
@@ -388,8 +452,21 @@ import Testing
     @Test func aFocusedColumnOutOfViewFails() {
         // Focus on the parked column 3: it must be scrolled into view.
         let s = StripView(columns: [[1], [2], [3]], focusedColumn: 2)
-        #expect(check(s, .init(count: 3)).contains { $0.hasPrefix("E2E 3") })
-        #expect(check(s, .init(count: 3, focusedInView: false)).isEmpty)
+        #expect(check(s, .init(count: 3)).contains { $0.hasPrefix("E2E 3") && $0.contains("is not fully in view") })
+        // Without the in-view check, the scroll check still sees it: focus on 3 wants scroll 1024.
+        let f = check(s, .init(count: 3, focusedInView: false))
+        #expect(!f.contains { $0.contains("is not fully in view") })
+        #expect(f.contains("E2E 2: x 1032.0, want 8.0 (scroll 1024.0)"))
+    }
+
+    @Test func aFloatingWindowIsNotInTheStrip() {
+        let s = StripView(columns: [[1], [2]], focusedColumn: 0)
+        var r = report
+        r.windows[2] = ReportedWindow(title: "E2E 3", number: 3, frame: CGRect(x: 400, y: 300, width: 600, height: 400))
+        #expect(check(s, .init(count: 2), r, floating: [3]).isEmpty)
+        // The app shows 3, but Striple neither tiles nor floats it: it lost the window.
+        #expect(check(s, .init(count: 2), r, floating: []).contains("E2E 3 is shown by the test app but is not in the strip and does not float"))
+        #expect(check(strip, .init(count: 3), floating: [3]).contains("E2E 3 is in the strip and floats"))
     }
 
     @Test func aFocusedColumnThatDoesNotExistFails() {
@@ -520,5 +597,34 @@ import Testing
 
     @Test func roundTrip() throws {
         #expect(try JSONDecoder().decode(E2ERunRecord.self, from: JSONEncoder().encode(r)) == r)
+    }
+}
+
+@Suite struct ExitGateTests {
+    @Test func theFirstClaimOwnsTheExit() {
+        let g = ExitGate()
+        #expect(g.claimedBy == nil)
+        #expect(g.claim(.report))
+        #expect(!g.claim(.signal))
+        #expect(!g.claim(.report), "a second claim by the owner gets false too")
+        #expect(g.claimedBy == .report)
+    }
+
+    @Test func concurrentClaimsHaveExactlyOneWinner() {
+        for _ in 0..<200 {
+            let g = ExitGate()
+            let wins = Wins()
+            DispatchQueue.concurrentPerform(iterations: 8) { i in
+                if g.claim(i % 2 == 0 ? .signal : .report) { wins.add() }
+            }
+            #expect(wins.count == 1)
+        }
+    }
+
+    final class Wins: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        func add() { lock.lock(); n += 1; lock.unlock() }
+        var count: Int { lock.lock(); defer { lock.unlock() }; return n }
     }
 }
