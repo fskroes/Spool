@@ -14,12 +14,15 @@ public struct StripGeometry: Equatable, Sendable {
     /// display, or parks it; with no display there, the column stays where the strip puts it.
     public var neighborLeft: Bool
     public var neighborRight: Bool
+    /// Another display touches the bottom edge. Striple then parks a column at its side and keeps its y.
+    public var neighborBelow: Bool
 
     public init(display: CGRect, visible: CGRect, innerGap: Double,
                 outerTop: Double, outerBottom: Double, outerLeft: Double, outerRight: Double, sliver: Double,
-                neighborLeft: Bool = false, neighborRight: Bool = false) {
+                neighborLeft: Bool = false, neighborRight: Bool = false, neighborBelow: Bool = false) {
         self.neighborLeft = neighborLeft
         self.neighborRight = neighborRight
+        self.neighborBelow = neighborBelow
         self.display = display
         self.work = CGRect(x: Double(visible.minX) + outerLeft, y: Double(visible.minY) + outerTop,
                            width: max(Double(visible.width) - outerLeft - outerRight, 1),
@@ -66,7 +69,9 @@ public struct StripGeometry: Equatable, Sendable {
     /// its x, or nil when Striple parks it. The rule of docs/SPEC.md: a column fully past an edge with no
     /// display there keeps only a sliver (it is parked); one that hangs over such an edge stays where it is.
     /// Toward a neighbour display, a column is parked when its middle is past the edge, else moved to the edge.
-    public func shownX(_ x: Double, width w: Double) -> Double? {
+    /// Like the engine (`Layout.pixelAligned`), it rounds x and the width to whole points first.
+    public func shownX(_ x: Double, width: Double) -> Double? {
+        let x = x.rounded(), w = width.rounded()
         let d0 = Double(display.minX), d1 = Double(display.maxX)
         if x + w > d1 {
             if neighborRight { return x + w / 2 > d1 ? nil : d1 - w }
@@ -80,12 +85,18 @@ public struct StripGeometry: Equatable, Sendable {
     }
 
     /// Which sides of `frame` touch another display, with the 2 pt tolerance of the engine (Displays.make).
-    public static func neighbors(of frame: CGRect, among displays: [CGRect]) -> (left: Bool, right: Bool) {
+    public static func neighbors(of frame: CGRect, among displays: [CGRect]) -> (left: Bool, right: Bool, below: Bool) {
         let others = displays.filter { $0 != frame }
         func overlapsVertically(_ o: CGRect) -> Bool { o.minY < frame.maxY - 2 && o.maxY > frame.minY + 2 }
+        func overlapsHorizontally(_ o: CGRect) -> Bool { o.minX < frame.maxX - 2 && o.maxX > frame.minX + 2 }
         return (others.contains { abs($0.maxX - frame.minX) <= 2 && overlapsVertically($0) },
-                others.contains { abs($0.minX - frame.maxX) <= 2 && overlapsVertically($0) })
+                others.contains { abs($0.minX - frame.maxX) <= 2 && overlapsVertically($0) },
+                others.contains { abs($0.minY - frame.maxY) <= 2 && overlapsHorizontally($0) })
     }
+
+    /// True when Striple parks hidden columns at the bottom edge (Layout.park): no display below, or displays
+    /// on both sides. Else it parks them at a side and keeps their y.
+    public var parksAtTheBottom: Bool { !neighborBelow || (neighborLeft && neighborRight) }
 }
 
 /// Pure checks on reported window frames. Each returns a list of failures; empty means the check passed.
@@ -107,14 +118,28 @@ public enum FrameChecks {
         public static func < (a: Place, b: Place) -> Bool { a.rawValue < b.rawValue }
     }
 
-    /// Where a window is: parked (at most a sliver on the display), or visible. Striple parks columns that are
-    /// out of view at the side of the display, and at the bottom when no display is below.
+    /// Where a window is: parked, or visible. It follows Layout.park:
+    /// - Striple parks at the bottom (`parksAtTheBottom`): it moves the window down, and with a free side also
+    ///   to a sliver at that side. macOS can stop the window lower than the engine asked (the title bar stays
+    ///   on screen; 28 pt on a 2056x1329 display), so the y says only "moved down from the work-area top".
+    ///   A column at the work-area top with 1 to 3 pt on the display is visible: Layout.physical leaves it there.
+    /// - Else (a display below only) Striple parks at the side and keeps the y, so the x says it.
+    /// A window with nothing on the display counts as parked (and then fails the sliver check).
     public static func place(_ f: CGRect, geometry g: StripGeometry) -> Place {
         let d = g.display
         let limit = g.sliver + tolerance
         let overlapX = Double(min(f.maxX, d.maxX) - max(f.minX, d.minX))
         let overlapY = Double(min(f.maxY, d.maxY) - max(f.minY, d.minY))
-        guard overlapX <= limit || overlapY <= limit else { return .visible }
+        let parked: Bool
+        if overlapX <= 0 || overlapY <= 0 {
+            parked = true
+        } else if g.parksAtTheBottom {
+            let movedDown = Double(f.minY) > Double(g.work.minY) + tolerance
+            parked = movedDown && ((g.neighborLeft && g.neighborRight) || overlapX <= limit)
+        } else {
+            parked = overlapX <= limit
+        }
+        guard parked else { return .visible }
         return f.midX < d.midX ? .parkedLeft : .parkedRight
     }
 

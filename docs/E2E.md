@@ -49,7 +49,7 @@ You can also start the runner directly after a build:
 |---|---|
 | 0 | All checks passed. |
 | 1 | A check failed. The report tells which and why. |
-| 2 | The test did not start: another Striple runs, no Accessibility permission, the screen is locked, or a binary is missing. Nothing was started. Retry later. |
+| 2 | The test did not start. The message says why. The causes: wrong arguments; another E2E run is active; the test Striple of an earlier run does not stop; the app or the test app binary is missing; no display; the screen is locked; no Accessibility permission; another Striple runs or answers on the default socket; no temporary `STRIPLE_HOME`. Nothing of this run was started. Fix the cause, or retry later. |
 | 130 | The runner got SIGINT (Ctrl-C), SIGTERM or SIGHUP. It cleaned up (rule 4 in [Safety](#safety)) and wrote no report. A signal that comes after the runner started to write the report is ignored: the run ends with the code of the report. |
 
 `make e2e` prints `make: *** [e2e] Error 1` or `Error 2` with the code of the runner.
@@ -80,8 +80,9 @@ Every strip check of a to f also checks:
 
 - The scroll and the x of every column. The runner calculates the scroll of the default center mode `onOverflow`
   itself: 0 when all columns fit, else the focused column centred but never past the ends of the strip. The strip
-  x of a column is the left edge of the work area + its position in the strip - scroll. Then the runner applies
-  the rule of `Layout.physical` again (`StripGeometry.shownX`):
+  x of a column is the left edge of the work area + its position in the strip - scroll. The runner rounds the x
+  and the width to whole points, as `Layout.pixelAligned` does. Then it applies the rule of `Layout.physical`
+  again (`StripGeometry.shownX`):
   - A column fully on the display is at its strip x.
   - A column that hangs over an edge with no display there stays at its strip x. Its gap to the next column is
     checked too.
@@ -89,6 +90,21 @@ Every strip check of a to f also checks:
   - A column past an edge (less than `layout.parkedSliver` on the display) is parked.
 
   A column that is visible where it must be parked, or parked where it must be visible, fails.
+
+  The runner reads a window as parked as `Layout.park` puts it (`FrameChecks.place`). Striple parks at the
+  bottom of the display, unless a display is below it and none is at the left or the right. A display is a
+  neighbour when its edge is at most 2 points from the edge of the main display and the two overlap by more than
+  2 points along that edge (the rule of `Displays.make`).
+  - Parks at the bottom: Striple moves the window down. With a free side, it also moves it to that side, so at
+    most `layout.parkedSliver` + 2 points of the width stay on the display. macOS can stop the window higher
+    than Striple asked: it keeps the title bar on the screen (28 points on the test display). So the runner
+    asks only that the top is more than 2 points below the top of the work area.
+  - Parks at the side: Striple keeps the y. Parked means at most `layout.parkedSliver` + 2 points of the width
+    on the display.
+  - A window with nothing on the display counts as parked, and then fails the sliver check.
+
+  So a column at the top of the work area with only 1 to 3 points of its width on the display is visible, not
+  parked, as in `Layout.physical`.
 - The windows. Each window of the test app is a column or floats, never both and never neither.
 - The count. The runner expects the number of windows it opened and closed. It never takes the count from
   `striple state`, so a lost column fails and does not change what the next scenario expects.
@@ -184,5 +200,5 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   check of the parked side order is skipped then.
 - The test app takes the focus during the run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  two live runs on 2026-10-12 (after the round 4 fixes) measured a frame write p95 of 4.95 and 4.05 ms and a settle p95 of 827 and 787 ms. A heavy load on the Mac can still make it fail. Run
+  two live runs on 2026-10-12 (after the round 5 fixes) measured a frame write p95 of 4.50 and 4.87 ms and a settle p95 of 833 and 825 ms. A heavy load on the Mac can still make it fail. Run
   again when other work used the CPU.

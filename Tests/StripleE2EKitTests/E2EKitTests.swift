@@ -227,43 +227,150 @@ import Testing
         #expect(both.shownX(-509, width: w) == nil)
     }
 
-    @Test func neighboursTouchWithinTwoPointsAndOverlapVertically() {
+    @Test func neighboursTouchWithinTwoPointsAndOverlap() {
         let main = CGRect(x: 0, y: 0, width: 2056, height: 1329)
-        func n(_ o: CGRect) -> (Bool, Bool) { let r = StripGeometry.neighbors(of: main, among: [main, o]); return (r.left, r.right) }
-        #expect(n(CGRect(x: 2056, y: 0, width: 1920, height: 1080)) == (false, true))
-        #expect(n(CGRect(x: 2058, y: 0, width: 1920, height: 1080)) == (false, true), "2 pt apart")
-        #expect(n(CGRect(x: 2059, y: 0, width: 1920, height: 1080)) == (false, false), "3 pt apart")
-        #expect(n(CGRect(x: -1920, y: 200, width: 1920, height: 1080)) == (true, false))
-        #expect(n(CGRect(x: 2056, y: 1327, width: 1920, height: 1080)) == (false, false), "only 2 pt side by side")
-        #expect(n(CGRect(x: 2056, y: 1326, width: 1920, height: 1080)) == (false, true), "3 pt side by side")
-        #expect(n(CGRect(x: 0, y: 1329, width: 2056, height: 1329)) == (false, false), "below is not a side")
+        func n(_ o: CGRect) -> [Bool] { let r = StripGeometry.neighbors(of: main, among: [main, o]); return [r.left, r.right, r.below] }
+        // Right.
+        #expect(n(CGRect(x: 2056, y: 0, width: 1920, height: 1080)) == [false, true, false])
+        #expect(n(CGRect(x: 2058, y: 0, width: 1920, height: 1080)) == [false, true, false], "2 pt apart")
+        #expect(n(CGRect(x: 2059, y: 0, width: 1920, height: 1080)) == [false, false, false], "3 pt apart")
+        // Left.
+        #expect(n(CGRect(x: -1920, y: 200, width: 1920, height: 1080)) == [true, false, false])
+        #expect(n(CGRect(x: -1922, y: 200, width: 1920, height: 1080)) == [true, false, false], "2 pt apart")
+        #expect(n(CGRect(x: -1923, y: 200, width: 1920, height: 1080)) == [false, false, false], "3 pt apart")
+        // Side by side for 2 pt only does not count, below or above; 3 pt does.
+        #expect(n(CGRect(x: 2056, y: 1327, width: 1920, height: 1080)) == [false, false, false])
+        #expect(n(CGRect(x: 2056, y: 1326, width: 1920, height: 1080)) == [false, true, false])
+        #expect(n(CGRect(x: 2056, y: -1078, width: 1920, height: 1080)) == [false, false, false])
+        #expect(n(CGRect(x: 2056, y: -1077, width: 1920, height: 1080)) == [false, true, false])
+        // Below: within 2 pt, and 3 pt side by side.
+        #expect(n(CGRect(x: 0, y: 1329, width: 2056, height: 1329)) == [false, false, true])
+        #expect(n(CGRect(x: 0, y: 1331, width: 2056, height: 1329)) == [false, false, true], "2 pt apart")
+        #expect(n(CGRect(x: 0, y: 1332, width: 2056, height: 1329)) == [false, false, false], "3 pt apart")
+        #expect(n(CGRect(x: 2054, y: 1329, width: 1920, height: 1080)) == [false, false, false], "2 pt side by side")
+        #expect(n(CGRect(x: 2053, y: 1329, width: 1920, height: 1080)) == [false, false, true], "3 pt side by side")
     }
 
-    @Test func aParkedWindowKeepsAtMostTheSliverAndTheRounding() {
-        // sliver 1 + tolerance 2: 3 pt on the display is parked, 4 pt is visible. On either axis.
+    /// The display of `g` with another display below it: Striple parks at the side and keeps the y.
+    var below: StripGeometry {
+        var b = g
+        b.neighborBelow = true
+        return b
+    }
+
+    @Test func whereStripleParksAtTheBottomTheWindowIsMovedDownAndToTheSliver() {
+        // sliver 1 + tolerance 2: 3 pt on the display is a sliver, 4 pt is not.
         func r(_ x: Double, _ y: Double = 47) -> CGRect { CGRect(x: x, y: y, width: 1016, height: 1274) }
-        #expect(FrameChecks.place(r(2053), geometry: g) == .parkedRight)
-        #expect(FrameChecks.place(r(2052), geometry: g) == .visible)
-        #expect(FrameChecks.place(r(-1013), geometry: g) == .parkedLeft)
-        #expect(FrameChecks.place(r(-1012), geometry: g) == .visible)
-        #expect(FrameChecks.place(r(8, 1326), geometry: g) == .parkedLeft)
-        #expect(FrameChecks.place(r(8, 1325), geometry: g) == .visible)
+        #expect(g.parksAtTheBottom)
+        // Where Layout.park puts it (y = 1329 - 1), and where macOS stops it (the title bar stays on screen).
+        #expect(FrameChecks.place(r(2055, 1328), geometry: g) == .parkedRight)
+        #expect(FrameChecks.place(r(-1015, 1328), geometry: g) == .parkedLeft)
+        #expect(FrameChecks.place(r(2055, 1301), geometry: g) == .parkedRight, "seen live on 2026-10-12")
+        #expect(FrameChecks.place(r(-1015, 1301), geometry: g) == .parkedLeft)
+        #expect(FrameChecks.place(r(2053, 1301), geometry: g) == .parkedRight)
+        #expect(FrameChecks.place(r(2052, 1301), geometry: g) == .visible, "4 pt is no sliver")
+        #expect(FrameChecks.place(r(-1013, 1301), geometry: g) == .parkedLeft)
+        #expect(FrameChecks.place(r(-1012, 1301), geometry: g) == .visible)
+        // Moved down means more than 2 pt below the work-area top (47).
+        #expect(FrameChecks.place(r(2055, 49), geometry: g) == .visible)
+        #expect(FrameChecks.place(r(2055, 50), geometry: g) == .parkedRight)
+        // At the work-area top, 1 to 3 pt at the side is still on the display: Layout.physical leaves it there.
+        #expect(FrameChecks.place(r(2055), geometry: g) == .visible)
+        #expect(FrameChecks.place(r(-1015), geometry: g) == .visible)
+        // Moved down with its full width on the display: Striple never parks so (the top/height check fails it).
+        #expect(FrameChecks.place(r(8, 1326), geometry: g) == .visible)
+        // Nothing on the display at all counts as parked (the sliver check then fails it).
+        #expect(FrameChecks.place(r(2056), geometry: g) == .parkedRight)
+        #expect(FrameChecks.place(r(-1016), geometry: g) == .parkedLeft)
+        #expect(FrameChecks.place(r(8, 1329), geometry: g) == .parkedLeft)
     }
 
-    @Test func inView() {
-        #expect(FrameChecks.checkInView("A", CGRect(x: 8, y: 47, width: 1016, height: 1274), geometry: g).isEmpty)
-        #expect(!FrameChecks.checkInView("A", CGRect(x: 1200, y: 47, width: 1016, height: 1274), geometry: g).isEmpty)
-        #expect(!FrameChecks.checkInView("A", CGRect(x: -20, y: 47, width: 1016, height: 1274), geometry: g).isEmpty)
+    @Test func withDisplaysOnBothSidesOnlyMovedDownSaysParked() {
+        func r(_ x: Double, _ y: Double = 47) -> CGRect { CGRect(x: x, y: y, width: 1016, height: 1274) }
+        var both = g
+        both.neighborLeft = true
+        both.neighborRight = true
+        #expect(both.parksAtTheBottom)
+        // Layout.park keeps the window inside the display horizontally.
+        #expect(FrameChecks.place(r(8, 1301), geometry: both) == .parkedLeft)
+        #expect(FrameChecks.place(r(1040, 1328), geometry: both) == .parkedRight)
+        #expect(FrameChecks.place(r(8, 50), geometry: both) == .parkedLeft)
+        #expect(FrameChecks.place(r(8, 49), geometry: both) == .visible)
+        // A display on one side only: Striple parks at the sliver of the free side, so the x must say it too.
+        var right = g
+        right.neighborRight = true
+        #expect(right.parksAtTheBottom)
+        #expect(FrameChecks.place(r(-1015, 1301), geometry: right) == .parkedLeft)
+        #expect(FrameChecks.place(r(8, 1301), geometry: right) == .visible)
     }
 
-    @Test func fullyOnScreen() {
-        let displays = [CGRect(x: 0, y: 0, width: 2056, height: 1329), CGRect(x: 2056, y: 0, width: 1920, height: 1080)]
-        #expect(FrameChecks.isFullyOnScreen(CGRect(x: 100, y: 100, width: 500, height: 400), displays: displays))
-        #expect(FrameChecks.isFullyOnScreen(CGRect(x: 2100, y: 100, width: 500, height: 400), displays: displays))
-        // Across two displays, parked at the bottom, or hanging off the left edge.
-        #expect(!FrameChecks.isFullyOnScreen(CGRect(x: 1900, y: 100, width: 500, height: 400), displays: displays))
-        #expect(!FrameChecks.isFullyOnScreen(CGRect(x: 100, y: 1328, width: 500, height: 400), displays: displays))
-        #expect(!FrameChecks.isFullyOnScreen(CGRect(x: -1015, y: 47, width: 1016, height: 400), displays: displays))
+    @Test func withADisplayBelowOnlyTheXSaysParked() {
+        func r(_ x: Double, _ y: Double = 47) -> CGRect { CGRect(x: x, y: y, width: 1016, height: 1274) }
+        #expect(!below.parksAtTheBottom)
+        #expect(FrameChecks.place(r(2053), geometry: below) == .parkedRight)
+        #expect(FrameChecks.place(r(2052), geometry: below) == .visible)
+        #expect(FrameChecks.place(r(-1013), geometry: below) == .parkedLeft)
+        #expect(FrameChecks.place(r(-1012), geometry: below) == .visible)
+        #expect(FrameChecks.place(r(8, 1329), geometry: below) == .parkedLeft, "nothing on the display")
+        // Displays on both sides and below: no free side, so Striple parks at the bottom again.
+        var all = below
+        all.neighborLeft = true
+        all.neighborRight = true
+        #expect(all.parksAtTheBottom)
+        #expect(FrameChecks.place(r(2053), geometry: all) == .visible)
+        #expect(FrameChecks.place(r(8, 1301), geometry: all) == .parkedLeft)
+    }
+
+    @Test func aColumnWithTwoPointsOnTheDisplayIsVisibleNotParked() {
+        // Scroll 1022 puts A at strip x -1014: 2 pt stay on the display, so Layout.physical leaves it there.
+        let cols = [col("A", -1014, 0.5), col("B", 10, 0.5), col("C", 1034, 0.5)]
+        #expect(g.shownX(-1014, width: 1016) == -1014)
+        #expect(FrameChecks.checkStrip(cols, geometry: g, scroll: 1022).isEmpty)
+    }
+
+    @Test func shownXRoundsLikeTheEngine() {
+        // 2055.4 rounds to 2055: 1 pt stays, so not parked. 2055.6 rounds to 2056: parked.
+        #expect(g.shownX(2055.4, width: 1016) == 2055)
+        #expect(g.shownX(2055.6, width: 1016) == nil)
+    }
+
+    /// The display of `g` with another display on its left.
+    var left: StripGeometry {
+        var l = g
+        l.neighborLeft = true
+        return l
+    }
+
+    @Test func aColumnMovedToALeftNeighbourEdgeIsNotGapChecked() {
+        // Scroll 508: A at strip x -500, its middle (8) on this display, so Striple moves it to x 0, over B.
+        let cols = [col("A", 0, 0.5), col("B", 524, 0.5), col("C", 1548, 0.5)]
+        #expect(FrameChecks.checkStrip(cols, geometry: left, scroll: 508).isEmpty)
+        #expect(FrameChecks.checkStrip(cols, geometry: g).contains { $0.hasPrefix("gap A -> B") })
+        // 2 pt from the edge is at the edge; 3 pt is not.
+        #expect(FrameChecks.checkStrip([col("A", 2, 0.5), col("B", 524, 0.5), col("C", 1548, 0.5)], geometry: left).isEmpty)
+        #expect(FrameChecks.checkStrip([col("A", 3, 0.5), col("B", 524, 0.5), col("C", 1548, 0.5)], geometry: left).contains { $0.hasPrefix("gap A -> B") })
+    }
+
+    @Test func aColumnHangingAwayFromTheNeighbourKeepsItsGap() {
+        // A display on the right does not free the left edge: a column over the left edge keeps the gap.
+        let f = FrameChecks.checkStrip([col("A", -504, 0.5), col("B", 530, 0.5)], geometry: right)
+        #expect(f.contains("gap A -> B: 18.0, want 8.0"))
+    }
+
+    @Test func theRightNeighbourEdgeHasTheTwoPointTolerance() {
+        // C's right edge 2 pt from the display edge counts as at the edge: no gap check. 3 pt: checked.
+        #expect(FrameChecks.checkStrip([col("B", 8, 0.5), col("C", 1038, 0.5)], geometry: right).isEmpty)
+        #expect(FrameChecks.checkStrip([col("B", 8, 0.5), col("C", 1037, 0.5)], geometry: right).contains("gap B -> C: 13.0, want 8.0"))
+    }
+
+    @Test func aStripAtMostHalfAPointTooWideStillFits() {
+        let justOver = [0.5, 0.5 + 0.4 / 2048]
+        #expect(g.fits(justOver))
+        #expect(!g.fits([0.5, 0.5 + 0.6 / 2048]))
+        // It fits, so a parked column fails.
+        let parked = CGRect(x: 2055, y: 1328, width: g.columnWidth(justOver[1]), height: 1274)
+        let f = FrameChecks.checkStrip([col("A", 8, 0.5), .init(title: "B", frame: parked, proportion: justOver[1])], geometry: g)
+        #expect(f.contains { $0.hasPrefix("B is parked") && $0.hasSuffix("but all columns fit") })
     }
 
     @Test(arguments: [(2.0, true), (3.0, false)])

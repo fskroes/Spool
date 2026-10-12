@@ -80,7 +80,8 @@ final class Harness {
         return StripGeometry(display: display,
                              visible: Coordinates.topLeft(main.visibleFrame, primaryHeight: h), innerGap: g.innerGap,
                              outerTop: g.outerGaps.top, outerBottom: g.outerGaps.bottom, outerLeft: g.outerGaps.left,
-                             outerRight: g.outerGaps.right, sliver: g.parkedSliver, neighborLeft: n.left, neighborRight: n.right)
+                             outerRight: g.outerGaps.right, sliver: g.parkedSliver, neighborLeft: n.left, neighborRight: n.right,
+                             neighborBelow: n.below)
     }
 
     func displayFrames() -> [CGRect] {
