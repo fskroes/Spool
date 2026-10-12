@@ -17,6 +17,14 @@ enum AX {
         return unsafeBitCast(sym, to: GetWindowFn.self)
     }()
 
+    /// Sets the timeout on the system-wide element. That is the global timeout for every AX call of this
+    /// process, also for window elements from kAXWindows and from notifications. A timeout set on one element
+    /// applies to that element only (AXUIElement.h), so `app(_:)` alone does not cover windows.
+    @discardableResult
+    static func setGlobalTimeout() -> AXError {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), messagingTimeout)
+    }
+
     static func app(_ pid: pid_t) -> AXUIElement {
         let e = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(e, messagingTimeout)

@@ -135,6 +135,8 @@ struct LaunchAtLoginRow: View {
             // The user approves Striple in System Settings and comes back: show the new state.
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 state = LoginItem.state
+                // The toggle too: the user can turn the login item off in System Settings.
+                LoginItem.syncConfig(store)
             }
         if state == .unavailable {
             Note("Available in the app bundle.")

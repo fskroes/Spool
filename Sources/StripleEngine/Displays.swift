@@ -110,9 +110,15 @@ enum WindowList {
         guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
+        return ids(in: list)
+    }
+
+    /// Every window number, at every window level. The question is only "does it exist": a tiled window can
+    /// be at another level, for example a video player set to "Float on Top".
+    static func ids(in list: [[String: Any]]) -> Set<WindowID> {
         var ids = Set<WindowID>()
         ids.reserveCapacity(list.count)
-        for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
+        for w in list {
             if let n = w[kCGWindowNumber as String] as? NSNumber { ids.insert(n.uint32Value) }
         }
         return ids

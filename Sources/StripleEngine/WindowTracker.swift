@@ -119,8 +119,16 @@ final class WindowTracker {
     }
 
     /// Creates the observer for an app. Apps that just launched often do not answer AX yet: try again a few times.
+    /// While a retry waits, other callers do nothing, so there is only one retry chain per app.
     func watch(_ pid: pid_t) {
-        guard watches[pid] == nil else { return }
+        guard watches[pid] == nil, retries[pid] == nil else { return }
+        attemptWatch(pid)
+    }
+
+    /// True while the app did not answer and a retry waits. Its windows are found when the retry works.
+    func isWaiting(for pid: pid_t) -> Bool { watches[pid] == nil && retries[pid] != nil }
+
+    private func attemptWatch(_ pid: pid_t) {
         switch makeWatch(pid) {
         case .success(let w): install(w)
         case .failure(let why): scheduleRetry(pid, reason: why.reason)
@@ -137,11 +145,8 @@ final class WindowTracker {
         }
         let app = AX.app(pid)
         let refcon = UnsafeMutableRawPointer(bitPattern: Int(pid))
-        var registered = 0
-        for n in Self.appNotifications where AXObserverAddNotification(observer, app, n as CFString, refcon) == .success {
-            registered += 1
-        }
-        guard registered > 0 else { return .failure(WatchFailure(reason: "app does not answer Accessibility yet")) }
+        let r = Policy.registerUntilHung(Self.appNotifications) { AXObserverAddNotification(observer, app, $0 as CFString, refcon) }
+        guard !r.hung, r.registered > 0 else { return .failure(WatchFailure(reason: "app does not answer Accessibility yet")) }
         return .success(AppWatch(pid: pid, observer: observer, app: app))
     }
 
@@ -209,7 +214,7 @@ final class WindowTracker {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.watches[pid] == nil else { return }
-                self.watch(pid)
+                self.attemptWatch(pid)
                 if self.watches[pid] != nil { self.onEvent(.appLaunched(pid)) }
             }
         }

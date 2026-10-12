@@ -73,8 +73,10 @@ but arrow keys always send the Fn flag. So Striple has no defaults on these comb
 the macOS shortcut in **System Settings > Keyboard > Keyboard Shortcuts > Windows**.
 
 A `config.json` from an earlier version of Striple (version 1) can still have `⌃⌥⇧` + arrow on the move commands.
-Striple removes those four combinations when it reads the file. A command that is not in your file (because it is
-newer than the file) gets its default shortcut, unless your file uses that combination for another command.
+On macOS 15 and later, Striple removes those four combinations when it reads the file. On macOS 13 and 14 it keeps
+them, because macOS does not use them there. A command that is not in your file (because it is newer than the file)
+gets its default shortcut, unless your file uses that combination for another command. Then Striple saves the file
+once as version 2, so a combination that you add again later is kept.
 
 ## Trackpad
 

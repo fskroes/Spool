@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Testing
 @testable import StripleCore
@@ -284,5 +285,34 @@ import Testing
         let session = Session(strips: [SessionStrip(displayID: "D", spaceID: 0, strip: out["k"]!)], floating: [])
         let back = session.restore(live: (1...4).map { WindowInfo(id: WindowID($0)) })
         #expect(back.strips.first?.strip.allWindows.map(\.id) == [1, 2, 3, 4])
+    }
+
+    // Round 5 finding: each retry waited for all three notifications of a hung app (about 0.75 s on main).
+    @Test func registeringStopsAtTheFirstTimeout() {
+        var calls: [String] = []
+        let hung = Policy.registerUntilHung(["a", "b", "c"]) { calls.append($0); return $0 == "a" ? .success : .cannotComplete }
+        #expect(calls == ["a", "b"])
+        #expect(hung.registered == 1 && hung.hung)
+
+        calls = []
+        let ok = Policy.registerUntilHung(["a", "b", "c"]) { calls.append($0); return $0 == "b" ? .failure : .success }
+        #expect(calls == ["a", "b", "c"])
+        #expect(ok.registered == 2 && !ok.hung)
+    }
+
+    // Round 5 finding: a tiled window at another window level (video player "Float on Top") counted as closed.
+    @Test func windowsAtEveryLevelExist() {
+        let list: [[String: Any]] = [
+            [kCGWindowNumber as String: NSNumber(value: 10), kCGWindowLayer as String: 0],
+            [kCGWindowNumber as String: NSNumber(value: 11), kCGWindowLayer as String: 3],
+            [kCGWindowNumber as String: NSNumber(value: 12), kCGWindowLayer as String: 25],
+            [kCGWindowLayer as String: 0],
+        ]
+        #expect(WindowList.ids(in: list) == [10, 11, 12])
+    }
+
+    // Round 5 finding: the AX timeout covered app elements only, so a hung app's window could block for 6 s.
+    @Test func theGlobalTimeoutCanBeSet() {
+        #expect(AX.setGlobalTimeout() == .success)
     }
 }

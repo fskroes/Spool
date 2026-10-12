@@ -37,7 +37,7 @@ import Testing
         old.bindings[.toggleEngine] = nil                      // not in the file: newer than the file
         old.bindings[.sendToNextDisplay] = nil
 
-        let c = try Config.decode(old.encoded())
+        let c = try Config.decode(old.encoded(), arrowsTaken: true)
 
         #expect(c.version == Config.currentVersion)
         #expect(c.bindings[.moveLeft] == [KeyCombo(KeyCode.h, cos)])
@@ -54,5 +54,15 @@ import Testing
         let c = try Config.decode(mine.encoded())
         #expect(c.bindings[.moveLeft] == mine.bindings[.moveLeft])
         #expect(c == mine)
+    }
+
+    // Round 5 finding: on macOS 13 and 14 the migration removed combos that macOS does not use there.
+    @Test func onMacOS13And14AVersion1ConfigKeepsTheArrowMoves() throws {
+        let left = KeyCombo(KeyCode.left, [.control, .option, .shift])
+        var old = Config()
+        old.version = 1
+        old.bindings[.moveLeft] = [left]
+        let c = try Config.decode(old.encoded(), arrowsTaken: false)
+        #expect(c.bindings[.moveLeft] == [left])
     }
 }

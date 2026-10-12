@@ -40,6 +40,21 @@ import Testing
         #expect(c.bindings[.focusRight] == DefaultBindings.make()[.focusRight])
     }
 
+    // Round 5 finding: one bad combo or rule silently replaced every shortcut or every rule with the defaults.
+    @Test func aBadEntryIsAnErrorNotASilentReset() {
+        let badMod = #"{"bindings":{"focus-left":[{"key":4,"mods":["ctrl","hyper"]}],"focus-right":[{"key":5,"mods":["ctrl"]}]}}"#
+        #expect(throws: DecodingError.self) { try Config.decode(Data(badMod.utf8)) }
+        let badRule = #"{"rules":[{"bundleID":"a","appName":"A","action":{"float":{}}},{"bundleID":"b","appName":"B"}]}"#
+        #expect(throws: DecodingError.self) { try Config.decode(Data(badRule.utf8)) }
+        let badDisplays = #"{"disabledDisplays":"UUID-1"}"#
+        #expect(throws: DecodingError.self) { try Config.decode(Data(badDisplays.utf8)) }
+        // The good forms still load.
+        let good = #"{"rules":[{"bundleID":"a","appName":"A","action":{"float":{}}}],"disabledDisplays":["UUID-1"]}"#
+        let c = try? Config.decode(Data(good.utf8))
+        #expect(c?.rules.map(\.bundleID) == ["a"])
+        #expect(c?.disabledDisplays == ["UUID-1"])
+    }
+
     @Test func behaviourDefaultsMatchSpec() {
         let c = Config()
         #expect(!c.appearance.focusBorder && !c.appearance.dimInactive)

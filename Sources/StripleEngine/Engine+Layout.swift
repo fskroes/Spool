@@ -126,7 +126,7 @@ extension Engine {
     func geometryChanged(_ element: AXUIElement, pid: pid_t, resized: Bool) {
         guard let id = windowID(of: element, pid: pid), let w = windows[id] else {
             // A window that left fullscreen (or was ignored before) may need to be adopted now.
-            if resized, let c = classify(element, pid: pid), windows[c.info.id] == nil, case .tile = c.decision { adopt(c, isNew: false) }
+            if resized, let c = classify(element, pid: pid, onlyNew: true), case .tile = c.decision { adopt(c, isNew: false) }
             return
         }
         switch w.state {

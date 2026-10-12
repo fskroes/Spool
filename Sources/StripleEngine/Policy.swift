@@ -186,6 +186,20 @@ enum Policy {
 
     /// Seconds before the next try to watch an app that did not answer, or nil to give up.
     /// Fast at first (an app that is starting), then every 5 s for about two minutes (a large app that is busy).
+    /// Registers the app notifications in order. It stops at the first timeout: every later call to a hung app
+    /// waits the full timeout too, on the main thread. `hung` makes the caller try again later.
+    static func registerUntilHung(_ names: [String], add: (String) -> AXError) -> (registered: Int, hung: Bool) {
+        var registered = 0
+        for name in names {
+            switch add(name) {
+            case .success: registered += 1
+            case .cannotComplete: return (registered, true)
+            default: continue
+            }
+        }
+        return (registered, false)
+    }
+
     static func watchRetryDelay(attempt n: Int) -> Double? {
         switch n {
         case 1...6: return 0.25 * Double(n)

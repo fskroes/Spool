@@ -5,6 +5,17 @@ extension KeyedDecodingContainer {
     func value<T: Decodable>(_ key: Key, _ fallback: @autoclosure () -> T) -> T {
         (try? decodeIfPresent(T.self, forKey: key)) ?? fallback()
     }
+
+    /// For lists the user edits by hand (shortcuts, rules, displays). A bad entry is an error, so the store keeps
+    /// the last good settings and shows why. A default would silently replace every entry of the list.
+    func strict<T: Decodable>(_ key: Key, _ fallback: @autoclosure () -> T) throws -> T {
+        try decodeIfPresent(T.self, forKey: key) ?? fallback()
+    }
+}
+
+extension CodingUserInfoKey {
+    /// Bool: macOS uses ⌃⌥⇧ + arrow for window tiling. Set by `Config.decode`; tests set it to check both cases.
+    static let arrowsTakenBySystem = CodingUserInfoKey(rawValue: "striple.arrowsTakenBySystem")!
 }
 
 public enum CenterMode: String, Codable, CaseIterable, Sendable {
@@ -198,6 +209,11 @@ public struct Config: Codable, Equatable, Sendable {
     /// 2: the ⌃⌥⇧ + arrow move shortcuts were removed (macOS 15 and later use them for window tiling).
     public static let currentVersion = 2
 
+    /// macOS 15 and later use ⌃⌥⇧ + arrow (with Fn) for window tiling.
+    public static var systemTakesArrows: Bool {
+        ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0))
+    }
+
     public var version = Config.currentVersion
     public var layout = LayoutSettings()
     public var animation = AnimationSettings()
@@ -224,12 +240,14 @@ public struct Config: Codable, Equatable, Sendable {
         gestures = c.value(.gestures, d.gestures)
         appearance = c.value(.appearance, d.appearance)
         behavior = c.value(.behavior, d.behavior)
-        disabledDisplays = c.value(.disabledDisplays, d.disabledDisplays)
-        rules = c.value(.rules, d.rules)
-        if let raw = try? c.decodeIfPresent([String: [KeyCombo]].self, forKey: .bindings) {
+        disabledDisplays = try c.strict(.disabledDisplays, d.disabledDisplays)
+        rules = try c.strict(.rules, d.rules)
+        // An unknown command name is skipped (it can come from a newer Striple). A bad combo is an error.
+        if let raw = try c.decodeIfPresent([String: [KeyCombo]].self, forKey: .bindings) {
             var b: [Command: [KeyCombo]] = [:]
             for (name, combos) in raw { if let cmd = Command(name: name) { b[cmd] = combos } }
-            bindings = Config.migrate(b, from: version)
+            let taken = decoder.userInfo[.arrowsTakenBySystem] as? Bool ?? Config.systemTakesArrows
+            bindings = Config.migrate(b, from: version, arrowsTaken: taken)
         } else {
             bindings = d.bindings
         }
@@ -237,13 +255,15 @@ public struct Config: Codable, Equatable, Sendable {
     }
 
     /// Brings saved shortcuts up to date.
-    /// - Version 1: removes the old ⌃⌥⇧ + arrow move defaults. macOS takes them, so they never work.
+    /// - Version 1, on macOS 15 and later (`arrowsTaken`): removes the old ⌃⌥⇧ + arrow move defaults. macOS
+    ///   takes them, so they never work. The store saves the result once, so a combo that the user adds again
+    ///   later is not removed.
     /// - Every version: a command that is not in the file is newer than the file. It gets its default
     ///   shortcuts, except combos that the file already uses for another command. A command the user
     ///   cleared is in the file with an empty list, and stays empty.
-    public static func migrate(_ saved: [Command: [KeyCombo]], from version: Int) -> [Command: [KeyCombo]] {
+    public static func migrate(_ saved: [Command: [KeyCombo]], from version: Int, arrowsTaken: Bool) -> [Command: [KeyCombo]] {
         var b = saved
-        if version < 2 {
+        if version < 2, arrowsTaken {
             let cos: KeyModifiers = [.control, .option, .shift]
             let removed: [Command: UInt16] = [.moveLeft: KeyCode.left, .moveRight: KeyCode.right,
                                               .moveUp: KeyCode.up, .moveDown: KeyCode.down]
@@ -274,7 +294,17 @@ public struct Config: Codable, Equatable, Sendable {
 
     public func rule(for bundleID: String) -> AppRule? { rules.first { $0.bundleID == bundleID } }
 
-    public static func decode(_ data: Data) throws -> Config { try JSONDecoder().decode(Config.self, from: data) }
+    public static func decode(_ data: Data, arrowsTaken: Bool = Config.systemTakesArrows) throws -> Config {
+        let d = JSONDecoder()
+        d.userInfo[.arrowsTakenBySystem] = arrowsTaken
+        return try d.decode(Config.self, from: data)
+    }
+
+    /// The `version` written in the file. nil when the file has none: then it is read as the current version.
+    public static func fileVersion(_ data: Data) -> Int? {
+        struct V: Decodable { var version: Int? }
+        return (try? JSONDecoder().decode(V.self, from: data))?.version
+    }
 
     public func encoded() throws -> Data {
         let e = JSONEncoder()

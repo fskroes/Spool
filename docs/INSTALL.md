@@ -226,7 +226,7 @@ make uninstall                            # or: ./scripts/install.sh --uninstall
 ./scripts/install.sh --uninstall --dry-run
 ```
 
-The script first quits Striple. Then it runs `Striple --unregister-login`, which removes the login agent and the login item. This order is necessary: if the agent started Striple, removing the agent first would stop Striple without a clean quit. Then the script removes the app and the `~/.local/bin/striple` link.
+The script first quits Striple. Then it runs `Striple --unregister-login`, which removes the login agent and the login item. This order is necessary: if the agent started Striple, removing the agent first would stop Striple without a clean quit. Then the script removes the app and the `~/.local/bin/striple` link. With `--prefix`, the link is kept when it points to a Striple in another folder that is not removed.
 
 Without `--prefix`, the script removes every Striple it finds: the app that the `striple` link points into, `/Applications/Striple.app` and `~/Applications/Striple.app`. So you do not have to remember the folder you installed into. An app with another bundle ID at one of these paths is kept. With `--prefix DIR`, only `DIR/Striple.app` is removed. The script does not remove your settings and logs. It shows the commands to remove them yourself:
 

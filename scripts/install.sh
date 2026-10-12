@@ -58,6 +58,13 @@ run() {
 # The path with every symbolic link resolved, so two spellings of one folder compare equal.
 physical() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
 
+# True when both paths are the same folder: the same device and inode. This also catches other letter case on
+# a case-insensitive volume and links, where the path strings differ.
+same_file() {
+    [[ -e "$1" && -e "$2" ]] || return 1
+    [[ "$(stat -L -f '%d:%i' "$1")" == "$(stat -L -f '%d:%i' "$2")" ]]
+}
+
 bundle_id_of() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true; }
 
 # Deletes an installed Striple.app, with checks so a bad path can never be removed.
@@ -160,7 +167,7 @@ fi
 
 [[ -d "$SOURCE_APP" ]] || die "$SOURCE_APP not found. Run 'make app' first."
 # Installing an app onto itself would delete it before the copy.
-if [[ -d "$DEST" && "$(physical "$SOURCE_APP")" == "$(physical "$DEST")" ]]; then
+if same_file "$SOURCE_APP" "$DEST"; then
     die "$SOURCE_APP is already at $DEST. Install from another place, for example dist/Striple.app."
 fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"

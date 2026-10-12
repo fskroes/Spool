@@ -135,4 +135,21 @@ import Testing
         #expect(!r.output.contains("rm -rf"))
         #expect(!r.output.contains("ditto"))
     }
+
+    // Round 5 finding: the same app typed with other letter case passed the check and was deleted.
+    @Test func installOntoItselfInOtherLetterCaseStops() throws {
+        let home = Self.tempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let app = try Self.fakeInstall(in: home, appsFolder: "Applications")
+        try Self.sign(app)
+        let lower = home.appendingPathComponent("applications")
+        // Only on a case-insensitive volume (the default on macOS) is this the same folder.
+        guard FileManager.default.fileExists(atPath: lower.path) else { return }
+
+        let r = try Self.runWithStatus(["--dry-run", "--app", app.path, "--prefix", lower.path], home: home)
+
+        #expect(r.status != 0)
+        #expect(r.output.contains("is already at"))
+        #expect(!r.output.contains("rm -rf"))
+    }
 }

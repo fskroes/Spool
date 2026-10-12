@@ -91,6 +91,8 @@ An ad hoc signed build gets a new signature with each rebuild, and macOS then fo
 - Menu bar: start or stop tiling, settings, the engine log, updates.
 
 Settings live in `~/Library/Application Support/Striple/config.json`. The engine log is `~/Library/Logs/Striple/engine.log`.
+If you edit the file and it has an error, Striple keeps the last good settings and Settings shows the error and where it is.
+If a setting changes before you fix the file, Striple keeps your file as `config.json.broken`.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 

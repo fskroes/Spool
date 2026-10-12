@@ -15,9 +15,11 @@ extension Engine {
         var minimizedTile = false
     }
 
-    func classify(_ element: AXUIElement, pid: pid_t) -> Candidate? {
+    /// With `onlyNew`, a window that is already managed gives nil before the trait reads (about 8 AX calls).
+    func classify(_ element: AXUIElement, pid: pid_t, onlyNew: Bool = false) -> Candidate? {
         guard let app = NSRunningApplication(processIdentifier: pid), WindowTracker.isManageable(app),
               let id = AX.windowID(element), id != 0 else { return nil }
+        if onlyNew, windows[id] != nil { return nil }
         let bundle = app.bundleIdentifier ?? ""
         let traits = AX.traits(element, bundleID: bundle, isOwnApp: false)
         let info = WindowInfo(id: id, pid: pid, bundleID: bundle, title: AX.string(element, kAXTitleAttribute) ?? "")
@@ -52,8 +54,10 @@ extension Engine {
         for app in WindowTracker.manageableApps() {
             let pid = app.processIdentifier
             tracker?.watch(pid)
+            // An app that does not answer is tried again later; its windows are found when it answers.
+            if tracker?.isWaiting(for: pid) == true { continue }
             for element in AX.elements(AX.app(pid), kAXWindowsAttribute) {
-                guard let c = classify(element, pid: pid), windows[c.info.id] == nil else { continue }
+                guard let c = classify(element, pid: pid, onlyNew: true) else { continue }
                 fresh.append(c)
             }
         }
@@ -118,11 +122,12 @@ extension Engine {
     func scanApp(_ pid: pid_t) {
         guard pid != getpid() else { return }
         tracker?.watch(pid)
+        if tracker?.isWaiting(for: pid) == true { return }
         // An observer that came up late (a retry after a hang) has no window notifications yet. observe skips
         // windows it already has.
         for w in windows.values where w.info.pid == pid { tracker?.observe(window: w.element, pid: pid) }
         for element in AX.elements(AX.app(pid), kAXWindowsAttribute) {
-            guard let c = classify(element, pid: pid), windows[c.info.id] == nil else { continue }
+            guard let c = classify(element, pid: pid, onlyNew: true) else { continue }
             adopt(c, isNew: true)
         }
         takeOffWindowsOfHiddenApps(pid: pid, relayoutNow: true)
@@ -259,7 +264,7 @@ extension Engine {
         case .appShown(let pid):
             for (id, w) in windows where w.info.pid == pid && w.state == .hidden { putBack(id, focus: false) }
         case .windowCreated(let element, let pid):
-            if let c = classify(element, pid: pid), windows[c.info.id] == nil { adopt(c, isNew: true) }
+            if let c = classify(element, pid: pid, onlyNew: true) { adopt(c, isNew: true) }
         case .windowDestroyed(let element, let pid):
             if let id = windowID(of: element, pid: pid) { remove(id, focusNeighbor: true) }
         case .windowMoved(let element, let pid):
@@ -271,7 +276,7 @@ extension Engine {
         case .windowDeminimized(let element, let pid):
             if let id = windowID(of: element, pid: pid), windows[id]?.state == .minimized {
                 putBack(id, focus: true)
-            } else if let c = classify(element, pid: pid), windows[c.info.id] == nil {
+            } else if let c = classify(element, pid: pid, onlyNew: true) {
                 adopt(c, isNew: true)
             }
         case .titleChanged(let element, let pid):

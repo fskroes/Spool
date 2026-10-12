@@ -146,6 +146,7 @@ public final class Engine: ObservableObject {
         }
         stopWaitingForPermission()
         startedAt = CACurrentMediaTime()
+        AX.setGlobalTimeout()
         let tracker = WindowTracker(onEvent: { [weak self] in self?.handle($0) }, log: { [weak self] in self?.log.log($0) })
         WindowTracker.current = tracker
         self.tracker = tracker
