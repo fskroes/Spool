@@ -43,10 +43,22 @@ for tool in "$OPENSSL" security codesign; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 
-if [[ "$(security find-certificate -a -c "$NAME" 2>/dev/null || true)" == *"$NAME"* ]]; then
-    say "A certificate named \"$NAME\" is already in your keychain. Nothing to do."
-    say "Check it with: security find-identity -v -p codesigning"
+# Valid: the certificate, its private key and the code signing trust are all there. That is what build-app.sh needs.
+if [[ "$(security find-identity -v -p codesigning 2>/dev/null || true)" == *"\"$NAME\""* ]]; then
+    say "The identity \"$NAME\" is in your keychain and is valid for code signing. Nothing to do."
     exit 0
+fi
+# The certificate can be there without the trust (the password prompt was cancelled, or the trust step failed).
+# Then only the trust step runs again. Without its private key it cannot sign at all, so it must go first.
+RETRUST=0
+if [[ "$(security find-certificate -a -c "$NAME" 2>/dev/null || true)" == *"$NAME"* ]]; then
+    if [[ "$(security find-identity -p codesigning 2>/dev/null || true)" != *"\"$NAME\""* ]]; then
+        die "a certificate named \"$NAME\" is in your keychain without its private key. Remove it with:
+  security delete-certificate -c \"$NAME\"
+Then run this script again."
+    fi
+    RETRUST=1
+    say "The identity \"$NAME\" is in your keychain, but macOS does not trust it for code signing yet."
 fi
 
 # The private key is written here for a moment. Delete it on every exit path.
@@ -56,6 +68,33 @@ trap cleanup EXIT
 rm -rf "$WORK"
 mkdir -p "$WORK"
 chmod 700 "$WORK"
+
+verify_identity() {
+    [[ $DRY_RUN -eq 1 ]] && return 0
+    [[ "$(security find-identity -v -p codesigning 2>/dev/null || true)" == *"\"$NAME\""* ]] \
+        || die "the identity is not valid for code signing. See docs/INSTALL.md."
+    say "The identity \"$NAME\" is valid for code signing."
+}
+
+next_steps() {
+    cat <<EOF
+
+Done. Next steps:
+  1. make app       (build-app.sh now signs with "$NAME")
+  2. make install
+  3. Give Accessibility permission to Striple one more time. Later rebuilds keep it.
+If codesign asks for keychain access during the build, click "Always Allow".
+EOF
+}
+
+if [[ $RETRUST -eq 1 ]]; then
+    security find-certificate -c "$NAME" -p > "$WORK/cert.pem"
+    say "Trusting the certificate for code signing (macOS asks for your login password)"
+    run security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem"
+    verify_identity
+    next_steps
+    exit 0
+fi
 
 cat > "$WORK/openssl.cnf" <<EOF
 [req]
@@ -96,16 +135,5 @@ run security import "$WORK/identity.p12" -k "$KEYCHAIN" -f pkcs12 -P "$P12_PASS"
 say "Trusting the certificate for code signing (macOS asks for your login password)"
 run security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem"
 
-if [[ $DRY_RUN -eq 0 ]]; then
-    security find-identity -v -p codesigning | grep -F "\"$NAME\"" \
-        || die "the identity is not valid for code signing. See docs/INSTALL.md."
-fi
-
-cat <<EOF
-
-Done. Next steps:
-  1. make app       (build-app.sh now signs with "$NAME")
-  2. make install
-  3. Give Accessibility permission to Striple one more time. Later rebuilds keep it.
-If codesign asks for keychain access during the build, click "Always Allow".
-EOF
+verify_identity
+next_steps

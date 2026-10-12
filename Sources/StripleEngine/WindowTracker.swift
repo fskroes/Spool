@@ -199,13 +199,14 @@ final class WindowTracker {
 
     private func scheduleRetry(_ pid: pid_t, reason: String) {
         let n = (retries[pid] ?? 0) + 1
-        guard n <= 6, NSRunningApplication(processIdentifier: pid) != nil else {
-            if n > 6 { log("tracker: gave up on pid \(pid): \(reason)") }
+        guard let delay = Policy.watchRetryDelay(attempt: n), NSRunningApplication(processIdentifier: pid) != nil else {
+            if Policy.watchRetryDelay(attempt: n) == nil { log("tracker: gave up on pid \(pid) after \(n - 1) tries: \(reason)") }
             retries[pid] = nil
             return
         }
         retries[pid] = n
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 * Double(n)) { [weak self] in
+        if n == 7 { log("tracker: pid \(pid) still does not answer (\(reason)), trying every 5 s") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.watches[pid] == nil else { return }
                 self.watch(pid)

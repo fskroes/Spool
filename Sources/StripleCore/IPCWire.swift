@@ -476,7 +476,13 @@ public enum StripleCLI {
         case "ping", "state", "stats":
             action = rest.isEmpty ? .send(IPCRequest(query: IPCRequest.Query(rawValue: word)!)) : .error("\(word) takes no argument.")
         case "command":
-            action = rest.isEmpty ? .error("command needs a command name. Example: striple command focus-left") : parseCommand(rest)
+            if rest.isEmpty {
+                action = .error("command needs a command name. Example: striple command focus-left")
+            } else if let q = IPCRequest.Query(rawValue: normalize(rest[0])) {
+                action = rest.count == 1 ? .send(IPCRequest(query: q)) : .error("\(q.rawValue) takes no argument.")
+            } else {
+                action = parseCommand(rest)
+            }
         default:
             action = parseCommand(words)
         }
@@ -535,7 +541,8 @@ public enum StripleCLI {
 
     static func unknownMessage(_ raw: String, what: String = "command") -> String {
         var message = "Unknown \(what) '\(raw)'."
-        if let s = suggestion(for: raw) { message += " Did you mean '\(s)'?" }
+        // A word that is known but not allowed here (for example `striple command help`) gets no suggestion of itself.
+        if let s = suggestion(for: raw), s != normalize(raw) { message += " Did you mean '\(s)'?" }
         return message
     }
 

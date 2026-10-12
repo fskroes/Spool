@@ -104,6 +104,8 @@ The script:
 3. Trusts the certificate for code signing (`security add-trusted-cert -p codeSign`). macOS asks for your login password.
 4. Deletes the key files from `.build/signing-cert`.
 
+When you run the script again, it first checks the identity. If it is valid, the script does nothing. If the certificate is there but step 3 did not finish (for example, you cancelled the password prompt), the script does only step 3 again. If the certificate is there without its private key, the script tells you how to remove it.
+
 After that, `make app` uses the identity automatically. Give the Accessibility permission one more time after the first build with the new identity.
 
 Check the identity:

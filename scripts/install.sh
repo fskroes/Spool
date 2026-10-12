@@ -12,6 +12,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 readonly BUNDLE_ID="com.fskroes.Striple"
 readonly BIN_DIR="$HOME/.local/bin"
 readonly LINK="$BIN_DIR/striple"
+# The system Applications folder. Tests point it at a temporary folder.
+readonly SYSTEM_APPS=${STRIPLE_SYSTEM_APPS:-/Applications}
 
 PREFIX=""
 PREFIX_GIVEN=0
@@ -36,7 +38,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$PREFIX" ]]; then
-    if [[ -w /Applications ]]; then PREFIX=/Applications; else PREFIX="$HOME/Applications"; fi
+    if [[ -w "$SYSTEM_APPS" ]]; then PREFIX=$SYSTEM_APPS; else PREFIX="$HOME/Applications"; fi
 fi
 PREFIX=${PREFIX%/}
 [[ -n "$PREFIX" ]] || die "empty --prefix"
@@ -52,6 +54,9 @@ run() {
         "$@"
     fi
 }
+
+# The path with every symbolic link resolved, so two spellings of one folder compare equal.
+physical() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
 
 bundle_id_of() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true; }
 
@@ -104,13 +109,14 @@ uninstall_targets() {
         linked=$(readlink "$LINK")
         linked=${linked%/Contents/Helpers/striple}
     fi
-    printf '%s\n' "$linked" /Applications/Striple.app "$HOME/Applications/Striple.app" | awk 'NF && !seen[$0]++'
+    printf '%s\n' "$linked" "$SYSTEM_APPS/Striple.app" "$HOME/Applications/Striple.app" | awk 'NF && !seen[$0]++'
 }
 
 if [[ $UNINSTALL -eq 1 ]]; then
     [[ $DRY_RUN -eq 1 ]] && say "Dry run. Nothing is changed."
     quit_striple
     found=0
+    removed=""
     while IFS= read -r app; do
         [[ -d "$app" ]] || continue
         if [[ "$(bundle_id_of "$app")" != "$BUNDLE_ID" ]]; then
@@ -124,12 +130,21 @@ if [[ $UNINSTALL -eq 1 ]]; then
             run "$app/Contents/MacOS/Striple" --unregister-login </dev/null
         fi
         say "Removing $app"
+        removed+="$(physical "$app")"$'\n'
         remove_app "$app"
     done < <(uninstall_targets)
     [[ $found -eq 1 ]] || say "No Striple.app found"
     if link_points_into_striple; then
-        say "Removing $LINK"
-        run rm -f "$LINK"
+        linked_app=$(readlink "$LINK")
+        linked_app=${linked_app%/Contents/Helpers/striple}
+        # Only the link of the app that is removed now, or a link to an app that is gone. A link to another
+        # install still works, so it stays.
+        if [[ ! -d "$linked_app" ]] || grep -qxF "$(physical "$linked_app")" <<<"$removed"; then
+            say "Removing $LINK"
+            run rm -f "$LINK"
+        else
+            say "Keeping $LINK: it points to $linked_app, which is not removed."
+        fi
     elif [[ -e "$LINK" || -L "$LINK" ]]; then
         warn "$LINK is not a Striple link. Not removed."
     fi
@@ -144,6 +159,10 @@ EOF
 fi
 
 [[ -d "$SOURCE_APP" ]] || die "$SOURCE_APP not found. Run 'make app' first."
+# Installing an app onto itself would delete it before the copy.
+if [[ -d "$DEST" && "$(physical "$SOURCE_APP")" == "$(physical "$DEST")" ]]; then
+    die "$SOURCE_APP is already at $DEST. Install from another place, for example dist/Striple.app."
+fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"
 codesign --verify --deep --strict "$SOURCE_APP" || die "$SOURCE_APP has a bad code signature. Run 'make app' again."
 

@@ -195,7 +195,8 @@ public struct AppRule: Codable, Equatable, Hashable, Identifiable, Sendable {
 
 /// Every setting. Stored as JSON in `~/Library/Application Support/Striple/config.json`.
 public struct Config: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    /// 2: the ⌃⌥⇧ + arrow move shortcuts were removed (macOS 15 and later use them for window tiling).
+    public static let currentVersion = 2
 
     public var version = Config.currentVersion
     public var layout = LayoutSettings()
@@ -228,10 +229,34 @@ public struct Config: Codable, Equatable, Sendable {
         if let raw = try? c.decodeIfPresent([String: [KeyCombo]].self, forKey: .bindings) {
             var b: [Command: [KeyCombo]] = [:]
             for (name, combos) in raw { if let cmd = Command(name: name) { b[cmd] = combos } }
-            bindings = b
+            bindings = Config.migrate(b, from: version)
         } else {
             bindings = d.bindings
         }
+        version = Config.currentVersion
+    }
+
+    /// Brings saved shortcuts up to date.
+    /// - Version 1: removes the old ⌃⌥⇧ + arrow move defaults. macOS takes them, so they never work.
+    /// - Every version: a command that is not in the file is newer than the file. It gets its default
+    ///   shortcuts, except combos that the file already uses for another command. A command the user
+    ///   cleared is in the file with an empty list, and stays empty.
+    public static func migrate(_ saved: [Command: [KeyCombo]], from version: Int) -> [Command: [KeyCombo]] {
+        var b = saved
+        if version < 2 {
+            let cos: KeyModifiers = [.control, .option, .shift]
+            let removed: [Command: UInt16] = [.moveLeft: KeyCode.left, .moveRight: KeyCode.right,
+                                              .moveUp: KeyCode.up, .moveDown: KeyCode.down]
+            for (cmd, key) in removed { b[cmd]?.removeAll { $0 == KeyCombo(key, cos) } }
+        }
+        let defaults = DefaultBindings.make()
+        var used = Set(b.values.joined())
+        for cmd in defaults.keys.sorted(by: { $0.name < $1.name }) where b[cmd] == nil {
+            let fresh = (defaults[cmd] ?? []).filter { !used.contains($0) }
+            b[cmd] = fresh
+            used.formUnion(fresh)
+        }
+        return b
     }
 
     public func encode(to encoder: Encoder) throws {

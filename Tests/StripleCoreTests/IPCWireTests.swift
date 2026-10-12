@@ -193,6 +193,11 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         #expect(action("focus-index", "2", "3") == .error("Too many arguments for focus-index."))
         #expect(action("state", "x") == .error("state takes no argument."))
         #expect(action("command") == .error("command needs a command name. Example: striple command focus-left"))
+        // Round 4 finding: `command ping` failed and suggested 'ping'.
+        #expect(action("command", "ping") == .send(IPCRequest(query: .ping)))
+        #expect(action("command", "state") == action("state"))
+        #expect(action("command", "stats", "x") == .error("stats takes no argument."))
+        #expect(action("command", "help") == .error("Unknown command 'help'."))
         #expect(action("--fast") == .error("Unknown option '--fast'."))
         #expect(action("help", "nope") == .error("Unknown help topic 'nope'."))
     }

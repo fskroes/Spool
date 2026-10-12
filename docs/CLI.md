@@ -149,7 +149,8 @@ Only your user can connect: the file has mode 0600, and the app checks the user 
 To use a different socket (for tests or to debug), use `--socket <path>` or set `STRIPLE_SOCKET`.
 `--socket` has priority over `STRIPLE_SOCKET`. The path must be 103 bytes or less.
 
-The tool waits a maximum of 2 seconds for an answer.
+The tool waits a maximum of 2 seconds for an answer. `start`, `stop`, `toggle-engine` and `restart` wait a maximum of
+10 seconds, because the app first moves every window back into view and waits for the apps to answer.
 
 ### Wire format
 

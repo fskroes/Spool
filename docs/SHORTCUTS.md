@@ -72,6 +72,10 @@ but arrow keys always send the Fn flag. So Striple has no defaults on these comb
 **Settings > Shortcuts** shows a warning if you record one. To use `⌃⌥⇧` + arrow for "move", first turn off
 the macOS shortcut in **System Settings > Keyboard > Keyboard Shortcuts > Windows**.
 
+A `config.json` from an earlier version of Striple (version 1) can still have `⌃⌥⇧` + arrow on the move commands.
+Striple removes those four combinations when it reads the file. A command that is not in your file (because it is
+newer than the file) gets its default shortcut, unless your file uses that combination for another command.
+
 ## Trackpad
 
 | Gesture | Action |

@@ -22,4 +22,37 @@ import Testing
         let b = DefaultBindings.make()
         for c in [Command.moveLeft, .moveRight, .moveUp, .moveDown] { #expect(!(b[c] ?? []).isEmpty) }
     }
+
+    // Round 4 finding: configs saved before the ⌃⌥⇧ + arrow defaults were removed kept them, so the four move
+    // shortcuts never worked, and commands added later had no shortcut at all.
+    @Test func aVersion1ConfigLosesTheOldArrowMovesAndGetsNewCommands() throws {
+        let cos: KeyModifiers = [.control, .option, .shift]
+        let co: KeyModifiers = [.control, .option]
+        var old = Config()
+        old.version = 1
+        old.bindings[.moveLeft] = [KeyCombo(KeyCode.h, cos), KeyCombo(KeyCode.left, cos)]
+        old.bindings[.moveDown] = [KeyCombo(KeyCode.j, cos), KeyCombo(KeyCode.down, cos)]
+        old.bindings[.cycleWidth] = []                         // cleared by the user
+        old.bindings[.focusFirst] = [KeyCombo(KeyCode.q, co)]  // the user took toggle-engine's default
+        old.bindings[.toggleEngine] = nil                      // not in the file: newer than the file
+        old.bindings[.sendToNextDisplay] = nil
+
+        let c = try Config.decode(old.encoded())
+
+        #expect(c.version == Config.currentVersion)
+        #expect(c.bindings[.moveLeft] == [KeyCombo(KeyCode.h, cos)])
+        #expect(c.bindings[.moveDown] == [KeyCombo(KeyCode.j, cos)])
+        #expect(c.bindings[.cycleWidth] == [])
+        #expect(c.bindings[.toggleEngine] == [])
+        #expect(c.bindings[.sendToNextDisplay] == DefaultBindings.make()[.sendToNextDisplay])
+        #expect(Set(c.bindings.values.joined()).intersection(Self.macOSArrowShortcuts).isEmpty)
+    }
+
+    @Test func aVersion2ConfigKeepsWhatTheUserChose() throws {
+        var mine = Config()
+        mine.bindings[.moveLeft] = [KeyCombo(KeyCode.left, [.control, .option, .shift])]
+        let c = try Config.decode(mine.encoded())
+        #expect(c.bindings[.moveLeft] == mine.bindings[.moveLeft])
+        #expect(c == mine)
+    }
 }

@@ -208,4 +208,81 @@ import Testing
         #expect(Policy.spaceExists(9, onDisplay: "A", known: [:]))
         #expect(Policy.spaceExists(0, onDisplay: "A", known: known))
     }
+
+    // Round 4 finding: a restored strip kept the saved scroll, so after windows were closed the rest were parked.
+    @Test func aRestoredStripScrollsToItsFocusedColumn() {
+        let m = StripMetrics(usableWidth: 1000, usableHeight: 800, gap: 10)
+        let settings = LayoutSettings()
+        let saved = Strip(columns: (1...2).map { Column(window: WindowInfo(id: WindowID($0)), width: .proportion(0.5)) },
+                          focusedColumn: 1, scroll: 3000)
+        let strip = Policy.restoredStrip(saved, into: nil, settings: settings, metrics: m)
+        let p = strip.columnPositions(metrics: m)
+        let x = p.x[strip.focusedColumn] - strip.scroll
+        #expect(x >= 0 && x + p.width[strip.focusedColumn] <= m.usableWidth)
+        // Into a strip that has windows: the saved columns go to the end, the focus stays.
+        let existing = Strip(columns: [Column(window: WindowInfo(id: 9), width: .proportion(0.5))])
+        let merged = Policy.restoredStrip(saved, into: existing, settings: settings, metrics: m)
+        #expect(merged.allWindows.map(\.id) == [9, 1, 2])
+        #expect(merged.focusedColumn == 0)
+        #expect(merged.scroll <= 0.5)
+    }
+
+    // Round 4 finding: parked windows (1 pt slivers at the edge) took focus-follows-mouse and presses.
+    @Test func parkedWindowsAreNotUnderTheMouse() {
+        let sliver = CGRect(x: 1439, y: 0, width: 1, height: 900)
+        let visible = CGRect(x: 800, y: 0, width: 636, height: 900)
+        let order: [(id: WindowID, bounds: CGRect)] = [(5, sliver), (6, visible)]
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1439.5, y: 400), frontToBack: order, slop: 0, parked: [5]) == nil)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1434, y: 400), frontToBack: order, slop: 8, parked: [5]) == 6)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1434, y: 400), frontToBack: order, slop: 8) == 5)
+    }
+
+    // Round 4 finding: a hidden window on another Space was put back on the Space on screen.
+    @Test func aWindowGoesBackToItsOwnSpace() {
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [1], active: 2) == 1)
+        // Moved to the Space on screen, or its Space is gone: the Space on screen.
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [2], active: 2) == 2)
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [3], active: 2) == 3)
+        // Spaces cannot be read: the Space on screen. No Spaces at all: 0.
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [], active: 2) == 2)
+        #expect(Policy.putBackSpace(old: 0, windowSpaces: [], active: 0) == 0)
+    }
+
+    // Round 4 finding: a drop onto a disabled display reordered the window to the end of its own strip.
+    @Test func aDropOntoADisabledDisplayPutsTheWindowBack() {
+        #expect(Policy.dropKind(dropDisplay: "B", ownDisplay: "A", dropDisplayDisabled: true) == .putBack)
+        #expect(Policy.dropKind(dropDisplay: nil, ownDisplay: "A", dropDisplayDisabled: false) == .putBack)
+        #expect(Policy.dropKind(dropDisplay: "B", ownDisplay: "A", dropDisplayDisabled: false) == .otherDisplay)
+        #expect(Policy.dropKind(dropDisplay: "A", ownDisplay: "A", dropDisplayDisabled: false) == .reorder)
+    }
+
+    // Round 4 finding: watching an app stopped after about 5 s, so a busy app was never tiled.
+    @Test func watchRetriesGoOnForAboutTwoMinutes() {
+        let delays = (1...40).compactMap { Policy.watchRetryDelay(attempt: $0) }
+        #expect(delays.count == 30)
+        #expect(delays.prefix(6).reduce(0, +) == 5.25)
+        #expect(delays.allSatisfy { $0 <= 5 })
+        #expect((115...135).contains(delays.reduce(0, +)))
+    }
+
+    // Round 4 finding: hidden and minimized windows lost their slot when Striple restarted.
+    @Test func theSessionKeepsTheSlotsOfHiddenAndMinimizedWindows() {
+        func col(_ id: WindowID) -> Column { Column(window: WindowInfo(id: id), width: .proportion(0.5)) }
+        // [1, B, A, 4] lost A (slot 3) and then B (slot 2). Focus is on 4.
+        let strips = ["k": Strip(columns: [col(1), col(4)], focusedColumn: 1)]
+        let off: [(info: WindowInfo, key: String, slot: Int?, width: ColumnWidth?)] = [
+            (WindowInfo(id: 3), "k", 3, .proportion(0.7)),
+            (WindowInfo(id: 2), "k", 2, nil),
+            (WindowInfo(id: 8), "other", nil, nil),
+        ]
+        let out = Policy.stripsForSession(strips, offStrip: off, defaultWidth: .proportion(0.5))
+        #expect(out["k"]?.allWindows.map(\.id) == [1, 2, 3, 4])
+        #expect(out["k"]?.focusedColumn == 3)
+        #expect(out["k"]?.columns[2].width == .proportion(0.7))
+        #expect(out["other"]?.allWindows.map(\.id) == [8])
+        // Saved and restored, the order stays.
+        let session = Session(strips: [SessionStrip(displayID: "D", spaceID: 0, strip: out["k"]!)], floating: [])
+        let back = session.restore(live: (1...4).map { WindowInfo(id: WindowID($0)) })
+        #expect(back.strips.first?.strip.allWindows.map(\.id) == [1, 2, 3, 4])
+    }
 }

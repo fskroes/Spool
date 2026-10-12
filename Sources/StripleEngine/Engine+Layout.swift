@@ -210,7 +210,23 @@ extension Engine {
             strips[key] = strip
         } else if config.behavior.dragToReorder {
             let p = mouseLocation()
-            if let target = display(containing: p), target.uuid != key.display, !isDisabled(target.uuid) {
+            let target = display(containing: p)
+            switch Policy.dropKind(dropDisplay: target?.uuid, ownDisplay: key.display,
+                                   dropDisplayDisabled: target.map { isDisabled($0.uuid) } ?? false) {
+            case .putBack:
+                // Not onto a display Striple manages: the window goes back to its own slot.
+                strip.setFocus(d.id)
+                strip.ensureFocusVisible(settings: config.layout, metrics: m)
+                strips[key] = strip
+            case .reorder:
+                let area = disp.geometry.workArea(config.layout)
+                let gap = strip.dropGap(atStripX: Double(p.x - area.minX) + strip.scroll, metrics: m)
+                strip.moveWindow(d.id, toGap: gap)
+                strip.setFocus(d.id)
+                strip.ensureFocusVisible(settings: config.layout, metrics: m)
+                strips[key] = strip
+            case .otherDisplay:
+                guard let target else { break }
                 let width = strip.locate(d.id).map { strip.columns[$0.column].width }
                 strip.remove(d.id)
                 strip.ensureFocusVisible(settings: config.layout, metrics: m)
@@ -231,12 +247,6 @@ extension Engine {
                 scheduleSessionSave()
                 return
             }
-            let area = disp.geometry.workArea(config.layout)
-            let gap = strip.dropGap(atStripX: Double(p.x - area.minX) + strip.scroll, metrics: m)
-            strip.moveWindow(d.id, toGap: gap)
-            strip.setFocus(d.id)
-            strip.ensureFocusVisible(settings: config.layout, metrics: m)
-            strips[key] = strip
         }
         relayout(key)
         // Animate from where the user let go, not from the old slot.
@@ -336,7 +346,8 @@ extension Engine {
                   let n = info[kCGWindowNumber as String] as? UInt32 else { continue }
             candidates.append((n, r))
         }
-        return Policy.pressedWindow(at: p, frontToBack: candidates, slop: slop)
+        let parked = Set(placements.lazy.filter { $0.value.hidden }.map(\.key))
+        return Policy.pressedWindow(at: p, frontToBack: candidates, slop: slop, parked: parked)
     }
 
     // MARK: Swipes
@@ -391,7 +402,12 @@ extension Engine {
 
     /// The live strips plus the saved ones still waiting for their Space, so a save never drops those.
     func sessionSnapshot() -> Session {
-        let saved = strips.filter { !$0.value.isEmpty }
+        let off = windows.values.compactMap { w -> (info: WindowInfo, key: StripKey, slot: Int?, width: ColumnWidth?)? in
+            guard w.state == .hidden || w.state == .minimized, let key = w.key else { return nil }
+            return (w.info, key, w.slot, w.width)
+        }
+        let all = Policy.stripsForSession(strips, offStrip: off, defaultWidth: .proportion(config.layout.defaultWidth))
+        let saved = all.filter { !$0.value.isEmpty }
             .map { SessionStrip(displayID: $0.key.display, spaceID: $0.key.space, strip: $0.value) }
             .sorted { ($0.displayID, $0.spaceID) < ($1.displayID, $1.spaceID) }
         let floating = windows.values.filter { $0.state == .floating && $0.userFloating }.map(\.info).sorted { $0.id < $1.id }

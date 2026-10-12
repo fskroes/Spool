@@ -143,8 +143,69 @@ enum Policy {
     /// The window under the mouse at mouse-down: the frontmost one whose bounds, widened by `slop`, contain the
     /// point. macOS starts a resize a few points outside the window edge (on macOS 26 mostly outside the
     /// corner), so an exact hit test misses those presses. `frontToBack` is in window-server order.
-    static func pressedWindow(at p: CGPoint, frontToBack: [(id: WindowID, bounds: CGRect)], slop: CGFloat) -> WindowID? {
-        frontToBack.first { $0.bounds.insetBy(dx: -slop, dy: -slop).contains(p) }?.id
+    /// `parked`: windows Striple parked out of view. They stay on screen as 1 pt slivers at the display edge,
+    /// so the window server still lists them, but the user cannot see or press them.
+    static func pressedWindow(at p: CGPoint, frontToBack: [(id: WindowID, bounds: CGRect)], slop: CGFloat,
+                              parked: Set<WindowID> = []) -> WindowID? {
+        frontToBack.first { !parked.contains($0.id) && $0.bounds.insetBy(dx: -slop, dy: -slop).contains(p) }?.id
+    }
+
+    /// A saved strip that comes back from the session. Windows that are gone were dropped, so the saved scroll
+    /// can point past the end: scroll again so the focused column is in view.
+    static func restoredStrip(_ saved: Strip, into existing: Strip?, settings: LayoutSettings, metrics: StripMetrics?) -> Strip {
+        var strip = existing ?? Strip()
+        if strip.isEmpty { strip = saved } else { strip.columns += saved.columns }
+        if let metrics { strip.ensureFocusVisible(settings: settings, metrics: metrics) }
+        return strip
+    }
+
+    /// The Space a hidden or minimized window goes back to: the one it left, while the window is still on it.
+    /// `windowSpaces` is empty when Striple cannot read Spaces. `active` is 0 when Spaces are not used.
+    static func putBackSpace(old: UInt64, windowSpaces: [UInt64], active: UInt64) -> UInt64 {
+        guard active != 0 else { return 0 }
+        if windowSpaces.contains(old) { return old }
+        if windowSpaces.contains(active) || windowSpaces.isEmpty { return active }
+        return windowSpaces[0]
+    }
+
+    /// What a window drag that ends does.
+    enum DropKind: Equatable {
+        /// Onto another enabled display: move the window to that display's strip.
+        case otherDisplay
+        /// On its own display: move the window to the gap under the mouse.
+        case reorder
+        /// Onto a display Striple does not manage, or outside every display: back to its old place.
+        case putBack
+    }
+
+    static func dropKind(dropDisplay: String?, ownDisplay: String, dropDisplayDisabled: Bool) -> DropKind {
+        guard let dropDisplay else { return .putBack }
+        if dropDisplay == ownDisplay { return .reorder }
+        return dropDisplayDisabled ? .putBack : .otherDisplay
+    }
+
+    /// Seconds before the next try to watch an app that did not answer, or nil to give up.
+    /// Fast at first (an app that is starting), then every 5 s for about two minutes (a large app that is busy).
+    static func watchRetryDelay(attempt n: Int) -> Double? {
+        switch n {
+        case 1...6: return 0.25 * Double(n)
+        case 7...30: return 5
+        default: return nil
+        }
+    }
+
+    /// The strips as the session saves them: hidden and minimized windows go back into the slot they left,
+    /// so a restart restores them there. After the restore, the scan takes them off the strip again.
+    static func stripsForSession<K: Hashable>(_ strips: [K: Strip], offStrip: [(info: WindowInfo, key: K, slot: Int?, width: ColumnWidth?)],
+                                              defaultWidth: ColumnWidth) -> [K: Strip] {
+        var out = strips
+        let ordered = offStrip.sorted { ($0.slot ?? .max, $0.info.id) < ($1.slot ?? .max, $1.info.id) }
+        for w in ordered {
+            var strip = out[w.key] ?? Strip()
+            strip.insert(w.info, width: w.width ?? defaultWidth, slot: w.slot ?? strip.columns.count + 1, focus: false)
+            out[w.key] = strip
+        }
+        return out
     }
 
     /// Tiled windows of hidden apps, in a stable order.

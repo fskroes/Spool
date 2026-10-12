@@ -75,6 +75,7 @@ test in `Tests/`.
   window moves to that position and the strip lays out again. It can be switched off.
 - A resize from a window edge sets the column width. A press up to 8 pt outside the edge counts, because macOS
   starts a resize there. Any other move while the button is down is put back after the release.
+- A drop onto a switched-off display, or outside every display, puts the window back in its own slot.
 
 ### F12 Multi-monitor and per-display on/off
 - Each display has its own strip, focus and scroll position.
@@ -85,6 +86,8 @@ test in `Tests/`.
 ### F13 Session restore
 - Column order, widths, stacks and tabbed mode are saved. After a restart of Striple they
   come back without a reshuffle. Windows are matched by window ID first, then by app and title.
+- Windows of hidden apps and minimized windows keep their slot across a restart.
+- A restored strip scrolls so its focused column is in view, also when some saved windows are gone.
 
 ### F14 Launch at login and auto-start
 - Optional launch at login. Optional automatic start of tiling when the app starts.
@@ -104,6 +107,7 @@ test in `Tests/`.
 - An engine log file that the app can show in Finder.
 - If part of the engine fails (event tap disabled, observer lost) it restarts that part and logs why.
   An app that does not answer keeps its old observer until a new one works.
+  An app that does not answer at launch is tried again: fast at first, then every 5 s for about two minutes.
   If the process crashes, launchd starts it again.
 
 ### F18 Native fullscreen

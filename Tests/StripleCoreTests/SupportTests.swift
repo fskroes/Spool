@@ -34,7 +34,10 @@ import Testing
     @Test func unknownCommandsInBindingsAreSkipped() throws {
         let json = #"{"bindings":{"focus-left":[{"key":4,"mods":["ctrl","opt"]}],"warp-drive":[{"key":1,"mods":[]}]}}"#
         let c = try Config.decode(Data(json.utf8))
-        #expect(c.bindings == [.focusLeft: [KeyCombo(4, [.control, .option])]])
+        #expect(c.bindings[.focusLeft] == [KeyCombo(4, [.control, .option])])
+        // The commands that are not in the file get their defaults (see Config.migrate).
+        #expect(Set(c.bindings.keys) == Set(DefaultBindings.make().keys))
+        #expect(c.bindings[.focusRight] == DefaultBindings.make()[.focusRight])
     }
 
     @Test func behaviourDefaultsMatchSpec() {

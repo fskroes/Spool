@@ -11,6 +11,8 @@ extension Engine {
         var element: AXUIElement
         var info: WindowInfo
         var decision: WindowDecision
+        /// Minimized, and tiled when it comes back. A session restore puts it back in its saved slot.
+        var minimizedTile = false
     }
 
     func classify(_ element: AXUIElement, pid: pid_t) -> Candidate? {
@@ -19,7 +21,13 @@ extension Engine {
         let bundle = app.bundleIdentifier ?? ""
         let traits = AX.traits(element, bundleID: bundle, isOwnApp: false)
         let info = WindowInfo(id: id, pid: pid, bundleID: bundle, title: AX.string(element, kAXTitleAttribute) ?? "")
-        return Candidate(element: element, info: info, decision: WindowRules.decide(traits, config: config))
+        var c = Candidate(element: element, info: info, decision: WindowRules.decide(traits, config: config))
+        if traits.isMinimized {
+            var shown = traits
+            shown.isMinimized = false
+            if case .tile = WindowRules.decide(shown, config: config) { c.minimizedTile = true }
+        }
+        return c
     }
 
     /// Finds every window of every app. With a session, puts known windows back in their saved places.
@@ -69,6 +77,9 @@ extension Engine {
             if case .tile = c.decision {
                 byID[c.info.id] = c
                 live.append(c.info)
+            } else if c.minimizedTile {
+                byID[c.info.id] = c
+                live.append(c.info)
             } else {
                 adopt(c, isNew: false, inScan: true)
             }
@@ -80,12 +91,14 @@ extension Engine {
                 for w in saved.strip.allWindows { if let c = byID[w.id] { adopt(c, isNew: false, inScan: true) } }
                 continue
             }
-            var strip = strips[key] ?? Strip()
-            if strip.isEmpty { strip = saved.strip } else { strip.columns += saved.strip.columns }
-            strips[key] = strip
+            strips[key] = Policy.restoredStrip(saved.strip, into: strips[key], settings: config.layout, metrics: metrics(key))
             for w in saved.strip.allWindows {
                 guard let c = byID[w.id] else { continue }
                 register(c, state: .tiled, key: key, createdAt: 0)
+            }
+            // A minimized window keeps its slot: it goes back there when it is shown again.
+            for w in saved.strip.allWindows where byID[w.id]?.minimizedTile == true {
+                takeOff(w.id, as: .minimized, relayoutNow: false)
             }
         }
         for id in restored.floating {
@@ -404,7 +417,8 @@ extension Engine {
         guard var w = windows[id], w.state != .tiled else { return }
         let key: StripKey
         if let old = w.key, let d = display(old.display), !isDisabled(d.uuid) {
-            key = activeKey(d)
+            let space = Policy.putBackSpace(old: old.space, windowSpaces: Spaces.spaces(of: id), active: activeSpaces[d.uuid] ?? 0)
+            key = StripKey(display: d.uuid, space: space)
         } else if let k = stripKey(for: id, element: w.element) {
             key = k
         } else {
