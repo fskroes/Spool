@@ -44,12 +44,13 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 
 ## Performance
 
-Measured on this Mac (Apple silicon, macOS 26) with `make bench` on 2026-10-12:
+Measured on this Mac (Apple silicon, macOS 26) with `make bench` on 2026-10-12, load average 6.8:
 
 | Metric | Budget (docs/SPEC.md) | Measured |
 |---|---|---|
-| Layout and placement of 50 columns, per frame | < 50 µs | 6.5 µs |
-| Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds | < 4 ms | 2.55 ms (one after the other: about 12 ms) |
+| Layout and placement of 50 columns, per frame | < 50 µs | 7.3 µs |
+| Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds | < 4 ms | 2.65 ms (one after the other: 15.0 ms) |
+| Applier time in that frame write (wall time minus the slowest write), p95 | < 2 ms | 0.10 ms |
 | Idle | no timer, no display link | the ticker stops when all windows are at rest |
 
 How Striple stays fast:

@@ -153,6 +153,6 @@ test in `Tests/`.
 | Metric | Budget | How it is measured |
 |---|---|---|
 | Layout compute, 50 columns | < 50 µs | `LayoutBenchmarkTests` |
-| Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints p50, p95 and max |
+| Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial. The test gates the applier's own part: wall time minus the slowest write, p95 < 2 ms. The fake write sleeps, and a sleep runs over its time on a busy Mac. | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints the wall p50 and p95, the applier p95, the serial time and the load average |
 | Idle | no display link and no timer when nothing moves | `AnimatorTests` |
 | Live frame cost | p50 and p95 reported | `striple stats` |

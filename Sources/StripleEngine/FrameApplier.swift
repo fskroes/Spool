@@ -72,9 +72,12 @@ public final class FrameApplier: @unchecked Sendable {
 
     /// A frame being written. `again` is set when a later `apply` wanted the same frame while it was in flight:
     /// that call was not queued, so a failed write queues `again` instead.
+    /// `generation` is the app state whose drain writes it. After `forgetApp`, a new state for the same pid does
+    /// not wait for that write: its drain may be idle and never wake the waiter.
     private struct InFlight {
         let frame: CGRect
         let token: UInt64
+        let generation: UInt64
         var again: Pending?
     }
 
@@ -211,19 +214,20 @@ public final class FrameApplier: @unchecked Sendable {
     /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every frame of this
     /// call is written, or replaced by a newer frame that is written, with the wall time in milliseconds.
     /// A frame merged into an app that was already busy is waited for too, but frames of later calls are not.
-    /// The time is nil when `forgetApp` or `reset` dropped a frame of this call: it is not a frame-write time.
+    /// The time is nil when `forgetApp` or `reset` dropped a frame of this call, or when no frame of this call
+    /// needed a write (each one equal to the frame the window has): it is not a frame-write time.
     public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double?) -> Void)? = nil) {
         let dropped = Flag()
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
         var toStart: [(pid_t, DispatchQueue, UInt64)] = []
+        var queuedFor = Set<pid_t>()
         lock.withLock {
-            var queuedFor = Set<pid_t>()
             for w in writes {
                 let pendingSame = apps[w.pid]?.pending[w.id]
                 // Compare with the newest frame the window will have: the one in flight, else the written one.
                 // A frame equal to an older written frame must still be written after the one in flight.
-                if pendingSame == nil, let f = inFlight[w.id], f.frame == w.frame, apps[w.pid] != nil {
+                if pendingSame == nil, let f = inFlight[w.id], f.frame == w.frame, apps[w.pid]?.generation == f.generation {
                     // Already being written: not written twice, but this call waits for it, and a failed write
                     // is queued again for this call (else the window could keep a wrong frame).
                     counters.skipped += 1
@@ -269,6 +273,10 @@ public final class FrameApplier: @unchecked Sendable {
             queue.async { [self] in drain(pid, generation) }
         }
         guard let completion else { return }
+        guard !queuedFor.isEmpty else {
+            DispatchQueue.global(qos: .userInteractive).async { completion(nil) }
+            return
+        }
         group.notify(queue: .global(qos: .userInteractive)) {
             completion(dropped.isSet ? nil : Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         }
@@ -281,7 +289,8 @@ public final class FrameApplier: @unchecked Sendable {
         var isSet: Bool { lock.withLock { value } }
     }
 
-    /// Like `apply`, but waits. Returns the wall time in milliseconds (also when a frame was dropped), or nil
+    /// Like `apply`, but waits. Returns the wall time in milliseconds (also when a frame was dropped or nothing
+    /// needed a write), or nil
     /// after `timeout` seconds (an app that does not answer). Not for the main thread in a live tick.
     @discardableResult
     public func applyAndWait(_ writes: [FrameWrite], timeout: Double = .infinity) -> Double? {
@@ -325,7 +334,7 @@ public final class FrameApplier: @unchecked Sendable {
                 let items = state.pendingOrder.compactMap { id -> (Pending, CGRect?, UInt64)? in
                     guard let p = state.pending[id] else { return nil }
                     nextToken += 1
-                    inFlight[id] = InFlight(frame: p.write.frame, token: nextToken)
+                    inFlight[id] = InFlight(frame: p.write.frame, token: nextToken, generation: generation)
                     return (p, written[id], nextToken)
                 }
                 state.pending.removeAll(keepingCapacity: true)
