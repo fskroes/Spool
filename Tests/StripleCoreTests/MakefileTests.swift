@@ -39,7 +39,9 @@ import Testing
         let test = try plan("test")
         #expect(test.hasPrefix("swift test ") && test.contains("--skip SigningScriptTests"), "\(test)")
         let signing = try plan("test-signing")
-        #expect(signing.contains("--filter SigningScriptTests") && !signing.contains("--skip"), "\(signing)")
+        #expect(signing.hasPrefix("STRIPLE_SIGNING_TESTS=1 swift test ") && signing.contains("--filter SigningScriptTests")
+                && !signing.contains("--skip"), "\(signing)")
+        #expect(!test.contains("STRIPLE_SIGNING_TESTS"), "\(test)")
     }
 
     // `make publish-finish` needs dist/release/<version>/ after a run that stopped after the publish.

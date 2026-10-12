@@ -9,13 +9,14 @@ build:
 	swift build
 
 # SigningScriptTests run scripts/make-signing-cert.sh against a fake `security`. On a managed Mac the
-# endpoint security tool can report that as keychain access, so `make test` skips them.
+# endpoint security tool can report that as keychain access. The suite is opt-in (STRIPLE_SIGNING_TESTS=1),
+# so `make test` and a plain `swift test` do not run it.
 test:
 	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
 
 # Only on a Mac where keychain-like test activity is allowed.
 test-signing:
-	swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
+	STRIPLE_SIGNING_TESTS=1 swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
 
 # Performance budgets from docs/SPEC.md, measured in an optimized build.
 bench:

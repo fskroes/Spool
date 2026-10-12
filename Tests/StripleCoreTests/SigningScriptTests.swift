@@ -6,7 +6,14 @@ import Testing
 /// argv as is, a command read by `security -i` from stdin as `stdin: <command>`, and codesign as `codesign <args>`.
 /// The fake `security` keeps state in its folder: with `acceptMake`, a full make or import runs to the end.
 /// The pin in Packaging/updates.env is not read: `STRIPLE_UPDATES_ENV` is /dev/null (no pin) unless a test gives a file.
-@Suite(.serialized) struct SigningScriptTests {
+///
+/// Opt-in: the suite runs only with STRIPLE_SIGNING_TESTS=1 (`make test-signing`). On a managed Mac the endpoint
+/// security tool reports the fake `security` calls as keychain access, also from a plain `swift test`.
+let signingTestsOptedIn = ProcessInfo.processInfo.environment["STRIPLE_SIGNING_TESTS"] == "1"
+
+@Suite(.serialized, .enabled(if: signingTestsOptedIn, "set STRIPLE_SIGNING_TESTS=1 (make test-signing)"))
+struct SigningScriptTests {
+
     static let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("scripts/make-signing-cert.sh")

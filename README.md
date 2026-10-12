@@ -133,7 +133,7 @@ make e2e
 |---|---|
 | `make build` | Debug build. |
 | `make test` | All unit tests (core, engine, IPC, E2E kit), except `SigningScriptTests`. |
-| `make test-signing` | `SigningScriptTests` only. They run `make-signing-cert.sh` against a fake `security`; on a managed Mac the endpoint security tool can report that. |
+| `make test-signing` | `SigningScriptTests` only. They run `make-signing-cert.sh` against a fake `security`; on a managed Mac the endpoint security tool can report that. The suite runs only with `STRIPLE_SIGNING_TESTS=1`, so a plain `swift test` skips it too. |
 | `make bench` | The frame-write and layout benchmarks in release mode. |
 | `make app` | Makes `dist/Striple.app` (universal, signed). |
 | `make dmg` | Makes `dist/Striple-<version>.dmg`. |
