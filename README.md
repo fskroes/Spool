@@ -49,7 +49,7 @@ Measured on this Mac (Apple silicon, macOS 26) with `make test` and `make bench`
 | Metric | Budget (docs/SPEC.md) | Measured |
 |---|---|---|
 | Layout and placement of 50 columns, per frame | < 50 µs | 5.3 µs |
-| Frame write, 6 apps with 2 ms AX latency each | < 4 ms | 3.06 ms (one after the other: about 12 ms) |
+| Frame write, 6 apps with 2 ms AX latency each | < 4 ms | 3.04 ms (one after the other: about 12 ms) |
 | Idle | no timer, no display link | the ticker stops when all windows are at rest |
 
 How Striple stays fast:

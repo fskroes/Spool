@@ -271,6 +271,14 @@ public final class Engine: ObservableObject {
 
     public func toggle() { status == .stopped ? start() : stop() }
 
+    /// Forgets every window and app in the applier and the per-app stats. Apps can quit while the engine is stopped,
+    /// and a new app can then get the same pid: it must not inherit the old app's samples.
+    /// Reset the applier first: after that, a batch that is still running records no timings.
+    nonisolated static func resetWriteState(applier: FrameApplier, recorder: StatsRecorder) {
+        applier.reset()
+        recorder.forgetAllApps()
+    }
+
     /// Forgets all windows. Does not move them.
     func clearState() {
         for id in windows.keys { writer.unregister(id) }
@@ -283,7 +291,7 @@ public final class Engine: ObservableObject {
         animators.removeAll()
         layouts.removeAll()
         placements.removeAll()
-        applier.reset()
+        Self.resetWriteState(applier: applier, recorder: recorder)
         swipe = nil
         drag = nil
         focusedID = nil
@@ -510,6 +518,8 @@ final class StatsRecorder: @unchecked Sendable {
     }
 
     func forget(pid: pid_t) { lock.withLock { _ = apps.removeValue(forKey: pid) } }
+
+    func forgetAllApps() { lock.withLock { apps.removeAll() } }
 
     /// The `limit` apps with the highest p95 AX write time, slowest first.
     static func slowest(_ apps: [pid_t: App], bundleIDs: [pid_t: String], limit: Int = 5) -> [AppWriteStats] {

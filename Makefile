@@ -13,7 +13,7 @@ test:
 
 # Performance budgets from docs/SPEC.md, measured in an optimized build.
 bench:
-	swift test -c release -Xswiftc -enable-testing $(SWIFT_TEST_FLAGS) --filter 'Benchmark'
+	STRIPLE_BENCH=1 swift test -c release -Xswiftc -enable-testing $(SWIFT_TEST_FLAGS) --filter 'Benchmark'
 
 release:
 	swift build -c release
