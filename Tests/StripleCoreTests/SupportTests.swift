@@ -104,6 +104,38 @@ import Testing
         #expect(strip.allWindows.map(\.id) == [21, 2, 4, 23, 25, 6])
     }
 
+    // Round 8 finding: the engine takes a whole batch first, so a rename after each placement did not reach the
+    // other pairs of the batch, and windows of one app that sat next to each other came back in reverse order.
+    @Test func aBatchOfHeldWindowsWithNewIDsKeepsItsOrder() {
+        let s = Session(strips: [oneStrip([w(1, "a"), w(2, "x"), w(3, "x"), w(4, "b")])])
+        let r = s.restore(live: [w(1, "a"), w(4, "b")], waitingFor: ["x"])
+        #expect(r.held.map(\.after) == [[1], [2, 1]])
+
+        // As the engine does it: take all, pass the new IDs on, then place in order.
+        var held = r.held + [HeldWindow(info: w(9, "x"), displayID: "D", spaceID: 1, after: [3], width: .proportion(0.5))]
+        var pairs = HeldWindow.take(&held, for: [w(21, "x"), w(22, "x")], byApp: true)
+        #expect(pairs.map(\.live.id) == [21, 22])
+        HeldWindow.passOnNewIDs(&pairs, held: &held)
+        var strip = r.strips[0].strip
+        for p in pairs { strip.insert(p.live, width: p.held.width, slot: p.held.slot(in: strip), focus: false) }
+        #expect(strip.allWindows.map(\.id) == [1, 21, 22, 4])
+        // The held window that is left also uses the new ID.
+        #expect(held.map(\.after) == [[22]])
+    }
+
+    // Round 8 finding: a quit copy of an app dropped held windows that the other running copy can still show.
+    @Test func heldWindowsOfAQuitAppGoToAnotherCopy() {
+        let h = { (id: WindowID, pid: Int32) -> HeldWindow in
+            var i = w(id, "x"); i.pid = pid
+            return HeldWindow(info: i, displayID: "D", spaceID: 1, after: [], width: .proportion(0.5))
+        }
+        var held = [h(1, 10), h(2, 11), h(3, 10)]
+        HeldWindow.appQuit(&held, pid: 10, nextPid: 11)
+        #expect(held.map(\.info.pid) == [11, 11, 11])
+        HeldWindow.appQuit(&held, pid: 11, nextPid: nil)
+        #expect(held.isEmpty)
+    }
+
     @Test func aSaveKeepsHeldWindowsInTheirPlaces() {
         let s = Session(strips: [oneStrip([w(1, "a"), w(2, "x"), w(3, "x"), w(4, "b")])])
         let r = s.restore(live: [w(1, "a"), w(4, "b")], waitingFor: ["x"])

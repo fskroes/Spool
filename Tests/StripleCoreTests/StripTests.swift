@@ -20,6 +20,29 @@ func strip(_ ids: [WindowID], width: Double = 0.5, focus: Int = 0) -> Strip {
 func ids(_ s: Strip) -> [[WindowID]] { s.columns.map { $0.windows.map(\.id) } }
 
 @Suite struct InsertRemoveTests {
+    // Round 8 finding: a held window put in to the left of the focused column pushed the focused window away.
+    @Test func insertKeepingViewDoesNotMoveTheFocusedColumn() {
+        var s = Strip()
+        for i in 1...3 { s.insert(win(WindowID(i)), width: .proportion(0.5), focus: true) }
+        s.ensureFocusVisible(settings: LayoutSettings(), metrics: metrics)
+        let onScreen = { (s: Strip) in s.columnPositions(metrics: metrics).x[s.focusedColumn] - s.scroll }
+        let before = onScreen(s)
+
+        s.insertKeepingView(win(9), width: .proportion(0.5), slot: 2, metrics: metrics)
+        #expect(s.allWindows.map(\.id) == [1, 9, 2, 3])
+        #expect(s.focusedWindow?.id == 3)
+        #expect(abs(onScreen(s) - before) < 0.001)
+
+        // To the right of focus: nothing moves.
+        let scroll = s.scroll
+        s.insertKeepingView(win(10), width: .proportion(0.5), slot: 5, metrics: metrics)
+        #expect(s.scroll == scroll)
+        // An empty strip, or no metrics: a plain insert.
+        var e = Strip()
+        e.insertKeepingView(win(1), width: .proportion(0.5), slot: 1, metrics: nil)
+        #expect(e.allWindows.map(\.id) == [1] && e.scroll == 0)
+    }
+
     @Test func newWindowGoesRightOfFocused() {
         var s = strip([1, 2, 3], focus: 0)
         s.insert(win(4), width: .proportion(0.5), focus: true)

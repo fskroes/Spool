@@ -120,6 +120,12 @@ public final class Engine: ObservableObject {
     /// Saved tiled windows of apps that did not answer during a restore. They go back to their slot when the app
     /// answers; included in every save.
     var heldWindows: [HeldWindow] = []
+    /// Apps that answered and still have held windows: the token of the timer that releases them. Many apps
+    /// answer before they make their windows again, so held windows wait a moment, and new windows of these apps
+    /// take held slots by app.
+    var heldGrace: [String: Int] = [:]
+    /// Never reset, so a timer from before a restart finds no token.
+    var heldGraceSerial = 0
     /// Apps that were watched but did not answer a scan: the attempt of the next scan.
     var quietRescans: [pid_t: Int] = [:]
     /// Apps whose quiet rescans stopped before the app answered. Scanned again when the app is activated.
@@ -286,6 +292,7 @@ public final class Engine: ObservableObject {
         laterStrips.removeAll()
         laterFloating.removeAll()
         heldWindows.removeAll()
+        heldGrace.removeAll()
         quietRescans.removeAll()
         staleApps.removeAll()
         healedAt.removeAll()

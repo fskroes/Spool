@@ -41,6 +41,17 @@ extension Strip {
         }
     }
 
+    /// Adds a window without focus, as `insert`, and changes `scroll` so the focused column stays where it is on
+    /// screen. A column put in to the left of the focused one does not push the focused window away.
+    public mutating func insertKeepingView(_ window: WindowInfo, width: ColumnWidth, slot: Int?, metrics: StripMetrics?) {
+        guard let metrics, columns.indices.contains(focusedColumn), !contains(window.id) else {
+            return insert(window, width: width, slot: slot, focus: false)
+        }
+        let before = columnPositions(metrics: metrics).x[focusedColumn]
+        insert(window, width: width, slot: slot, focus: false)
+        scroll += columnPositions(metrics: metrics).x[focusedColumn] - before
+    }
+
     /// Removes a window. Returns the window that should get focus, if the focused window was removed.
     @discardableResult
     public mutating func remove(_ id: WindowID) -> WindowID? {

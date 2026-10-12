@@ -6,8 +6,8 @@ import StripleCore
 /// Changes apply at once and are saved to `config.json`. Edits made to the file in a text editor
 /// are loaded automatically. A file with errors is not applied: `loadError` tells why. A save while the file
 /// has errors keeps that file as `config.json.broken`, so the user's edits are never lost.
-/// Each good load and save also writes `config.json.lastgood`. When `config.json` has errors at launch,
-/// Striple starts with the settings in that copy, not with the factory settings.
+/// Each good load and save also writes `config.json.lastgood`. When `config.json` has errors or is missing at
+/// launch, Striple starts with the settings in that copy, not with the factory settings.
 @MainActor
 public final class ConfigStore: ObservableObject {
     @Published public private(set) var config: Config
@@ -19,7 +19,10 @@ public final class ConfigStore: ObservableObject {
 
     public let fileURL: URL
     private var lastData: Data?
+    /// The folder: an editor that saves atomically replaces the file.
     private var watcher: DispatchSourceFileSystemObject?
+    /// The file itself: an editor or a shell redirect that writes in place changes no folder entry.
+    private var fileWatcher: DispatchSourceFileSystemObject?
     private var reloadWork: DispatchWorkItem?
     /// The file on disk did not decode. The next save keeps a copy of it first.
     private var fileIsBroken = false
@@ -38,13 +41,16 @@ public final class ConfigStore: ObservableObject {
         self.arrowsTaken = arrowsTaken
         self.config = Config()
         load()
-        if fileIsBroken { loadLastGood() }
-        if lastData == nil && loadError == nil { save() }
+        let missing = lastData == nil && loadError == nil
+        if fileIsBroken || missing { loadLastGood() }
+        if missing { save() }
         if watch { startWatching() }
     }
 
     /// Changes the settings, saves them and notifies observers. No-op when nothing changed.
     public func update(_ change: (inout Config) -> Void) {
+        // An edit that the watchers did not report yet is read first, so this save does not replace it.
+        loadIfChangedOnDisk()
         var next = config
         change(&next)
         next.layout = next.layout.sanitized()
@@ -70,6 +76,10 @@ public final class ConfigStore: ObservableObject {
 
     /// Reads the file again. Called by the file watcher; public for "Reload" buttons and tests.
     public func reload() { load() }
+
+    private func loadIfChangedOnDisk() {
+        if (try? Data(contentsOf: fileURL)) != lastData { load() }
+    }
 
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else {
@@ -156,11 +166,32 @@ public final class ConfigStore: ObservableObject {
         guard fd >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.scheduleReload() }
+            MainActor.assumeIsolated {
+                self?.watchFile()
+                self?.scheduleReload()
+            }
         }
         source.setCancelHandler { close(fd) }
         source.resume()
         watcher = source
+        watchFile()
+    }
+
+    /// Watches the file that is at `fileURL` now. Called again after each folder change, because an atomic save
+    /// or a delete puts a new file (a new inode) there.
+    private func watchFile() {
+        fileWatcher?.cancel()
+        fileWatcher = nil
+        let fd = open(fileURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename],
+                                                               queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.scheduleReload() }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        fileWatcher = source
     }
 
     private func scheduleReload() {
@@ -194,5 +225,8 @@ public final class ConfigStore: ObservableObject {
         }
     }
 
-    deinit { watcher?.cancel() }
+    deinit {
+        watcher?.cancel()
+        fileWatcher?.cancel()
+    }
 }

@@ -191,6 +191,64 @@ import Testing
         #expect(store.loadError == nil)
     }
 
+    private func writeInPlace(_ data: Data, to url: URL) throws {
+        let h = try FileHandle(forWritingTo: url)
+        try h.truncate(atOffset: 0)
+        try h.write(contentsOf: data)
+        try h.close()
+    }
+
+    // Round 8 finding: a folder watch does not see a file written in place (nano, `jq … > config.json`).
+    @Test func anEditWrittenInPlaceIsLoaded() async throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: true)
+        var c = store.config
+        c.layout.innerGap = 27
+        try writeInPlace(c.encoded(), to: url)
+        for _ in 0..<40 where store.config.layout.innerGap != 27 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 27)
+
+        // After an atomic save (a new file), in-place edits are still seen.
+        store.update { $0.layout.innerGap = 5 }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        c = store.config
+        c.layout.innerGap = 28
+        try writeInPlace(c.encoded(), to: url)
+        for _ in 0..<40 where store.config.layout.innerGap != 28 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 28)
+    }
+
+    @Test func aChangeInSettingsKeepsAnEditThatWasNotLoadedYet() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        var c = store.config
+        c.rules = [AppRule(bundleID: "com.apple.Notes", appName: "Notes", action: .float)]
+        try writeInPlace(c.encoded(), to: url)
+
+        store.update { $0.behavior.focusFollowsMouse = true }
+        let saved = try Config.decode(Data(contentsOf: url))
+        #expect(saved.rules.map(\.bundleID) == ["com.apple.Notes"])
+        #expect(saved.behavior.focusFollowsMouse)
+    }
+
+    // Round 8 finding: a launch with config.json missing wrote factory settings over config.json.lastgood.
+    @Test func aMissingFileAtLaunchIsWrittenFromTheLastGoodCopy() throws {
+        let url = tempFile()
+        ConfigStore(fileURL: url, watch: false).update { $0.layout.innerGap = 15; $0.behavior.onboardingDone = true }
+        try FileManager.default.removeItem(at: url)
+
+        let store = ConfigStore(fileURL: url, watch: false)
+        #expect(store.config.layout.innerGap == 15)
+        #expect(store.config.behavior.onboardingDone)
+        #expect(try Config.decode(Data(contentsOf: url)).layout.innerGap == 15)
+        #expect(try Config.decode(Data(contentsOf: store.lastGoodURL)).layout.innerGap == 15)
+
+        // Both files deleted: the factory settings.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.removeItem(at: store.lastGoodURL)
+        #expect(ConfigStore(fileURL: url, watch: false).config == Config())
+    }
+
     @Test func anOldBrokenCopyIsReplacedByTheNewOne() throws {
         let url = tempFile()
         let store = ConfigStore(fileURL: url, watch: false)

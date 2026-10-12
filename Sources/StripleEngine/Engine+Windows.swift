@@ -80,7 +80,7 @@ extension Engine {
         // Windows of apps that did not answer an earlier restore go back to their places now.
         fresh = placeHeld(fresh, byApp: true, inScan: true)
         // Two copies of one app: held windows wait while either one does not answer.
-        defer { releaseHeld(bundles: answered.subtracting(quiet.values)) }
+        defer { releaseHeldSoon(bundles: answered.subtracting(quiet.values)) }
         let alive = WindowList.allWindowIDs()
         if !alive.isEmpty {
             for id in Array(windows.keys) where !alive.contains(id) { remove(id) }
@@ -110,12 +110,7 @@ extension Engine {
         }
         // Saved windows of apps that do not answer keep their place until the app answers.
         let restored = session.restore(live: live, waitingFor: Set(quiet.values))
-        let pidOf = Dictionary(quiet.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
-        heldWindows += restored.held.map { h in
-            var h = h
-            h.info.pid = pidOf[h.info.bundleID] ?? h.info.pid
-            return h
-        }
+        var restoredInto: [StripKey: StripKey] = [:]
         for saved in restored.strips {
             guard let first = saved.strip.allWindows.first, let c = byID[first.id] else { continue }
             guard let key = stripKey(for: first.id, element: c.element, preferredDisplay: saved.displayID) else {
@@ -123,6 +118,7 @@ extension Engine {
                 continue
             }
             strips[key] = Policy.restoredStrip(saved.strip, into: strips[key], settings: config.layout, metrics: metrics(key))
+            restoredInto[StripKey(display: saved.displayID, space: saved.spaceID)] = key
             for w in saved.strip.allWindows {
                 guard let c = byID[w.id] else { continue }
                 register(c, state: .tiled, key: key, createdAt: 0)
@@ -131,6 +127,19 @@ extension Engine {
             for w in saved.strip.allWindows where byID[w.id]?.minimizedTile == true {
                 takeOff(w.id, as: .minimized, relayoutNow: false)
             }
+        }
+        // Held windows wait in the strip their saved strip was restored to.
+        let pidOf = Dictionary(quiet.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
+        let known = Set(Spaces.all().values.joined())
+        let fallback = displays.first { !isDisabled($0.uuid) }?.uuid
+        heldWindows += restored.held.map { h in
+            var h = h
+            h.info.pid = pidOf[h.info.bundleID] ?? h.info.pid
+            let k = Policy.heldKey(saved: StripKey(display: h.displayID, space: h.spaceID), restoredInto: restoredInto,
+                                   activeSpaces: activeSpaces, knownSpaces: known, fallbackDisplay: fallback)
+            h.displayID = k.display
+            h.spaceID = k.space
+            return h
         }
         for id in restored.floating {
             guard let c = byID[id] else { continue }
@@ -147,7 +156,8 @@ extension Engine {
 
     /// Finds new windows of one app (after launch, or when its observer came up late). A window that a restore
     /// held for this app goes back to its saved place.
-    func scanApp(_ pid: pid_t) {
+    /// `release`: start the wait after which held windows of the app that no window took are dropped.
+    func scanApp(_ pid: pid_t, release: Bool = true) {
         guard pid != getpid() else { return }
         tracker?.watch(pid)
         if tracker?.isWaiting(for: pid) == true { return }
@@ -159,7 +169,7 @@ extension Engine {
         for w in windows.values where w.info.pid == pid { tracker?.observe(window: w.element, pid: pid) }
         let found = elements.compactMap { classify($0, pid: pid, onlyNew: true) }
         for c in placeHeld(found, byApp: true, inScan: false) { adopt(c, isNew: true) }
-        if let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier { releaseHeld(bundles: [bundle]) }
+        if release, let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier { releaseHeldSoon(bundles: [bundle]) }
         takeOffWindowsOfHiddenApps(pid: pid, relayoutNow: true)
     }
 
@@ -167,8 +177,9 @@ extension Engine {
     /// `byApp`: the candidates are all windows of their apps, so a held window with no exact match takes one.
     func placeHeld(_ candidates: [Candidate], byApp: Bool, inScan: Bool) -> [Candidate] {
         guard !heldWindows.isEmpty else { return candidates }
-        let pairs = HeldWindow.take(&heldWindows, for: candidates.filter(\.tiles).map(\.info), byApp: byApp)
+        var pairs = HeldWindow.take(&heldWindows, for: candidates.filter(\.tiles).map(\.info), byApp: byApp)
         guard !pairs.isEmpty else { return candidates }
+        HeldWindow.passOnNewIDs(&pairs, held: &heldWindows)
         var byID: [WindowID: Candidate] = [:]
         for c in candidates { byID[c.info.id] = c }
         for p in pairs { if let c = byID[p.live.id] { putInHeldSlot(c, p.held, inScan: inScan) } }
@@ -183,7 +194,7 @@ extension Engine {
             return adopt(c, isNew: false, inScan: inScan)
         }
         var strip = strips[key] ?? Strip()
-        strip.insert(c.info, width: h.width, slot: h.slot(in: strip), focus: false)
+        strip.insertKeepingView(c.info, width: h.width, slot: h.slot(in: strip), metrics: metrics(key))
         strips[key] = strip
         register(c, state: .tiled, key: key, createdAt: 0)
         // A minimized window keeps the place: it goes back there when it is shown again.
@@ -197,10 +208,45 @@ extension Engine {
     /// The apps answered and listed their windows. A held window of them that no live window took is closed,
     /// so it is dropped. One on a Space that is not on screen waits: macOS lists only the windows of the Spaces
     /// on screen. While the screen is locked AX lists no windows, so nothing is dropped then.
+    /// A copy of the app that still does not answer keeps the held windows: they can be its windows.
     func releaseHeld(bundles: Set<String>) {
         guard !heldWindows.isEmpty, !bundles.isEmpty, !ScreenLock.isLocked else { return }
+        let bundles = bundles.subtracting(bundlesWithAQuietCopy(bundles))
         let onScreen = Set(activeSpaces.values)
         heldWindows.removeAll { bundles.contains($0.info.bundleID) && (onScreen.isEmpty || onScreen.contains($0.spaceID)) }
+    }
+
+    /// Many apps answer before they make their windows again (Chrome, Electron apps). So held windows of apps that
+    /// answered wait `Policy.heldGraceDelay`. In that time a new window of the app takes a held slot by app (its
+    /// title is often still empty). Then the apps are scanned once more and what is left is released.
+    func releaseHeldSoon(bundles: Set<String>) {
+        let start = bundles.filter { b in heldGrace[b] == nil && heldWindows.contains { $0.info.bundleID == b } }
+        guard !start.isEmpty else { return }
+        heldGraceSerial += 1
+        let token = heldGraceSerial
+        for b in start { heldGrace[b] = token }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Policy.heldGraceDelay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.status == .running else { return }
+                let mine = Set(start.filter { self.heldGrace[$0] == token })
+                for b in mine { self.heldGrace[b] = nil }
+                guard !mine.isEmpty else { return }
+                for app in NSWorkspace.shared.runningApplications where mine.contains(app.bundleIdentifier ?? "") {
+                    self.scanApp(app.processIdentifier, release: false)
+                }
+                self.releaseHeld(bundles: mine)
+            }
+        }
+    }
+
+    private func bundlesWithAQuietCopy(_ bundles: Set<String>) -> Set<String> {
+        var out = Set<String>()
+        for app in NSWorkspace.shared.runningApplications {
+            guard let b = app.bundleIdentifier, bundles.contains(b) else { continue }
+            let pid = app.processIdentifier
+            if tracker?.isWaiting(for: pid) == true || quietRescans[pid] != nil || staleApps.contains(pid) { out.insert(b) }
+        }
+        return out
     }
 
     /// A watched app did not answer a scan. Scan it again later, with the watch retry delays. After the last
@@ -257,7 +303,8 @@ extension Engine {
     /// Starts managing a window as its rules say. `inScan`: part of `scanAll`, whose caller lays out all strips once.
     func adopt(_ c: Candidate, isNew: Bool, inScan: Bool = false) {
         // A held window that comes by another path (focus, a new window event) still goes back to its place.
-        if !heldWindows.isEmpty, c.tiles, let p = HeldWindow.take(&heldWindows, for: [c.info], byApp: false).first {
+        if !heldWindows.isEmpty, c.tiles,
+           let p = HeldWindow.take(&heldWindows, for: [c.info], byApp: heldGrace[c.info.bundleID] != nil).first {
             return putInHeldSlot(c, p.held, inScan: inScan)
         }
         let now = isNew ? CACurrentMediaTime() : 0
@@ -359,10 +406,11 @@ extension Engine {
             // An app that was given up on (it did not answer for a long time), or that has held windows, is
             // scanned again when it is used.
             let onScreen = Set(activeSpaces.values)
+            let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
             if let tracker,
                Policy.rescanOnActivate(watching: tracker.isWatching(pid), waiting: tracker.isWaiting(for: pid),
                                        rescanPending: quietRescans[pid] != nil, gaveUp: staleApps.contains(pid),
-                                       holdsWindows: heldWindows.contains { $0.info.pid == pid && onScreen.contains($0.spaceID) }),
+                                       holdsWindows: heldWindows.contains { $0.info.bundleID == bundle && onScreen.contains($0.spaceID) }),
                let app = NSRunningApplication(processIdentifier: pid), WindowTracker.isManageable(app) { scanApp(pid) }
             focusChanged(pid: pid)
         case .focusedWindowChanged(let pid):
@@ -576,7 +624,11 @@ extension Engine {
     func removeApp(_ pid: pid_t) {
         quietRescans[pid] = nil
         staleApps.remove(pid)
-        heldWindows.removeAll { $0.info.pid == pid }
+        let bundle = heldWindows.first { $0.info.pid == pid }?.info.bundleID
+        let next = bundle.flatMap { b in
+            NSRunningApplication.runningApplications(withBundleIdentifier: b).first { $0.processIdentifier != pid && !$0.isTerminated }?.processIdentifier
+        }
+        HeldWindow.appQuit(&heldWindows, pid: pid, nextPid: next)
         for (id, w) in windows where w.info.pid == pid { remove(id) }
         writer.unregisterApp(pid)
         applier.forgetApp(pid)

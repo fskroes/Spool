@@ -70,6 +70,30 @@ public struct HeldWindow: Equatable, Sendable {
         for i in held.indices { held[i].after = held[i].after.map { $0 == old ? new : $0 } }
     }
 
+    /// Passes the new IDs of a batch from `take` on to the other pairs of the batch and to the held windows that
+    /// are left. Do this before the pairs are placed: a pair whose nearest anchor is another pair of the same
+    /// batch must find that window by its new ID.
+    public static func passOnNewIDs(_ pairs: inout [(live: WindowInfo, held: HeldWindow)], held: inout [HeldWindow]) {
+        for p in pairs where p.held.info.id != p.live.id {
+            for i in pairs.indices { rename(&pairs[i].held, from: p.held.info.id, to: p.live.id) }
+            rename(&held, from: p.held.info.id, to: p.live.id)
+        }
+    }
+
+    private static func rename(_ h: inout HeldWindow, from old: WindowID, to new: WindowID) {
+        h.after = h.after.map { $0 == old ? new : $0 }
+    }
+
+    /// An app quit. Its held windows go to another running copy of the same app (`nextPid`), because a held
+    /// window is matched by app, not by process. With no other copy they are dropped.
+    public static func appQuit(_ held: inout [HeldWindow], pid: Int32, nextPid: Int32?) {
+        if let nextPid {
+            for i in held.indices where held[i].info.pid == pid { held[i].info.pid = nextPid }
+        } else {
+            held.removeAll { $0.info.pid == pid }
+        }
+    }
+
     /// The strips with the held windows put in their places, in order. For a session save.
     public static func placed<K: Hashable>(_ held: [HeldWindow], into strips: [K: Strip], key: (HeldWindow) -> K) -> [K: Strip] {
         var out = strips

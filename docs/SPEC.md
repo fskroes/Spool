@@ -90,6 +90,12 @@ test in `Tests/`.
 - A restored strip scrolls so its focused column is in view, also when some saved windows are gone.
 - Windows of an app that does not answer during the restore wait for it. When it answers, each goes back
   after the window that came before it on the strip.
+  - Many apps answer before they make their windows again. So for 5 s after the app answers, a new window of the
+    app takes a waiting place. Then Striple looks once more and drops the places that no window took.
+  - A waiting window does not move the focused window on screen.
+  - A waiting window goes with its strip when that strip is restored to another Space or display.
+  - With two copies of one app, the places wait while one copy does not answer. When a copy quits, the
+    places go to the other copy.
 
 ### F14 Launch at login and auto-start
 - Optional launch at login. Optional automatic start of tiling when the app starts.

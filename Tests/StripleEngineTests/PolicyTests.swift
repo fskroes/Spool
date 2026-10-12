@@ -340,6 +340,30 @@ import Testing
     }
 
     // Round 7 finding: after the quiet rescans gave up, a watched app was never scanned again.
+    // Round 8 finding: held windows kept the key of their saved strip, even when that strip was restored to another
+    // key, so they were never released and a save put them in a strip of their own.
+    @Test func heldWindowsWaitInTheStripTheirSavedStripWasRestoredTo() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(5), "D2": 6]
+        func key(_ d: String, _ s: UInt64, into: [K: K] = [:], known: Set<UInt64> = [5, 6, 7]) -> K {
+            Policy.heldKey(saved: K(display: d, space: s), restoredInto: into, activeSpaces: active, knownSpaces: known, fallbackDisplay: "D1")
+        }
+        // Restored somewhere else: go with the strip.
+        #expect(key("D1", 99, into: [K(display: "D1", space: 99): K(display: "D2", space: 6)]) == K(display: "D2", space: 6))
+        // On screen: stays.
+        #expect(key("D1", 5) == K(display: "D1", space: 5))
+        // Its Space is on screen on another display.
+        #expect(key("D1", 6) == K(display: "D2", space: 6))
+        // A known Space not on screen: waits there.
+        #expect(key("D2", 7) == K(display: "D2", space: 7))
+        // An unknown Space (after a restart), or no saved Space: the Space on screen of its display.
+        #expect(key("D2", 99) == K(display: "D2", space: 6))
+        #expect(key("D2", 0) == K(display: "D2", space: 6))
+        // Its display is gone: the fallback display.
+        #expect(key("GONE", 99) == K(display: "D1", space: 5))
+        #expect(Policy.heldGraceDelay >= 3)
+    }
+
     @Test func anActivatedAppIsScannedAgainWhenStripleGaveUpOrHoldsItsWindows() {
         func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
             Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)

@@ -201,6 +201,25 @@ enum Policy {
         return !watching || gaveUp || holdsWindows
     }
 
+    /// How long held windows of an app that answered wait for windows the app makes late (Chrome, Electron apps).
+    static let heldGraceDelay = 5.0
+
+    /// The strip a held window waits in. A saved strip whose Space is unknown, or whose display is gone, is
+    /// restored on screen now (`Session.partition`), so its held windows go with it (`restoredInto`, from saved key
+    /// to the key it was restored to). Without that, they go to the Space on screen of their display, or of
+    /// `fallbackDisplay` when their display is gone. A held window whose Space is not on screen and is known keeps it.
+    static func heldKey(saved: Engine.StripKey, restoredInto: [Engine.StripKey: Engine.StripKey],
+                        activeSpaces: [String: UInt64], knownSpaces: Set<UInt64>, fallbackDisplay: String?) -> Engine.StripKey {
+        if let k = restoredInto[saved] { return k }
+        if activeSpaces[saved.display] == saved.space { return saved }
+        if saved.space != 0, let d = activeSpaces.first(where: { $0.value == saved.space })?.key {
+            return Engine.StripKey(display: d, space: saved.space)
+        }
+        if saved.space != 0, knownSpaces.contains(saved.space) { return saved }
+        let d = activeSpaces[saved.display] != nil ? saved.display : (fallbackDisplay ?? saved.display)
+        return Engine.StripKey(display: d, space: activeSpaces[d] ?? saved.space)
+    }
+
     static func registerUntilHung(_ names: [String], add: (String) -> AXError) -> (registered: Int, hung: Bool) {
         var registered = 0
         for name in names {

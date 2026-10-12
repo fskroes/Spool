@@ -97,6 +97,10 @@ After each good load or save, Striple writes a copy named `config.json.lastgood`
 Striple starts, Striple uses that copy, not the factory settings. While the file has an error, the menu bar menu
 shows "Problem With config.json…". Only a change that you make saves over the file while it has an error.
 If you delete the broken file, Striple writes a new `config.json` with the settings in use.
+If `config.json` is missing when Striple starts, Striple writes it again from `config.json.lastgood`. To go back to
+the factory settings, quit Striple and delete both files.
+Edits load automatically, also from editors and tools that write the file in place (for example `nano` or
+`jq … > config.json`). A change in Settings first reads an edit that was not loaded yet, so it never replaces it.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 
