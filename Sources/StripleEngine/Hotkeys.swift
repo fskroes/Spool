@@ -29,9 +29,12 @@ final class Hotkeys {
         installHandler()
         var next: UInt32 = 1
         failed = []
+        // A combo bound to two Striple actions is registered once. That is a conflict inside Striple
+        // (the Shortcuts page shows it), not a refusal by macOS.
+        var seen = Set<KeyCombo>()
         // Sorted so IDs are stable between runs, which keeps logs comparable.
         for (command, combos) in bindings.sorted(by: { $0.key.name < $1.key.name }) {
-            for combo in combos {
+            for combo in combos where seen.insert(combo).inserted {
                 var ref: EventHotKeyRef?
                 let id = EventHotKeyID(signature: OSType(0x5354_5250), id: next) // "STRP"
                 let status = RegisterEventHotKey(UInt32(combo.keyCode), Self.carbonModifiers(combo.modifiers), id,
@@ -80,4 +83,39 @@ final class Hotkeys {
         if let handler { RemoveEventHandler(handler) }
         handler = nil
     }
+}
+
+extension Hotkeys {
+    /// The enabled macOS shortcuts (Spotlight, Spaces, screenshots, input sources...). Carbon accepts a hotkey
+    /// that macOS also uses without an error, so Striple checks this list itself.
+    nonisolated static func systemShortcuts() -> Set<KeyCombo> {
+        var ref: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&ref) == noErr, let list = ref?.takeRetainedValue() as? [[String: Any]] else { return [] }
+        return systemShortcuts(from: list)
+    }
+
+    nonisolated static func systemShortcuts(from list: [[String: Any]]) -> Set<KeyCombo> {
+        var out = Set<KeyCombo>()
+        for item in list {
+            guard (item[kHISymbolicHotKeyEnabled as String] as? Bool) ?? false,
+                  let code = (item[kHISymbolicHotKeyCode as String] as? NSNumber)?.intValue, code >= 0, code < 0xFFFF,
+                  let mods = (item[kHISymbolicHotKeyModifiers as String] as? NSNumber)?.uint32Value else { continue }
+            out.insert(KeyCombo(UInt16(code), keyModifiers(carbon: mods)))
+        }
+        return out
+    }
+
+    nonisolated static func keyModifiers(carbon m: UInt32) -> KeyModifiers {
+        var out: KeyModifiers = []
+        if m & UInt32(controlKey) != 0 { out.insert(.control) }
+        if m & UInt32(optionKey) != 0 { out.insert(.option) }
+        if m & UInt32(shiftKey) != 0 { out.insert(.shift) }
+        if m & UInt32(cmdKey) != 0 { out.insert(.command) }
+        return out
+    }
+}
+
+/// The key combinations macOS itself uses right now. For the shortcut recorder.
+public enum SystemShortcuts {
+    public static func current() -> Set<KeyCombo> { Hotkeys.systemShortcuts() }
 }

@@ -234,7 +234,11 @@ public final class Engine: ObservableObject {
                 self.perform(command)
             }
         }
-        refusedShortcuts = hotkeys?.register(config.bindings) ?? []
+        let failed = hotkeys?.register(config.bindings) ?? []
+        // Carbon accepts combos that macOS itself uses, so those are reported too.
+        let system = Hotkeys.systemShortcuts()
+        let taken = Set(config.bindings.values.joined()).intersection(system)
+        refusedShortcuts = Array(Set(failed).union(taken)).sorted { $0.usLabel < $1.usLabel }
         if !refusedShortcuts.isEmpty {
             log.log("hotkeys: macOS refused \(refusedShortcuts.map(\.usLabel).joined(separator: ", "))")
         }
@@ -298,7 +302,12 @@ public final class Engine: ObservableObject {
         switch command {
         case .start, .stop, .toggleEngine, .restart:
             perform(command)
+            if status == .noPermission {
+                return IPCResponse(ok: false, error: "Striple needs the Accessibility permission. It starts when you allow it.")
+            }
             return IPCResponse(ok: true)
+        case .focusWindow(let id) where status == .running && windows[id] == nil:
+            return IPCResponse(ok: false, error: "No window \(id) in Striple. Run: striple state")
         default:
             guard status == .running else {
                 let why = status == .noPermission ? "Striple needs the Accessibility permission" : "Striple is stopped (run: striple start)"

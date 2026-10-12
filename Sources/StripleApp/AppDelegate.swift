@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = Updater.shared
+        LoginItem.refreshAfterUpdate()
         MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings))
         statusMenu = StatusMenu(app: model)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(otherInstanceOpened),

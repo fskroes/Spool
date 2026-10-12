@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import Foundation
 import CoreGraphics
 import Testing
 @testable import StripleCore
@@ -88,5 +89,29 @@ import Testing
         #expect(Hotkeys.carbonModifiers([.option]) == UInt32(optionKey))
         #expect(Hotkeys.carbonModifiers([.control, .option, .shift, .command])
             == UInt32(controlKey | optionKey | shiftKey | cmdKey))
+    }
+}
+
+@MainActor @Suite struct HotkeyRegistrationTests {
+    @Test func comboBoundTwiceIsNotARefusal() {
+        // ⌃⌥⇧⌘F19 is free on any Mac; it is registered for a moment only.
+        let combo = KeyCombo(80 /* F19 */, [.control, .option, .shift, .command])
+        let hotkeys = Hotkeys { _ in }
+        let refused = hotkeys.register([.focusLeft: [combo], .focusRight: [combo]])
+        hotkeys.unregisterAll()
+        #expect(refused.isEmpty)
+    }
+
+    @Test func systemShortcutListIsParsed() {
+        let list: [[String: Any]] = [
+            [kHISymbolicHotKeyCode as String: NSNumber(value: Int(KeyCode.space)), kHISymbolicHotKeyModifiers as String: NSNumber(value: cmdKey),
+             kHISymbolicHotKeyEnabled as String: true],
+            [kHISymbolicHotKeyCode as String: NSNumber(value: Int(KeyCode.right)), kHISymbolicHotKeyModifiers as String: NSNumber(value: controlKey),
+             kHISymbolicHotKeyEnabled as String: false],
+            [kHISymbolicHotKeyCode as String: NSNumber(value: 0xFFFF), kHISymbolicHotKeyModifiers as String: NSNumber(value: 0),
+             kHISymbolicHotKeyEnabled as String: true],
+        ]
+        #expect(Hotkeys.systemShortcuts(from: list) == [KeyCombo(KeyCode.space, [.command])])
+        #expect(Hotkeys.keyModifiers(carbon: UInt32(controlKey | shiftKey)) == [.control, .shift])
     }
 }

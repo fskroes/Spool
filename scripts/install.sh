@@ -93,6 +93,11 @@ on_path() {
 if [[ $UNINSTALL -eq 1 ]]; then
     [[ $DRY_RUN -eq 1 ]] && say "Dry run. Nothing is changed."
     quit_striple
+    if [[ -x "$DEST/Contents/MacOS/Striple" && "$(bundle_id_of "$DEST")" == "$BUNDLE_ID" ]]; then
+        # Removes the LaunchAgent and the login item, so macOS does not keep an entry for a deleted app.
+        say "Turning off Launch at login"
+        run "$DEST/Contents/MacOS/Striple" --unregister-login
+    fi
     if [[ -d "$DEST" ]]; then
         say "Removing $DEST"
         remove_app "$DEST"

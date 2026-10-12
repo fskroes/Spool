@@ -155,7 +155,9 @@ What this means: an ad hoc build can probably register the agent, but macOS can 
 
 ### After an update
 
-SMAppService.h says: "If an app updates either the plist or the executable for a LaunchAgent or LaunchDaemon, the SMAppService must be re-registered or it may not launch. It is recommended to also call unregister before re-registering if the executable has been changed." Thus Striple must register the agent again when its version changes (after `make install` or a Sparkle update).
+SMAppService.h says: "If an app updates either the plist or the executable for a LaunchAgent or LaunchDaemon, the SMAppService must be re-registered or it may not launch. It is recommended to also call unregister before re-registering if the executable has been changed." Striple does this itself. At launch it compares `CFBundleVersion` with the build it registered last (the `LoginItemRegisteredBuild` default). If they differ and the agent is on, it unregisters and registers the agent again. It does not do this when the agent started the process, because unregistering would stop that process. The next manual start does it.
+
+Striple uses the plain login item only when the agent is `notRegistered` or `notFound`. When the agent waits for your approval (`requiresApproval`), Striple does not add a second item, because both would start Striple after you approve.
 
 ## Updates (Sparkle)
 
@@ -220,7 +222,7 @@ make uninstall                            # or: ./scripts/install.sh --uninstall
 ./scripts/install.sh --uninstall --dry-run
 ```
 
-Before you uninstall, turn off "Launch at login" in Striple. The script quits Striple, removes the app and removes the `~/.local/bin/striple` link. It does not remove your settings and logs. It shows the commands to remove them yourself:
+The script first runs `Striple --unregister-login`, which removes the login agent and the login item. Then it quits Striple, removes the app and removes the `~/.local/bin/striple` link. It does not remove your settings and logs. It shows the commands to remove them yourself:
 
 ```sh
 rm -r ~/Library/Application\ Support/Striple    # settings

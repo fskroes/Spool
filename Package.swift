@@ -37,6 +37,8 @@ let package = Package(
         .executableTarget(name: "striple-cli", dependencies: ["StripleCore"]),
         .testTarget(name: "StripleCoreTests", dependencies: ["StripleCore"]),
         .testTarget(name: "StripleEngineTests", dependencies: ["StripleEngine", "StripleCore"]),
+        // Tests the pure rules inside the app (recorder, URL routes, login, single instance).
+        .testTarget(name: "StripleAppTests", dependencies: ["StripleApp", "StripleEngine", "StripleCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

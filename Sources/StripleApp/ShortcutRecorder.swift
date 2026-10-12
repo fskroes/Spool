@@ -10,15 +10,21 @@ enum RecorderRules {
         case cancel
         /// The key needs at least one of ⌃⌥⌘, so typing stays free.
         case needsModifier
+        /// ⌘ or ⌘⇧ with a key belongs to the apps (⌘W, ⌘C, ⌘Tab...). A global hotkey would take it from every app.
+        case appShortcut
+        /// macOS already uses the combination (System Settings > Keyboard > Keyboard Shortcuts).
+        case systemShortcut(KeyCombo)
     }
 
-    static func evaluate(keyCode: UInt16, modifiers: KeyModifiers) -> Outcome {
+    static func evaluate(keyCode: UInt16, modifiers: KeyModifiers, systemShortcuts: Set<KeyCombo> = []) -> Outcome {
         if keyCode == KeyCode.escape { return .cancel }
         if keyCode == KeyCode.delete && modifiers.isEmpty { return .cancel }
-        if isFunctionKey(keyCode) || !modifiers.isDisjoint(with: [.control, .option, .command]) {
-            return .accept(KeyCombo(keyCode, modifiers))
-        }
-        return .needsModifier
+        let function = isFunctionKey(keyCode)
+        guard function || !modifiers.isDisjoint(with: [.control, .option, .command]) else { return .needsModifier }
+        let combo = KeyCombo(keyCode, modifiers)
+        if !function && modifiers.contains(.command) && modifiers.isDisjoint(with: [.control, .option]) { return .appShortcut }
+        if systemShortcuts.contains(combo) { return .systemShortcut(combo) }
+        return .accept(combo)
     }
 
     static func isFunctionKey(_ code: UInt16) -> Bool { FunctionKeys.codes.contains(code) }
@@ -47,16 +53,25 @@ final class ShortcutRecorder: ObservableObject {
     private let engine: Engine
     private let store: ConfigStore
     private var monitor: Any?
+    private var resignToken: NSObjectProtocol?
+    /// Read when recording starts, so a change in System Settings counts.
+    private var systemShortcuts: Set<KeyCombo> = []
 
     init(engine: Engine, store: ConfigStore) {
         self.engine = engine
         self.store = store
+        // While recording, the global shortcuts are off. When the user goes to another app, they must come back.
+        resignToken = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                                             object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
     }
 
     func start(_ command: Command) {
         stop()
         self.command = command
         hint = nil
+        systemShortcuts = SystemShortcuts.current()
         engine.hotkeysSuspended = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
@@ -80,11 +95,17 @@ final class ShortcutRecorder: ObservableObject {
             return nil
         }
         guard let command else { return event }
-        switch RecorderRules.evaluate(keyCode: event.keyCode, modifiers: mods) {
+        switch RecorderRules.evaluate(keyCode: event.keyCode, modifiers: mods, systemShortcuts: systemShortcuts) {
         case .cancel:
             stop()
         case .needsModifier:
             hint = "Hold ⌃, ⌥ or ⌘ with the key. F1 to F20 work alone."
+            NSSound.beep()
+        case .appShortcut:
+            hint = "Apps use ⌘ with a key (for example ⌘W closes a window). Add ⌃ or ⌥."
+            NSSound.beep()
+        case .systemShortcut(let combo):
+            hint = "macOS uses \(KeyLabel.label(combo)). Choose other keys, or turn it off in System Settings > Keyboard > Keyboard Shortcuts."
             NSSound.beep()
         case .accept(let combo):
             store.update { config in
