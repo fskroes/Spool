@@ -1,19 +1,44 @@
 import Foundation
 
 /// Files Striple uses. All paths are per user.
+///
+/// Test only: when `STRIPLE_HOME` is set and not empty, all files go in that folder and the logs in
+/// `$STRIPLE_HOME/Logs`. The E2E runner uses it, so a test run never reads or writes the user's settings.
 public enum StriplePaths {
-    public static var supportDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Striple", isDirectory: true)
+    public static let homeEnvironmentKey = "STRIPLE_HOME"
+
+    /// The two folders Striple writes to.
+    public struct Folders: Equatable, Sendable {
+        public var support: URL
+        public var logs: URL
+        /// True when `STRIPLE_HOME` chose the folders (a test run).
+        public var isolated: Bool
     }
+
+    /// The folders for an environment. `home` is the user's home folder.
+    public static func resolve(environment: [String: String], home: URL) -> Folders {
+        if let custom = environment[homeEnvironmentKey], !custom.trimmingCharacters(in: .whitespaces).isEmpty {
+            let root = URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
+            return Folders(support: root, logs: root.appendingPathComponent("Logs", isDirectory: true), isolated: true)
+        }
+        return Folders(support: home.appendingPathComponent("Library/Application Support/Striple", isDirectory: true),
+                       logs: home.appendingPathComponent("Library/Logs/Striple", isDirectory: true), isolated: false)
+    }
+
+    /// Read once: the environment of a process does not change.
+    public static let current = resolve(environment: ProcessInfo.processInfo.environment,
+                                        home: FileManager.default.homeDirectoryForCurrentUser)
+
+    /// True when `STRIPLE_HOME` is set: a test run that must not touch the user's login item or settings.
+    public static var isIsolated: Bool { current.isolated }
+
+    public static var supportDirectory: URL { current.support }
 
     public static var configFile: URL { supportDirectory.appendingPathComponent("config.json") }
     public static var sessionFile: URL { supportDirectory.appendingPathComponent("session.json") }
     public static var socket: URL { supportDirectory.appendingPathComponent("striple.sock") }
 
-    public static var logDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Striple", isDirectory: true)
-    }
+    public static var logDirectory: URL { current.logs }
 
     public static var logFile: URL { logDirectory.appendingPathComponent("engine.log") }
 }

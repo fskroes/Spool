@@ -1,0 +1,141 @@
+# Live end-to-end test
+
+`make e2e` runs the real `dist/Striple.app` against the windows of a small test app. It drives Striple with the
+`striple` command and checks the real window frames. It never moves the windows of other apps.
+
+`make test` does not run it. The unit tests of its pure parts (`Tests/StripleE2EKitTests`) are in `make test`.
+
+## Run it
+
+```sh
+make e2e
+```
+
+This builds `dist/Striple.app` (`make app`), the runner `striple-e2e` and the test app `striple-e2e-windows`,
+then runs the test. One run takes about 20 seconds after the build.
+
+Options go in `E2E_ARGS`:
+
+```sh
+make e2e E2E_ARGS="--out /tmp/striple/e2e/mine"
+```
+
+| Option | Default | What |
+|---|---|---|
+| `--app <path>` | `dist/Striple.app` | The Striple app to test. |
+| `--out <dir>` | `/tmp/striple/e2e/<yyyyMMdd-HHmmss>` | The report folder. |
+| `--bundle-dir <dir>` | `.build/e2e` | Where the runner makes the test app bundle. |
+| `--windows-binary <path>` | next to `striple-e2e` | The `striple-e2e-windows` binary. |
+
+You can also start the runner directly after a build:
+
+```sh
+"$(swift build --show-bin-path)/striple-e2e" --app dist/Striple.app
+```
+
+### Before you start
+
+- Quit your own Striple. The runner refuses to run when one is running (exit 2).
+- The terminal must have the Accessibility permission. The runner starts Striple from the terminal with `exec`,
+  so Striple gets the permission of the terminal.
+- The screen must be unlocked.
+- During the run, the test app comes to the front a few times. Do not type: your keys can go to a test window.
+  If you click another app, the runner gives the focus back to the test window before each command.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | All checks passed. |
+| 1 | A check failed. The report tells which and why. |
+| 2 | The test did not start: another Striple runs, no Accessibility permission, the screen is locked, or a binary is missing. Nothing was started. Retry later. |
+
+`make e2e` prints `make: *** [e2e] Error 1` or `Error 2` with the code of the runner.
+
+## The report
+
+The runner prints the report and its path, for example `/tmp/striple/e2e/20261012-181527/report.md`.
+The folder also has:
+
+| File | What |
+|---|---|
+| `report.md` | A table: scenario, PASS or FAIL, details. |
+| `run.log` | What the runner did, with each command and its time. |
+| `engine.log` | The log of the tested Striple. |
+| `striple-stdout.log` | Standard output and error of the tested Striple. |
+| `windows-app.log` | Output of the test app. |
+| `windows.json` | The last frames that the test app reported. |
+| `commands.txt` | The commands the runner sent to the test app. |
+
+## What it checks
+
+The test app opens 3 windows. Striple tiles them as columns on the main display. Each check polls the frames
+until they are correct and did not change for 250 ms, for a maximum of 3 seconds (10 seconds for the first tiling).
+Frames may differ by 2 points (rounding).
+
+| Scenario | Checks |
+|---|---|
+| a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. Columns that are out of view are parked at the edge of the display. |
+| b. Focus | `focus-left` to the first column, then `focus-right` to the last. The focused column is fully in view after each step. |
+| c. Move | `move-left` and `move-right` on a column. The order in `striple state` and the order of the frames change as expected. |
+| d. Widths | `cycle-width` twice, `toggle-full-width` twice, then `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. |
+| e. Close and open | The test app closes one window: the other columns close the hole. It opens one more: it becomes a column. |
+| f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
+| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. Fails only when AX errors > 0. Timing is reported, never a failure. The runner adds the CLI round trip and the settle time it measured. |
+| g. Quit | SIGTERM to Striple. It exits with status 0 and every test window is fully on a display. |
+| Safety: other apps | See below. |
+| Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. |
+
+The width math comes from `Config()` defaults, the same as the config file of the run. The work area comes from
+`NSScreen.screens[0]`, converted to top-left coordinates (the coordinates of AX and `CGWindowList`).
+
+## Safety
+
+The test runs on your work Mac, next to your own windows. These rules keep it away from them:
+
+1. **Only test windows are managed.** Striple starts with `STRIPLE_MANAGE_ONLY=com.fskroes.Striple.e2e-windows`.
+   Every path that adopts a window goes through one gate, `WindowTracker.isManageable`, which calls
+   `Policy.isManageableApp`. With the list set, a window of another app is never adopted, so Striple never moves,
+   resizes, parks, restores or focuses it.
+2. **Your windows are measured.** Before the test app starts, the runner records the bounds of every normal
+   (layer 0) window of other apps with `CGWindowListCopyWindowInfo`, also windows on other Spaces and minimized
+   windows. After Striple quit (the runner stops it first if needed, because Striple moves windows when it quits),
+   it compares them: 0 points of change allowed. A window that closed or opened during the run is not a change.
+   When fewer than half of the windows still exist, the result is SKIP, which counts as a failure: the compare
+   proves too little. Menu bar items and other high layers change on their own, so they are not compared.
+3. **Your settings are not touched.** Striple starts with `STRIPLE_HOME` set to a new `/tmp/striple-e2e-XXXXXX`
+   folder with a `config.json` (`onboardingDone: true`, other values default). The socket, config, session and logs
+   are in that folder. The login item is not registered or changed. The folder is deleted at the end.
+4. **Always clean up.** At the end, on a failure and on Ctrl-C, the runner quits the test app, sends SIGTERM to
+   Striple (SIGKILL after 5 seconds), copies the engine log and deletes `STRIPLE_HOME`.
+
+If you move one of your windows yourself during a run, the safety check fails and names the window. Run again.
+
+## Test-only environment variables
+
+Do not use these for normal work.
+
+| Variable | Effect |
+|---|---|
+| `STRIPLE_HOME` | When set and not empty, the support files (config, session, socket, lock) are in this folder and the logs in `$STRIPLE_HOME/Logs`. Striple does not read or change the login item. `StriplePaths.resolve(environment:home:)` decides. |
+| `STRIPLE_MANAGE_ONLY` | A comma-separated list of bundle IDs. Striple manages only windows of these apps. Set but empty: Striple manages no app (a test seam fails closed). `Policy.manageOnlyBundleIDs(environment:)` and `Policy.isAllowed(bundleID:manageOnly:)` decide. |
+| `STRIPLE_SOCKET` | Used by the `striple` command, not the app. The runner sets it to `$STRIPLE_HOME/striple.sock`. See [CLI.md](CLI.md#socket). |
+
+## The test app
+
+`striple-e2e-windows --count <n> --report <file> --commands <file>` is a normal AppKit app. The runner puts it in
+`.build/e2e/StripleE2EWindows.app` with bundle ID `com.fskroes.Striple.e2e-windows` and signs it ad hoc, because
+Striple matches apps by bundle ID.
+
+- It opens `n` titled, resizable windows `E2E 1` … `E2E n` on the main display.
+- Every 100 ms it writes the report file atomically: its PID, the visible windows (title, window number, frame in
+  top-left coordinates), whether it is the active app, and its key window. The runner reads frames from this file
+  and needs no AX.
+- It runs new lines of the commands file: `open`, `close <title>`, `quit`.
+
+## Limits
+
+- The test uses the main display only. With a second display, columns that are out of view can go to the edge of
+  the other display; the gap check skips columns that are not fully on the main display.
+- The test app takes the focus during the run.
+- Timing numbers depend on the machine and on what else runs. They are reported, not checked.

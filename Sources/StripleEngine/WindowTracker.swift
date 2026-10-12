@@ -67,9 +67,14 @@ final class WindowTracker {
         NSWorkspace.shared.runningApplications.filter(isManageable)
     }
 
+    /// The only gate for apps: every path that adopts, moves or focuses a window goes through `isManageable`.
     static func isManageable(_ app: NSRunningApplication) -> Bool {
-        Policy.isManageableApp(policy: app.activationPolicy, pid: app.processIdentifier, ownPID: getpid(), terminated: app.isTerminated)
+        Policy.isManageableApp(policy: app.activationPolicy, pid: app.processIdentifier, ownPID: getpid(), terminated: app.isTerminated,
+                               bundleID: app.bundleIdentifier, manageOnly: manageOnly)
     }
+
+    /// `STRIPLE_MANAGE_ONLY`, read once at launch. nil in normal use.
+    static let manageOnly = Policy.manageOnlyBundleIDs(environment: ProcessInfo.processInfo.environment)
 
     func start() {
         let nc = NSWorkspace.shared.notificationCenter

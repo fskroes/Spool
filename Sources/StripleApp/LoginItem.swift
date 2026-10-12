@@ -1,5 +1,6 @@
 import Foundation
 import ServiceManagement
+import StripleCore
 
 /// Launch at login. Prefers the bundled LaunchAgent, which has KeepAlive so launchd starts
 /// Striple again after a crash. Falls back to the plain login item.
@@ -19,7 +20,10 @@ enum LoginItem {
     /// Set when the user turned launch at login off in a process that the agent started.
     static let offAtQuitKey = "LoginItemOffAtQuit"
 
-    static var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
+    static var isAvailable: Bool { isAvailable(bundleID: Bundle.main.bundleIdentifier, isolated: StriplePaths.isIsolated) }
+
+    /// Only an app bundle has a login item. A test run (`STRIPLE_HOME` set) never reads or changes it.
+    static func isAvailable(bundleID: String?, isolated: Bool) -> Bool { bundleID != nil && !isolated }
 
     private static var agent: SMAppService { SMAppService.agent(plistName: agentPlistName) }
     private static var services: [SMAppService] { [agent, SMAppService.mainApp] }
@@ -149,6 +153,7 @@ enum LoginItem {
 
     /// Called by `Striple --unregister-login` (the uninstall script) before the app is removed.
     static func unregisterAll() {
+        guard !StriplePaths.isIsolated else { return }
         for service in services where service.status != .notRegistered && service.status != .notFound {
             try? service.unregister()
         }

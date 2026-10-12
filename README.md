@@ -122,6 +122,7 @@ make test     # all unit tests (core, engine, IPC)
 make bench    # layout benchmark in release mode
 make app      # dist/Striple.app (universal, signed)
 make dmg      # dist/Striple-<version>.dmg
+make e2e      # live end-to-end test on real windows of a test app (docs/E2E.md)
 ```
 
 ## Project layout
@@ -132,6 +133,7 @@ make dmg      # dist/Striple-<version>.dmg
 | `Sources/StripleEngine` | Talks to macOS: AX window control, hotkeys, trackpad, displays, Spaces, overlays, IPC server. |
 | `Sources/StripleApp` | Menu bar app, settings, guided start, shortcut recorder, updates. |
 | `Sources/striple-cli` | The `striple` command. |
+| `Sources/striple-e2e`, `Sources/striple-e2e-windows`, `Sources/StripleE2EKit` | Live E2E test: runner, test window app, pure checks. See [docs/E2E.md](docs/E2E.md). |
 | `Integrations/Raycast` | Raycast script commands. |
 | `scripts`, `Packaging` | App bundle, signing, LaunchAgent, DMG, install. |
 

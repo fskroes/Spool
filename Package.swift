@@ -35,10 +35,15 @@ let package = Package(
             linkerSettings: [.linkedFramework("ServiceManagement")]
         ),
         .executableTarget(name: "striple-cli", dependencies: ["StripleCore"]),
+        // Live E2E test (`make e2e`, docs/E2E.md). Not part of `swift test`: it moves real windows.
+        .target(name: "StripleE2EKit"),
+        .executableTarget(name: "striple-e2e", dependencies: ["StripleE2EKit", "StripleCore"]),
+        .executableTarget(name: "striple-e2e-windows", dependencies: ["StripleE2EKit"]),
         .testTarget(name: "StripleCoreTests", dependencies: ["StripleCore"]),
         .testTarget(name: "StripleEngineTests", dependencies: ["StripleEngine", "StripleCore"]),
         // Tests the pure rules inside the app (recorder, URL routes, login, single instance).
         .testTarget(name: "StripleAppTests", dependencies: ["StripleApp", "StripleEngine", "StripleCore"]),
+        .testTarget(name: "StripleE2EKitTests", dependencies: ["StripleE2EKit"]),
     ],
     swiftLanguageModes: [.v5]
 )

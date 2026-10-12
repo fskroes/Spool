@@ -139,3 +139,12 @@ import StripleCore
         #expect(URLRoute(URL(string: "https://focus-right")!) == .unknown)
     }
 }
+
+/// A test run (`STRIPLE_HOME` set) must never register or change the user's login item.
+@Suite struct LoginItemIsolationTests {
+    @Test func noLoginItemInATestRun() {
+        #expect(LoginItem.isAvailable(bundleID: "com.fskroes.Striple", isolated: false))
+        #expect(!LoginItem.isAvailable(bundleID: "com.fskroes.Striple", isolated: true))
+        #expect(!LoginItem.isAvailable(bundleID: nil, isolated: false))
+    }
+}
