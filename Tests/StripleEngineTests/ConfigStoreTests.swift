@@ -430,11 +430,16 @@ import Testing
         defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
         let store = ConfigStore(fileURL: url, watch: true, linkRetryDelay: 0.1)
         #expect(store.config.layout.innerGap != 42)
+        // README: Striple does not write over a file it cannot read, and shows the problem.
+        #expect(store.hasProblem)
+        #expect(store.loadError?.hasPrefix("Could not save config.json") == true)
+        #expect(fm.isReadableFile(atPath: url.path) == false)
 
         try await Task.sleep(nanoseconds: 500_000_000)
         try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
         for _ in 0..<40 where store.config.layout.innerGap != 42 { try await Task.sleep(nanoseconds: 50_000_000) }
         #expect(store.config.layout.innerGap == 42)
+        #expect(!store.hasProblem)
 
         try await Task.sleep(nanoseconds: 300_000_000)
         c.layout.innerGap = 43

@@ -107,6 +107,9 @@ and edits to that file load too. If that file is read-only (for example managed 
 if that folder does not exist yet (the dotfiles repo is not cloned), the message names the folder, and "Open File"
 shows the link in Finder. When the file comes, or the folder is replaced (for example by a new clone), Striple
 loads it within a few seconds.
+If Striple cannot read the file (for example it was made with `sudo`), Striple uses the settings it has (at start,
+from `config.json.lastgood`), does not write over the file, and shows "Could not save config.json". After you fix the
+permissions (`chmod` or `chown`), Striple loads the file within a few seconds.
 Striple never replaces the link with a plain file, also not a link in a loop.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
