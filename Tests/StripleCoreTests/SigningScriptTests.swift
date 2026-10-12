@@ -218,7 +218,7 @@ struct SigningScriptTests {
     }
 
     // The fake `security` refuses create-keychain, so the run fails at the first keychain step. The key must
-    // already be in the backup, with its passphrase printed.
+    // already be in the backup, and its passphrase in a file next to it. The passphrase is never printed.
     @Test func theBackupIsWrittenBeforeTheKeychainIsMade() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-backup-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -231,8 +231,38 @@ struct SigningScriptTests {
         #expect(FileManager.default.fileExists(atPath: backup.path))
         let mode = try FileManager.default.attributesOfItem(atPath: backup.path)[.posixPermissions] as? Int
         #expect(mode == 0o600)
-        #expect(r.output.range(of: #"Passphrase: [0-9a-f]{32}\n"#, options: .regularExpression) != nil, "\(r.output)")
+        let passFile = dir.appendingPathComponent("identity-passphrase.txt")
+        let pass = try String(contentsOf: passFile, encoding: .utf8)
+        #expect(pass.range(of: #"^[0-9a-f]{32}\n$"#, options: .regularExpression) != nil, "\(pass)")
+        let passMode = try FileManager.default.attributesOfItem(atPath: passFile.path)[.posixPermissions] as? Int
+        #expect(passMode == 0o600)
+        #expect(r.output.contains("Passphrase: in \(passFile.path)\n"), "\(r.output)")
+        #expect(!r.output.contains(pass.trimmingCharacters(in: .newlines)), "the passphrase is not printed")
         #expect(r.output.range(of: #"SHA-1: +[0-9A-F]{40}\n"#, options: .regularExpression) != nil)
+    }
+
+    // An old passphrase file next to the backup path is never overwritten: it can be the only copy.
+    @Test func anExistingPassphraseFileStopsBeforeAnyChange() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let passFile = dir.appendingPathComponent("identity-passphrase.txt")
+        try Data("old\n".utf8).write(to: passFile)
+        let r = try Self.run(Keychain(file: false, password: false, identity: false), [],
+                             env: ["STRIPLE_SIGNING_BACKUP": dir.appendingPathComponent("identity.p12").path])
+        #expect(r.status == 1)
+        #expect(r.output.contains("\(passFile.path) exists. Move it away first. Nothing was changed."), "\(r.output)")
+        #expect(r.calls.isEmpty, "\(r.calls)")
+        #expect(try String(contentsOf: passFile, encoding: .utf8) == "old\n")
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("identity.p12").path))
+    }
+
+    // A settings file that is not there would read as "no pin".
+    @Test func aMissingSettingsFileStopsBeforeAnyChange() throws {
+        let r = try Self.run(Keychain(file: false, password: false, identity: false), [],
+                             env: ["STRIPLE_UPDATES_ENV": "/nonexistent-\(UUID().uuidString)/updates.env"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("not found. Set STRIPLE_UPDATES_ENV to the settings file. Nothing was changed."), "\(r.output)")
+        #expect(r.calls.isEmpty, "\(r.calls)")
     }
 
     // `security -i` reads a backslash as an escape, also inside double quotes.
@@ -300,7 +330,8 @@ struct SigningScriptTests {
         #expect(r.output.contains("signs with no prompt"))
         let kcPass = r.calls.first { $0.hasPrefix("stdin: create-keychain -p ") }
             .map { String($0.split(separator: " ")[3]) } ?? ""
-        let p12Pass = r.output.firstMatch(of: #/Passphrase: ([0-9a-f]{32})\n/#).map { String($0.1) } ?? ""
+        let p12Pass = ((try? String(contentsOf: dir.appendingPathComponent("b-passphrase.txt"), encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .newlines)
         #expect(kcPass.count == 48 && p12Pass.count == 32, "\(r.calls)")
         // Each secret reaches security, on stdin.
         #expect(r.calls.contains { $0.hasPrefix("stdin: unlock-keychain -p \(kcPass) ") })
@@ -350,6 +381,19 @@ struct SigningScriptTests {
         #expect(r.output.contains("the keychain has another identity (ABCD1234) than \(p12.path) (\(sha1))"), "\(r.output)")
         #expect(!r.output.contains("Nothing to do"))
         #expect(!r.calls.contains { $0.contains("import ") || $0.contains("create-keychain") || $0.hasPrefix("codesign") })
+    }
+
+    // A certificate without its key cannot sign. The import must stop before any keychain change.
+    @Test func importOfABackupWithoutAKeyChangesNothing() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (p12, _) = try Self.makeP12(in: dir, passphrase: "secret", withKey: false)
+        var k = Keychain(file: false, password: false, identity: false)
+        k.acceptMake = true
+        let r = try Self.run(k, ["--import", p12.path], env: ["STRIPLE_SIGNING_P12_PASSWORD": "secret"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("\(p12.path) has no private key. It is not a backup of the identity. Nothing was changed."), "\(r.output)")
+        #expect(r.calls.isEmpty, "\(r.calls)")
     }
 
     @Test func importOfTheIdentityThatIsThereIsReady() throws {

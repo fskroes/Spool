@@ -4,6 +4,8 @@
 # Environment (all optional):
 #   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when
 #                          scripts/make-signing-cert.sh made it, else "-" (ad hoc).
+#                          When the local identity is not the one Packaging/updates.env pins
+#                          (STRIPLE_SIGNING_CERT_SHA1), the build stops.
 #   STRIPLE_ARCHS          architectures to build. Default: "arm64 x86_64" (universal).
 #   STRIPLE_FEED_URL       Sparkle appcast URL (https). Default: from Packaging/updates.env.
 #   STRIPLE_ED_PUBLIC_KEY  Sparkle EdDSA public key. Default: from Packaging/updates.env.
@@ -57,14 +59,24 @@ if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
 fi
 
 # Signing identity. LOCAL: the self-signed identity of make-signing-cert.sh (by its SHA-1, so a
-# certificate with the same name in another keychain is never used).
+# certificate with the same name in another keychain is never used). Packaging/updates.env pins
+# the identity of the releases: a build with another local identity stops.
 LOCAL=0
-if [[ -n "${SIGN_IDENTITY:-}" ]]; then
-    IDENTITY=$SIGN_IDENTITY
-elif IDENTITY=$(striple_signing_identity); then
-    LOCAL=1
-else
-    IDENTITY="-"
+PIN=$(striple_updates_value "$UPDATES_ENV" STRIPLE_SIGNING_CERT_SHA1)
+LOCAL_HASH=""
+[[ -n "${SIGN_IDENTITY:-}" ]] || LOCAL_HASH=$(striple_signing_identity) || LOCAL_HASH=""
+case "$(striple_build_identity "$PIN" "$LOCAL_HASH" "${SIGN_IDENTITY:-}")" in
+    explicit) IDENTITY=$SIGN_IDENTITY ;;
+    local) IDENTITY=$LOCAL_HASH; LOCAL=1 ;;
+    adhoc) IDENTITY="-" ;;
+    *) die "the local signing identity is $LOCAL_HASH, but Packaging/updates.env pins $PIN.
+An app with this identity loses the Accessibility permission of the installed copies.
+Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>.
+For a test build only: SIGN_IDENTITY=- make app (ad hoc)." ;;
+esac
+if [[ -n "$PIN" && $LOCAL -eq 0 ]]; then
+    warn "this build is not signed with the pinned identity $PIN (signed with: $IDENTITY).
+An installed copy of it asks for the Accessibility permission again. See docs/INSTALL.md."
 fi
 # Hardened runtime and secure timestamps need an Apple-issued identity (Developer ID or
 # Apple Development). With ad hoc or the self-signed local identity there is no Team ID,

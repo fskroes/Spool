@@ -159,13 +159,13 @@ Make a self-signed code signing certificate one time. Then each build has the sa
 
 The first command shows the steps. It reads and changes no keychain. The second command makes the identity "Striple Local Signing" and its backup.
 
-When `Packaging/updates.env` has a pin (`STRIPLE_SIGNING_CERT_SHA1`), the second command stops and makes nothing. A new identity would make every installed copy ask for the Accessibility permission again. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `STRIPLE_UPDATES_ENV` sets another file than `Packaging/updates.env`.
+When `Packaging/updates.env` has a pin (`STRIPLE_SIGNING_CERT_SHA1`), the second command stops and makes nothing. A new identity would make every installed copy ask for the Accessibility permission again. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `STRIPLE_UPDATES_ENV` sets another file than `Packaging/updates.env`. If that file is not there, the script stops: a missing file would turn the pin off.
 
 The script:
 
 1. Checks that it can write the backup file. If it cannot, it stops before it changes anything.
 2. Makes an RSA key and a certificate with the "Code Signing" extended key usage (`/usr/bin/openssl`, valid 10 years).
-3. Writes the backup `~/Striple-signing-identity.p12` (`STRIPLE_SIGNING_BACKUP` sets another path). The file is encrypted with a random passphrase that the script prints one time. The backup comes first, so a failure in a later step does not lose the key.
+3. Writes the backup `~/Striple-signing-identity.p12` (`STRIPLE_SIGNING_BACKUP` sets another path). The file is encrypted with a random passphrase. The script writes the passphrase to a file next to the backup, `~/Striple-signing-identity-passphrase.txt`, and does not print it: terminal output stays in scrollback and logs. Only you can read both files. If the passphrase file exists, the script stops before it changes anything. The backup comes first, so a failure in a later step does not lose the key.
 4. Makes a separate keychain, `~/Library/Keychains/striple-signing.keychain-db`, with a random password. The keychain does not lock itself.
 5. Puts that password in your login keychain as the item "Striple Local Signing keychain". Only `/usr/bin/security` can read it without a prompt.
 6. Imports the identity into the new keychain. Only `codesign` can use the key, and `set-key-partition-list` stops the "allow access" prompt.
@@ -175,7 +175,7 @@ The script:
 
 The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see. A passphrase can contain `"` and `\`: the script escapes them for `security -i`. It cannot contain a line break, and each `security -i` command must be shorter than 4000 bytes: `security -i` reads 4096 bytes at a time and runs the rest of a longer line as a second command. The script refuses such a value and runs nothing with it.
 
-**Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete the file. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
+**Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete both files. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
 
 Restore the identity from the backup (on a new Mac, or after `--remove`):
 
@@ -189,10 +189,10 @@ When you run the script again and the identity works, the script signs a test fi
 
 With a pin, the script accepts only the pinned identity. It stops and changes nothing when:
 
-- the backup that you import has another SHA-1,
+- the backup that you import has another SHA-1, or has no private key (also without a pin),
 - the keychain has another identity. Remove it with `--remove --yes`, then import the backup of the pinned identity.
 
-After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
+After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. When the keychain has another identity than the pin, `make app` stops. Without a local identity it signs ad hoc and warns. `SIGN_IDENTITY=- make app` makes an ad hoc test build on purpose. `make install` warns when the app is not signed with the pinned identity, because macOS then asks for the Accessibility permission again. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
 
 Check the identity:
 

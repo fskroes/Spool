@@ -157,6 +157,16 @@ import Testing
             """)
         }
 
+        /// The published feed has this text.
+        func feed(_ text: String) throws {
+            try write(web.appendingPathComponent(String(ReleaseRunTests.feed.dropFirst("https://".count))), text)
+        }
+
+        /// The archive of the published `version`, in the fake web.
+        func publishedZip(_ version: String) -> URL {
+            web.appendingPathComponent("github.com/\(ReleaseRunTests.releases)/releases/download/v\(version)/Striple-\(version).zip")
+        }
+
         /// gh answers `release view` for `tag` with this isDraft value ("true" or "false").
         func releaseState(_ tag: String, isDraft: String) throws {
             try write(state.appendingPathComponent(tag), isDraft + "\n")
@@ -203,6 +213,9 @@ import Testing
             [ -z "${FAKE_BAD_SIGNATURE:-}" ] || : > "$APP/Contents/_CodeSignature/invalid"
             [ -z "${FAKE_BUILD_COMMITS:-}" ] || git commit -q --allow-empty -m "a commit during the build"
             [ -z "${FAKE_BUILD_DIRTIES:-}" ] || echo x > stray.txt
+            [ -z "${FAKE_APP_MACOSX:-}" ] || mkdir -p "$APP/Contents/__MACOSX"
+            [ -z "${FAKE_APP_PRIVATE:-}" ] || { mkdir -p "$APP/Contents/Resources"; printf 'built in %s\n' "$HOME" > "$APP/Contents/Resources/where.txt"; }
+            [ -z "${FAKE_BUILD_MAKES_DRAFT:-}" ] || echo true > '\#(statePath)/v'"$(tr -d '[:space:]' < VERSION)"
             echo "==> Built $APP"
 
             """#, executable: true)
@@ -212,7 +225,11 @@ import Testing
             cd "$(dirname "$0")/.."
             V=$(plutil -extract CFBundleShortVersionString raw -o - dist/Striple.app/Contents/Info.plist)
             rm -f "dist/Striple-$V.dmg"
-            ditto -c -k --keepParent dist/Striple.app "dist/Striple-$V.dmg"
+            if [ -n "${FAKE_DMG_EMPTY:-}" ]; then
+              mkdir -p dist/empty && echo readme > dist/empty/README && ditto -c -k dist/empty "dist/Striple-$V.dmg"
+            else
+              ditto -c -k --keepParent dist/Striple.app "dist/Striple-$V.dmg"
+            fi
 
             """#, executable: true)
 
@@ -227,7 +244,7 @@ import Testing
             set -e
             while [ $# -gt 0 ]; do
               case "$1" in
-                --download-url-prefix) prefix=$2; shift ;;
+                --download-url-prefix) prefix=${FAKE_APPCAST_PREFIX:-$2}; shift ;;
                 -o) out=$2; shift ;;
                 --account|--link) shift ;;
                 -*) ;;
@@ -250,7 +267,7 @@ import Testing
             """#, executable: true)
             try write(sparkle + "sign_update", #"""
             #!/bin/sh
-            [ "$3" = --verify ] && [ "$5" = c2ln ]
+            [ -z "${FAKE_BAD_EDDSA:-}" ] && [ "$3" = --verify ] && [ "$5" = c2ln ]
             """#, executable: true)
 
             try write(bin.appendingPathComponent("gh"), #"""
@@ -259,7 +276,7 @@ import Testing
             W='\#(webPath)/github.com'
             S='\#(statePath)'
             case "$1 $2" in
-              "auth status") exit 0 ;;
+              "auth status") [ -z "${FAKE_GH_NO_AUTH:-}" ] ;;
               "api user") echo "${FAKE_GH_LOGIN:-fskroes}" ;;
               "api -X") exit 0 ;;
               "repo view") [ -z "${FAKE_GH_NO_REPO:-}" ] ;;
@@ -281,10 +298,12 @@ import Testing
                   case "$1" in --title|--notes-file) shift ;; --*) ;; *) cp "$1" "$d/" ;; esac
                   shift
                 done
+                [ -z "${FAKE_GH_CORRUPT_UPLOAD:-}" ] || for z in "$d"/*.zip; do printf x >> "$z"; done
                 echo true > "$S/$tag" ;;
               "release edit")
                 tag=$3 repo=$5
                 echo false > "$S/$tag"
+                [ -z "${FAKE_GH_NO_LATEST:-}" ] || exit 0
                 mkdir -p "$W/$repo/releases/latest/download"
                 cp "$W/$repo/releases/download/$tag/appcast.xml" "$W/$repo/releases/latest/download/" ;;
               *) echo "fake gh: unexpected: $*" >&2; exit 1 ;;
@@ -306,6 +325,9 @@ import Testing
             done
             file='\#(webPath)/'"${url#https://}"
             code=200
+            if [ "$url" = '\#(ReleaseRunTests.feed)' ] && [ -n "${FAKE_FEED_UNREACHABLE:-}" ]; then
+              echo "curl: (6) Could not resolve host: github.com" >&2; exit 6
+            fi
             if [ "$url" = '\#(ReleaseRunTests.feed)' ] && [ -n "${FAKE_FEED_CODE:-}" ]; then code=$FAKE_FEED_CODE
             elif [ ! -f "$file" ]; then code=404; fi
             if [ "$code" != 200 ] && [ $fail = 1 ]; then echo "curl: (22) The requested URL returned error: $code" >&2; exit 22; fi
@@ -316,6 +338,13 @@ import Testing
             #!/bin/sh
             for a; do app=$a; done
             sig="$app/Contents/_CodeSignature"
+            case "$app" in
+              */unpacked/*)
+                [ "$1" != --verify ] || [ -z "${FAKE_ZIP_BAD_SIGNATURE:-}" ] || { echo "$app: invalid signature" >&2; exit 1; }
+                if [ "$1" = -d ] && [ -n "${FAKE_ZIP_SIGNED_HASH:-}" ]; then
+                  echo "designated => identifier \"com.fskroes.Striple\" and certificate leaf = H\"$FAKE_ZIP_SIGNED_HASH\""; exit 0
+                fi ;;
+            esac
             case "$1" in
               --verify) [ -f "$sig/hash" ] && [ ! -e "$sig/invalid" ] || { echo "$app: invalid signature" >&2; exit 1; } ;;
               -d) echo "Executable=$app/Contents/MacOS/Striple" >&2
@@ -323,6 +352,8 @@ import Testing
               *) echo "fake codesign: unexpected: $*" >&2; exit 1 ;;
             esac
             """#, executable: true)
+            // The feed check after the publish tries 10 times, 3 seconds apart.
+            try write(bin.appendingPathComponent("sleep"), "#!/bin/sh\nexit 0\n", executable: true)
             try write(bin.appendingPathComponent("lipo"), #"""
             #!/bin/sh
             [ "$1" = -archs ] && echo "${FAKE_ARCHS:-x86_64 arm64}"
@@ -331,6 +362,7 @@ import Testing
             #!/bin/sh
             case "$1" in
               attach)
+                [ -z "${FAKE_DMG_ATTACH_FAIL:-}" ] || { echo "hdiutil: attach failed - image not recognized" >&2; exit 1; }
                 shift
                 while [ $# -gt 0 ]; do case "$1" in -mountpoint) mp=$2; shift ;; -*) ;; *) img=$1 ;; esac; shift; done
                 mkdir -p "$mp" && ditto -x -k "$img" "$mp" ;;
@@ -515,7 +547,7 @@ import Testing
         let f = try Fixture()
         let r = try f.release(env: env)
         try Self.expectRefused(r, message, f)
-        #expect(r.output.contains("==> Built dist/Striple.app"), "the check comes after the build")
+        #expect(r.output.contains("==> Building the app"), "the check comes after the build")
         #expect(!FileManager.default.fileExists(atPath: f.out.path))
     }
 
@@ -533,6 +565,176 @@ import Testing
         let r = try f.release(env: ["FAKE_BUILD_DIRTIES": "1"])
         try Self.expectRefused(r, "the app is not a build of", f)
         #expect(r.error.contains("the working tree changed during the release"))
+    }
+
+    // MARK: options, settings and tools
+
+    @Test(arguments: [
+        (["--bogus"], "error: unknown option: --bogus"),
+        (["--finish", "--dry-run"], "error: --finish takes no other option"),
+        (["--finish", "--new-identity"], "error: --finish takes no other option"),
+    ])
+    func aWrongOptionStopsTheRun(_ args: [String], _ message: String) throws {
+        let f = try Fixture()
+        let r = try f.exec("/bin/bash", [f.repo.appendingPathComponent("scripts/release.sh").path] + args)
+        try Self.expectRefused(r, message, f)
+    }
+
+    // Each value is needed: without one, the run cannot check the feed, the update key or the identity.
+    @Test(arguments: ["STRIPLE_RELEASES_REPO", "STRIPLE_FEED_URL", "STRIPLE_ED_PUBLIC_KEY", "STRIPLE_ED_KEY_ACCOUNT",
+                      "STRIPLE_SIGNING_CERT_SHA1"])
+    func aSettingThatIsMissingStopsTheRun(_ key: String) throws {
+        let f = try Fixture()
+        let file = f.repo.appendingPathComponent("Packaging/updates.env")
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines.contains { $0.hasPrefix(key + "=") })
+        try f.write("Packaging/updates.env", lines.filter { !$0.hasPrefix(key + "=") }.joined(separator: "\n") + "\n")
+        try f.sh("git commit -qam 'no \(key)'")
+        try Self.expectRefused(try f.release(), "Packaging/updates.env needs STRIPLE_RELEASES_REPO, STRIPLE_FEED_URL", f)
+    }
+
+    @Test func aFeedThatIsNotTheFeedOfTheRepositoryStopsTheRun() throws {
+        let f = try Fixture()
+        let file = f.repo.appendingPathComponent("Packaging/updates.env")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        try f.write("Packaging/updates.env", text.replacingOccurrences(of: "STRIPLE_FEED_URL=\(Self.feed)",
+                                                                      with: "STRIPLE_FEED_URL=https://example.com/appcast.xml"))
+        try f.sh("git commit -qam 'other feed'")
+        try Self.expectRefused(try f.release(), "STRIPLE_FEED_URL must be \(Self.feed)", f)
+    }
+
+    @Test func aVersionThatIsNotLike123StopsTheRun() throws {
+        let f = try Fixture()
+        try f.write("VERSION", "1.2\n")
+        try f.sh("git commit -qam 'short version'")
+        try Self.expectRefused(try f.release(), "VERSION must look like 1.2.3, got '1.2'", f)
+    }
+
+    @Test func aMissingSparkleToolStopsTheRun() throws {
+        let f = try Fixture()
+        try FileManager.default.removeItem(at: f.repo.appendingPathComponent(".build/artifacts/sparkle/Sparkle/bin/sign_update"))
+        try Self.expectRefused(try f.release("--dry-run"), "missing Sparkle tool: ", f)
+    }
+
+    // A dry run needs no gh. A real run needs it, logged in.
+    @Test func aRealRunNeedsGhLoggedIn() throws {
+        let f = try Fixture()
+        try Self.expectRefused(try f.release(env: ["FAKE_GH_NO_AUTH": "1"]), "gh is not logged in (run: gh auth login)", f)
+        try FileManager.default.removeItem(at: f.bin.appendingPathComponent("gh"))
+        try Self.expectRefused(try f.release(), "missing tool: gh (brew install gh, then gh auth login)", f)
+        let dry = try f.release("--dry-run")
+        #expect(dry.status == 0, "\(dry.all)")
+    }
+
+    // MARK: the published feed, more
+
+    @Test func aFeedThatCannotBeReadStopsTheRun() throws {
+        let f = try Fixture()
+        try Self.expectRefused(try f.release(env: ["FAKE_FEED_UNREACHABLE": "1"]), "cannot read \(Self.feed)", f)
+    }
+
+    @Test func aFeedWithoutAReleaseStopsTheRun() throws {
+        let f = try Fixture()
+        try f.feed("<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>Striple</title></channel></rss>\n")
+        try Self.expectRefused(try f.release(), "the published feed has no release item: \(Self.feed)", f)
+    }
+
+    @Test func aFeedItemWithoutAnArchiveStopsTheRun() throws {
+        let f = try Fixture()
+        try f.feed("""
+        <?xml version="1.0"?>
+        <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel><title>Striple</title>
+        <item><title>1.1.0</title><sparkle:version>2</sparkle:version><sparkle:shortVersionString>1.1.0</sparkle:shortVersionString></item>
+        </channel></rss>
+
+        """)
+        try Self.expectRefused(try f.release(), "the published feed has no enclosure URL", f)
+    }
+
+    // Without the published app, the run cannot check its identity and key.
+    @Test func aPublishedArchiveThatCannotBeReadStopsTheRun() throws {
+        let f = try Fixture()
+        try f.publish(version: "1.1.0", build: 2)
+        let zip = f.publishedZip("1.1.0")
+        try Data("not a zip\n".utf8).write(to: zip)
+        try Self.expectRefused(try f.release(), "cannot unpack \(Self.prefix("1.1.0"))Striple-1.1.0.zip", f)
+        try FileManager.default.removeItem(at: zip)
+        try Self.expectRefused(try f.release(), "cannot download \(Self.prefix("1.1.0"))Striple-1.1.0.zip", f)
+    }
+
+    static func prefix(_ version: String) -> String { "https://github.com/\(releases)/releases/download/v\(version)/" }
+
+    // MARK: --new-identity
+
+    @Test func newIdentityPublishesOverAReleaseWithAnotherIdentity() throws {
+        let f = try Fixture()
+        try f.publish(version: "1.1.0", build: 2, hash: Self.otherHash)
+        let r = try f.release("--new-identity")
+        #expect(r.status == 0, "\(r.all)")
+        #expect(r.error.contains("warning: the published 1.1.0 has another signing identity than \(Self.pin) (--new-identity)"), "\(r.all)")
+        #expect(r.output.contains("The published 1.1.0 has the same update key, and another signing identity (--new-identity)"))
+        #expect(try f.sh("git rev-parse 'v\(Self.version)^{commit}'") == (try f.head()))
+    }
+
+    // The option is for a change of identity only. The update key is checked as always.
+    @Test func newIdentityStopsWhenTheIdentityIsTheSameOrTheKeyIsNot() throws {
+        let f = try Fixture()
+        try f.publish(version: "1.1.0", build: 2)
+        try Self.expectRefused(try f.release("--new-identity"),
+                               "the published 1.1.0 is signed with \(Self.pin) already. Run without --new-identity.", f)
+        let g = try Fixture()
+        try g.publish(version: "1.1.0", build: 2, hash: Self.otherHash, key: Self.otherKey)
+        try Self.expectRefused(try g.release("--new-identity"), "the published 1.1.0 has another SUPublicEDKey", g)
+    }
+
+    // MARK: checks of the archive and the DMG, before the upload
+
+    @Test(arguments: [
+        (["FAKE_APPCAST_PREFIX": "https://example.com/"], "the appcast is not correct"),
+        (["FAKE_BAD_EDDSA": "1"], "the EdDSA signature of Striple-\(version).zip is not valid"),
+        (["FAKE_APP_MACOSX": "1"], "Striple-\(version).zip has __MACOSX entries"),
+        (["FAKE_ZIP_BAD_SIGNATURE": "1"], "the app in Striple-\(version).zip has no valid signature"),
+        (["FAKE_ZIP_SIGNED_HASH": otherHash.lowercased()], "the app in Striple-\(version).zip is not signed with the local identity"),
+        (["FAKE_APP_PRIVATE": "1"], "files in Striple-\(version).zip contain your home path, user name or Git email"),
+        (["FAKE_DMG_ATTACH_FAIL": "1"], "cannot open Striple.dmg"),
+        (["FAKE_DMG_EMPTY": "1"], "Striple.dmg has no Striple.app"),
+    ])
+    func aWrongArchiveStopsTheRunBeforeTheUpload(_ env: [String: String], _ message: String) throws {
+        let f = try Fixture()
+        let r = try f.release(env: env)
+        try Self.expectRefused(r, message, f)
+        #expect(r.output.contains("==> Making appcast.xml"), "the check comes after the files are made")
+        #expect(!FileManager.default.fileExists(atPath: f.out.appendingPathComponent("SHA256SUMS.txt").path))
+    }
+
+    // MARK: the publish
+
+    @Test func aGhLoginThatDoesNotOwnTheRepositoryStopsTheRun() throws {
+        let f = try Fixture()
+        try Self.expectRefused(try f.release(env: ["FAKE_GH_LOGIN": "someone"]),
+                               "gh is logged in as someone, but the releases repository is \(Self.releases)", f)
+    }
+
+    // Another run can make the release during this build: the check runs again before the upload.
+    @Test func aDraftMadeDuringTheBuildStopsTheRunBeforeTheUpload() throws {
+        let f = try Fixture()
+        let r = try f.release(env: ["FAKE_BUILD_MAKES_DRAFT": "1"])
+        try Self.expectRefused(r, "a draft release v\(Self.version) exists in \(Self.releases)", f)
+        #expect(r.output.contains("==> Building the app"))
+    }
+
+    // After the publish: the run tags only when the feed and the archive are the uploaded files.
+    @Test(arguments: [
+        (["FAKE_GH_NO_LATEST": "1"], "\(feed) does not return the new appcast"),
+        (["FAKE_GH_CORRUPT_UPLOAD": "1"], "the downloaded Striple-\(version).zip is not the same as the uploaded one"),
+    ])
+    func aPublishedReleaseThatIsNotTheUploadedOneIsNotTagged(_ env: [String: String], _ message: String) throws {
+        let f = try Fixture()
+        let r = try f.release(env: env)
+        #expect(r.status != 0)
+        #expect(r.error.contains(message), "\(r.all)")
+        #expect(f.ghCalls.contains("release edit v\(Self.version)"), "the release is published")
+        #expect(try f.tags().isEmpty, "no tag")
     }
 
     // MARK: --finish
@@ -573,6 +775,15 @@ import Testing
         let appcast = f.out.appendingPathComponent("appcast.xml")
         try (try String(contentsOf: appcast, encoding: .utf8) + "<!-- changed -->\n").write(to: appcast, atomically: true, encoding: .utf8)
         try Self.expectFinishRefused(f, "do not match SHA256SUMS.txt")
+    }
+
+    @Test func finishNeedsAnAppcastWithARelease() throws {
+        let f = try Self.publishedWithoutTag()
+        try f.sh("""
+        cd '\(f.out.path)' && printf '<rss version="2.0"><channel></channel></rss>\\n' > appcast.xml \
+          && shasum -a 256 Striple-\(Self.version).zip Striple.dmg appcast.xml > SHA256SUMS.txt
+        """)
+        try Self.expectFinishRefused(f, "appcast.xml has no release item")
     }
 
     @Test func finishNeedsTheCommitOfTheRelease() throws {

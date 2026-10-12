@@ -200,6 +200,41 @@ import Testing
         #expect(try Self.call("striple_dr_is_local", local, "com.fskroes.Striple", "").status == 1)
     }
 
+    // build-app.sh signs with the pinned identity only. Another local identity stops the build.
+    @Test func buildIdentityFollowsThePin() throws {
+        let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+        let other = "0123456789ABCDEF0123456789ABCDEF01234567"
+        #expect(try Self.call("striple_build_identity", pin, other, "Developer ID").output == "explicit")
+        #expect(try Self.call("striple_build_identity", pin, other, "-").output == "explicit")
+        #expect(try Self.call("striple_build_identity", pin, "", "").output == "adhoc")
+        #expect(try Self.call("striple_build_identity", "", "", "").output == "adhoc")
+        #expect(try Self.call("striple_build_identity", "", other, "").output == "local")
+        #expect(try Self.call("striple_build_identity", pin, pin.lowercased(), "").output == "local")
+        #expect(try Self.call("striple_build_identity", pin, other, "").output == "refuse")
+    }
+
+    @Test func installSignatureComparesTheAppWithThePin() throws {
+        let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+        let bundle = "com.fskroes.Striple"
+        let pinned = "designated => identifier \"\(bundle)\" and certificate leaf = H\"b608fa4f3d9a1fc14cdbab47421a660e429053dc\""
+        let other = "designated => identifier \"\(bundle)\" and certificate leaf = H\"0123456789abcdef0123456789abcdef01234567\""
+        let adHoc = "designated => cdhash H\"2d50fa83aa\""
+        #expect(try Self.call("striple_install_signature", "", adHoc, bundle).output == "nopin")
+        #expect(try Self.call("striple_install_signature", pin, pinned, bundle).output == "pinned")
+        #expect(try Self.call("striple_install_signature", pin, other, bundle).output == "other")
+        #expect(try Self.call("striple_install_signature", pin, adHoc, bundle).output == "other")
+        #expect(try Self.call("striple_install_signature", pin, pinned, "com.fskroes.Other").output == "other")
+    }
+
+    // /dev/null is the way to say "no settings" (no pin). A path that does not exist is a mistake.
+    @Test func updatesEnvIsAFileOrDevNull() throws {
+        let file = try Self.temp("updates.env", "STRIPLE_SIGNING_CERT_SHA1=\n")
+        #expect(try Self.call("striple_updates_env_usable", file.path).status == 0)
+        #expect(try Self.call("striple_updates_env_usable", "/dev/null").status == 0)
+        #expect(try Self.call("striple_updates_env_usable", file.path + ".missing").status == 1)
+        #expect(try Self.call("striple_updates_env_usable", file.deletingLastPathComponent().path).status == 1)
+    }
+
     @Test func sha1ComparisonIgnoresCaseColonsAndSpaces() throws {
         let hash = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
         #expect(try Self.call("striple_sha1_equal", hash, hash.lowercased()).status == 0)

@@ -254,3 +254,37 @@ striple_sha1_equal() {
     b=$(tr -d ' :' <<<"$2" | tr 'a-f' 'A-F')
     [[ "$a" =~ ^[0-9A-F]{40}$ && "$a" == "$b" ]]
 }
+
+# Status 0 when $1 can be the settings file: a file, or /dev/null (no settings, so no pin).
+# A path to a missing file must stop the caller: reading it gives no pin, and the pin then is off
+# without a word.
+striple_updates_env_usable() { [[ -f "$1" || "$1" == /dev/null ]]; }
+
+# Which identity a build signs with. $1: the pinned SHA-1 (empty: no pin). $2: the SHA-1 of the local
+# identity (empty: there is none). $3: SIGN_IDENTITY (empty: not set). Prints one word:
+#   explicit  SIGN_IDENTITY is set: sign with it. The pin does not apply.
+#   local     sign with the local identity: it is the pinned one, or there is no pin.
+#   adhoc     there is no local identity: sign ad hoc.
+#   refuse    the local identity is not the pinned one. A build with it loses the Accessibility
+#             permission of the installed copies, and release.sh refuses it.
+striple_build_identity() {
+    local pin=$1 hash=$2 explicit=$3
+    if [[ -n "$explicit" ]]; then echo explicit
+    elif [[ -z "$hash" ]]; then echo adhoc
+    elif [[ -z "$pin" ]] || striple_sha1_equal "$hash" "$pin"; then echo local
+    else echo refuse
+    fi
+}
+
+# How an app to install is signed, against the pin. $1: the pinned SHA-1 (empty: no pin). $2: the
+# designated requirement of the app (the output of `codesign -d -r -`). $3: the bundle ID. Prints one word:
+#   nopin   no pin is set.
+#   pinned  the app is signed with the pinned identity.
+#   other   the app is signed ad hoc or with another identity: macOS asks for the Accessibility
+#           permission again, and a later update signed with the pin asks again.
+striple_install_signature() {
+    if [[ -z "$1" ]]; then echo nopin
+    elif striple_dr_is_local "$2" "$3" "$1"; then echo pinned
+    else echo other
+    fi
+}

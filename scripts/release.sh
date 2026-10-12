@@ -17,9 +17,12 @@
 #      release, publishes it, downloads the feed and the archive again and compares them,
 #      then tags the commit of the build v<version> in this repository (local tag, nothing is pushed).
 #
-# Usage: scripts/release.sh [--dry-run | --finish]
-#   --finish  only step 5 after the publish: when a run published the release but stopped
-#             before the tag. It uses the files in dist/release/<version>/ of that run.
+# Usage: scripts/release.sh [--dry-run] [--new-identity] | --finish
+#   --finish        only step 5 after the publish: when a run published the release but stopped
+#                   before the tag. It uses the files in dist/release/<version>/ of that run.
+#   --new-identity  the published release has another signing identity, and this is on purpose
+#                   (the pinned identity was lost, see docs/RELEASING.md). Installed copies ask
+#                   for the Accessibility permission again after this update.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -37,15 +40,22 @@ readonly SPARKLE_BIN="$ROOT/.build/artifacts/sparkle/Sparkle/bin"
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+warn() { printf 'warning: %s\n' "$*" >&2; }
+
 DRY=0
 FINISH=0
-case "${1:-}" in
-    "") ;;
-    --dry-run) DRY=1 ;;
-    --finish) FINISH=1 ;;
-    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "unknown option: $1" ;;
-esac
+NEW_IDENTITY=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY=1 ;;
+        --finish) FINISH=1 ;;
+        --new-identity) NEW_IDENTITY=1 ;;
+        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option: $1" ;;
+    esac
+    shift
+done
+[[ $FINISH -eq 0 || ( $DRY -eq 0 && $NEW_IDENTITY -eq 0 ) ]] || die "--finish takes no other option"
 
 for tool in git curl ditto shasum plutil codesign xmllint lipo hdiutil; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
@@ -158,13 +168,24 @@ run: scripts/release.sh --finish. Else increase VERSION."
         mkdir "$TMP/published"
         ditto -x -k "$TMP/published.zip" "$TMP/published" || die "cannot unpack $PREV_URL"
         PREV_APP="$TMP/published/Striple.app"
-        striple_dr_is_local "$(codesign -d -r - "$PREV_APP" 2>&1)" "$BUNDLE_ID" "$HASH" \
-            || die "the published $PREV_VERSION is not signed with $HASH. Restore its identity from your backup
-(scripts/make-signing-cert.sh --import <file>), else every installed copy loses its Accessibility permission."
+        if striple_dr_is_local "$(codesign -d -r - "$PREV_APP" 2>&1)" "$BUNDLE_ID" "$HASH"; then
+            [[ $NEW_IDENTITY -eq 0 ]] || die "the published $PREV_VERSION is signed with $HASH already. Run without --new-identity."
+        elif [[ $NEW_IDENTITY -eq 1 ]]; then
+            warn "the published $PREV_VERSION has another signing identity than $HASH (--new-identity).
+Every installed copy asks for the Accessibility permission again after this update. Say so in the release notes."
+        else
+            die "the published $PREV_VERSION is not signed with $HASH. Restore its identity from your backup
+(scripts/make-signing-cert.sh --import <file>), else every installed copy loses its Accessibility permission.
+If the backup is lost: docs/RELEASING.md, \"The pinned identity is lost\"."
+        fi
         [[ "$(plutil -extract SUPublicEDKey raw -o - "$PREV_APP/Contents/Info.plist" 2>/dev/null)" == "$KEY" ]] \
             || die "the published $PREV_VERSION has another SUPublicEDKey than Packaging/updates.env.
 Installed copies would refuse this update. Use the key of the published release."
-        log "The published $PREV_VERSION has the same signing identity and update key"
+        if [[ $NEW_IDENTITY -eq 1 ]]; then
+            log "The published $PREV_VERSION has the same update key, and another signing identity (--new-identity)"
+        else
+            log "The published $PREV_VERSION has the same signing identity and update key"
+        fi
         ;;
     404)
         # Drafts are not public; a failed draft of this version is handled before the upload.

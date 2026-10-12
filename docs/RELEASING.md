@@ -45,7 +45,7 @@ The feed URL is `https://github.com/fskroes/striple-releases/releases/latest/dow
 
 2. The code signing identity. `STRIPLE_SIGNING_CERT_SHA1` in `Packaging/updates.env` pins it. On a new Mac, restore it from the backup in your password manager: `./scripts/make-signing-cert.sh --import <file>`. The script accepts only the pinned identity. When a pin is set, `./scripts/make-signing-cert.sh` without `--import` stops and makes nothing (see [INSTALL.md](INSTALL.md#keep-the-accessibility-permission-after-a-rebuild)).
 
-   Make a new identity only when there is no pin yet, or when you change the identity on purpose. A change makes every installed copy ask for the Accessibility permission again. For a change, use `./scripts/make-signing-cert.sh --new-identity`. **Put the backup file and the passphrase it prints in your password manager**, then delete the file. Then set `STRIPLE_SIGNING_CERT_SHA1` to the SHA-1 it prints.
+   Make a new identity only when there is no pin yet, or when you change the identity on purpose. A change makes every installed copy ask for the Accessibility permission again. For a change, use `./scripts/make-signing-cert.sh --new-identity`. **Put the backup file and its passphrase file in your password manager**, then delete both files. The script writes the passphrase to `~/Striple-signing-identity-passphrase.txt` (next to the backup) and does not print it. Then set `STRIPLE_SIGNING_CERT_SHA1` to the SHA-1 it prints.
 3. The Sparkle key pair exists already. Its public key is in `Packaging/updates.env`. **Make a backup of the private key** and keep it in your password manager:
 
    ```sh
@@ -109,9 +109,23 @@ If the script stops while the DMG is open, its exit handler detaches the DMG bef
 | "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
 | "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
 | "the local signing identity is …, but Packaging/updates.env pins …" | Restore the pinned identity: `./scripts/make-signing-cert.sh --remove --yes`, then `--import <backup file>`. |
+| "the local signing identity is …, but Packaging/updates.env pins …" from `make app` | The same fix. For a test build only: `SIGN_IDENTITY=- make app` (ad hoc). An installed ad hoc build asks for the Accessibility permission again. |
+| The backup of the pinned identity is lost | See [The pinned identity is lost](#the-pinned-identity-is-lost). |
 | "the Sparkle key … does not match" | Import the backup with `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -f <file>`. |
 | "dist/release/<version>/… is missing" from `make publish-finish` | The files of the run are not there. Run `make publish-finish` on the Mac and in the folder of the run. `make clean` keeps these files. If you deleted them, check the release on GitHub by hand and make the tag yourself: `git tag -a v<version> <commit>`. |
 | A bad release is out | Publish a fixed version with a higher `VERSION`. Do not delete a published archive: installed apps can be in the middle of an update. |
+
+## The pinned identity is lost
+
+Use this only when the backup `.p12` or its passphrase is gone, and the keychain does not have the identity. If the keychain still has it, `make app` and `make publish` work: keep that Mac, and do not run `--remove`.
+
+The identity cannot be made again: a new one has another SHA-1. A release with it works, but each installed copy asks for the Accessibility permission one more time after the update. Updates still install, because the EdDSA key does not change.
+
+1. Make a new identity and its backup: `./scripts/make-signing-cert.sh --remove --yes` (only if a broken keychain is there), then `./scripts/make-signing-cert.sh --new-identity`.
+2. Put the new `.p12` file and its passphrase file in your password manager. Delete both files.
+3. Set `STRIPLE_SIGNING_CERT_SHA1` in `Packaging/updates.env` to the new SHA-1 that the script prints. Commit it.
+4. In the `CHANGELOG.md` section of the next version, tell the users to give the Accessibility permission again after the update: System Settings > Privacy & Security > Accessibility > Striple.
+5. Publish with `./scripts/release.sh --new-identity` (a dry run first: `./scripts/release.sh --dry-run --new-identity`). `make publish` refuses this release, because the published release has the old identity ("the published … is not signed with …"). That check stops a change by mistake. `--new-identity` turns it into a warning, and stops when the published release has the new identity already. All other checks stay on.
 
 ## Test an update
 

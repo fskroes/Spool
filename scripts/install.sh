@@ -14,6 +14,10 @@ readonly BIN_DIR="$HOME/.local/bin"
 readonly LINK="$BIN_DIR/striple"
 # The system Applications folder. Tests point it at a temporary folder.
 readonly SYSTEM_APPS=${STRIPLE_SYSTEM_APPS:-/Applications}
+# The settings with the pinned signing identity. Tests point it at another file.
+readonly UPDATES_ENV=${STRIPLE_UPDATES_ENV:-$ROOT/Packaging/updates.env}
+# shellcheck source=release-lib.sh
+source "$ROOT/scripts/release-lib.sh"
 
 PREFIX=""
 PREFIX_GIVEN=0
@@ -172,6 +176,15 @@ if same_file "$SOURCE_APP" "$DEST"; then
 fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"
 codesign --verify --deep --strict "$SOURCE_APP" || die "$SOURCE_APP has a bad code signature. Run 'make app' again."
+# Another signature than the pinned one: macOS asks for the Accessibility permission again now,
+# and again after the next update (releases have the pinned signature).
+striple_updates_env_usable "$UPDATES_ENV" || die "$UPDATES_ENV not found. Set STRIPLE_UPDATES_ENV to the settings file."
+PIN=$(striple_updates_value "$UPDATES_ENV" STRIPLE_SIGNING_CERT_SHA1)
+if [[ "$(striple_install_signature "$PIN" "$(codesign -d -r - "$SOURCE_APP" 2>&1)" "$BUNDLE_ID")" == other ]]; then
+    warn "$SOURCE_APP is not signed with the pinned identity $PIN.
+After the install, macOS asks for the Accessibility permission again, and again after the next update.
+Build with the pinned identity: docs/INSTALL.md, \"Keep the Accessibility permission after a rebuild\"."
+fi
 
 [[ $DRY_RUN -eq 1 ]] && say "Dry run. Nothing is changed."
 say "Installing $SOURCE_APP to $DEST"

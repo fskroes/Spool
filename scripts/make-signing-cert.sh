@@ -19,7 +19,8 @@
 #
 # Usage: scripts/make-signing-cert.sh [--dry-run] [--new-identity]
 #          Make the identity. The backup goes to ~/Striple-signing-identity.p12
-#          (STRIPLE_SIGNING_BACKUP sets another path) and its passphrase is printed once.
+#          (STRIPLE_SIGNING_BACKUP sets another path), and its passphrase to a file next to it,
+#          ~/Striple-signing-identity-passphrase.txt. Only you can read both files.
 #          When a pin is set, this stops: restore the backup with --import.
 #          --new-identity makes a new identity anyway, to change the identity of the
 #          releases on purpose. Installed copies then ask for the Accessibility permission again.
@@ -42,6 +43,8 @@ readonly OPENSSL=/usr/bin/openssl   # LibreSSL: its PKCS#12 output is what `secu
 readonly WORK="$ROOT/.build/signing-cert"
 readonly DAYS=3650
 readonly BACKUP="${STRIPLE_SIGNING_BACKUP:-$HOME/Striple-signing-identity.p12}"
+# The passphrase goes to a file, not to the terminal: terminal output is kept in scrollback and logs.
+readonly PASSPHRASE_FILE="${BACKUP%.p12}-passphrase.txt"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -59,7 +62,7 @@ while [[ $# -gt 0 ]]; do
         --import) [[ $# -ge 2 ]] || die "--import needs a file"; MODE=import; IMPORT=$2; shift ;;
         --new-identity) NEW_IDENTITY=1 ;;
         --backup) [[ $# -ge 2 ]] || die "--backup needs a file"; REMOVE_BACKUP=$2; shift ;;
-        -h|--help) sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
     shift
@@ -69,6 +72,8 @@ done
 [[ $NEW_IDENTITY -eq 0 || $MODE == make || $MODE == dry ]] || die "--new-identity is only for making an identity"
 
 readonly UPDATES_ENV="${STRIPLE_UPDATES_ENV:-$ROOT/Packaging/updates.env}"
+# A missing file would read as "no pin" and turn the pin off.
+striple_updates_env_usable "$UPDATES_ENV" || die "$UPDATES_ENV not found. Set STRIPLE_UPDATES_ENV to the settings file. Nothing was changed."
 PIN=$(striple_updates_value "$UPDATES_ENV" STRIPLE_SIGNING_CERT_SHA1)
 if [[ -n "$PIN" ]]; then
     striple_sha1_equal "$PIN" "$PIN" || die "STRIPLE_SIGNING_CERT_SHA1 in $UPDATES_ENV is not a SHA-1: $PIN"
@@ -84,6 +89,15 @@ read_passphrase() {
         printf '\n' > /dev/tty
     fi
     export STRIPLE_SIGNING_P12_PASSWORD
+}
+
+# Status 0 when the PKCS#12 file $1 has a private key. The passphrase is in STRIPLE_SIGNING_P12_PASSWORD.
+# grep -c reads to the end: with grep -q, openssl can fail on a closed pipe (pipefail).
+p12_has_key() {
+    local keys
+    keys=$("$OPENSSL" pkcs12 -in "$1" -passin env:STRIPLE_SIGNING_P12_PASSWORD -nocerts -nodes 2>/dev/null \
+        | grep -c 'PRIVATE KEY') || keys=0
+    [[ $keys -gt 0 ]]
 }
 
 sha1_of_cert() { "$OPENSSL" x509 -in "$1" -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g' | tr 'a-f' 'A-F'; }
@@ -105,7 +119,7 @@ if [[ $MODE == dry ]]; then
     fi
     cat <<STEPS
 [dry-run] 1. openssl: make an RSA 2048 key and a certificate "CN=$STRIPLE_SIGNING_NAME" with the codeSigning usage ($DAYS days)
-[dry-run] 2. write the backup $BACKUP (PKCS#12, encrypted with a random passphrase that is printed once)
+[dry-run] 2. write the backup $BACKUP (PKCS#12, encrypted with a random passphrase) and the passphrase to $PASSPHRASE_FILE
 [dry-run] 3. security create-keychain $STRIPLE_SIGNING_KEYCHAIN with a random password (no auto-lock)
 [dry-run] 4. security add-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a $USER (the password, in the login keychain)
 [dry-run] 5. security import the identity into the new keychain, usable by /usr/bin/codesign only
@@ -144,10 +158,7 @@ Nothing was deleted."
                 | "$OPENSSL" x509 -noout -fingerprint -sha1 2>/dev/null | sed -e 's/.*=//' -e 's/://g') || BACKUP_HASH=""
             striple_sha1_equal "$BACKUP_HASH" "$PIN" \
                 || die "$REMOVE_BACKUP is not a backup of the pinned identity $PIN (${BACKUP_HASH:-cannot read it: wrong passphrase, or not a PKCS#12 file}). Nothing was deleted."
-            # grep -c reads to the end: with grep -q, openssl can fail on a closed pipe (pipefail).
-            KEYS=$("$OPENSSL" pkcs12 -in "$REMOVE_BACKUP" -passin env:STRIPLE_SIGNING_P12_PASSWORD -nocerts -nodes 2>/dev/null \
-                | grep -c 'PRIVATE KEY') || KEYS=0
-            [[ $KEYS -gt 0 ]] \
+            p12_has_key "$REMOVE_BACKUP" \
                 || die "$REMOVE_BACKUP has no private key. It is not a backup of the identity. Nothing was deleted."
             say "$REMOVE_BACKUP is a backup of the pinned identity $PIN."
         fi
@@ -189,6 +200,8 @@ if [[ $MODE == import ]]; then
     SUBJECT=$("$OPENSSL" x509 -in "$WORK/cert.pem" -noout -subject)
     [[ "$SUBJECT" == *"CN=$STRIPLE_SIGNING_NAME"* || "$SUBJECT" == *"CN = $STRIPLE_SIGNING_NAME"* ]] \
         || die "$IMPORT is not a \"$STRIPLE_SIGNING_NAME\" identity ($SUBJECT)"
+    # Before any keychain change: a certificate without its key cannot sign.
+    p12_has_key "$IMPORT" || die "$IMPORT has no private key. It is not a backup of the identity. Nothing was changed."
     NEW_HASH=$(sha1_of_cert "$WORK/cert.pem")
     if [[ -n "$PIN" ]] && ! striple_sha1_equal "$NEW_HASH" "$PIN"; then
         die "$IMPORT has the identity $NEW_HASH, but $UPDATES_ENV pins $PIN.
@@ -226,6 +239,9 @@ fi
 if [[ $MODE == make && -e "$BACKUP" ]]; then
     die "$BACKUP exists. Move it away, or restore it: scripts/make-signing-cert.sh --import $BACKUP"
 fi
+if [[ $MODE == make && ( -e "$PASSPHRASE_FILE" || -L "$PASSPHRASE_FILE" ) ]]; then
+    die "$PASSPHRASE_FILE exists. Move it away first. Nothing was changed."
+fi
 if [[ $MODE == make ]]; then
     [[ -d "$(dirname "$BACKUP")" && -w "$(dirname "$BACKUP")" ]] \
         || die "cannot write the backup to $(dirname "$BACKUP"). Set STRIPLE_SIGNING_BACKUP to a file in a folder you can write."
@@ -261,14 +277,18 @@ CNF
     # The backup comes before any keychain change: if a later step fails, the key is not lost.
     NEW_HASH=$(sha1_of_cert "$WORK/cert.pem")
     (umask 077 && cp "$WORK/identity.p12" "$BACKUP") || die "cannot write the backup $BACKUP"
+    # printf is a shell builtin: the passphrase is in no argument list. set -C: never write into an existing file.
+    (umask 077 && set -C && printf '%s\n' "$STRIPLE_SIGNING_P12_PASSWORD" > "$PASSPHRASE_FILE") \
+        || die "cannot write the passphrase file $PASSPHRASE_FILE"
     cat <<BACKUP_NOTE
 
 Back up the identity now. Without the backup, a new Mac or a lost keychain means a new identity,
 and every installed Striple asks for the Accessibility permission again after the next update.
   File:       $BACKUP
-  Passphrase: $STRIPLE_SIGNING_P12_PASSWORD
+  Passphrase: in $PASSPHRASE_FILE
   SHA-1:      $NEW_HASH
-Put the file and the passphrase in your password manager, then delete the file: rm "$BACKUP"
+Put the file and the passphrase in your password manager, then delete both files:
+  rm "$BACKUP" "$PASSPHRASE_FILE"
 Restore it with: scripts/make-signing-cert.sh --import <file>
 
 BACKUP_NOTE
