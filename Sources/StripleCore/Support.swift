@@ -31,8 +31,10 @@ public struct Session: Codable, Equatable, Sendable {
     ///
     /// Order of matching: same window ID and app, then same app and title, then same app
     /// in saved order. Saved windows with no match are dropped. Live windows with no
-    /// match are returned in `unmatched` so the engine can insert them normally.
-    public func restore(live: [WindowInfo]) -> (strips: [SessionStrip], floating: Set<WindowID>, unmatched: [WindowInfo]) {
+    /// match are returned in `unmatched` so the engine can insert them normally. Saved floating
+    /// windows with no match are returned in `unmatchedFloating`.
+    public func restore(live: [WindowInfo]) -> (strips: [SessionStrip], floating: Set<WindowID>, unmatched: [WindowInfo],
+                                                 unmatchedFloating: [WindowInfo]) {
         var pool = live
         func take(_ saved: WindowInfo) -> WindowInfo? {
             if let i = pool.firstIndex(where: { $0.id == saved.id && $0.bundleID == saved.bundleID }) { return pool.remove(at: i) }
@@ -91,7 +93,44 @@ public struct Session: Codable, Equatable, Sendable {
             strip.focusedColumn = min(newFocus ?? min(saved.strip.focusedColumn, columns.count - 1), columns.count - 1)
             out.append(SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip))
         }
-        return (out, floatingIDs, pool)
+        let lostFloating = floating.indices.filter { floatingResolved[$0] == nil }.map { floating[$0] }
+        return (out, floatingIDs, pool, lostFloating)
+    }
+
+    /// Splits the saved strips into the ones to restore now and the ones to keep for later.
+    ///
+    /// macOS lists only the windows of the Spaces on screen (`kAXWindows`). A strip of another Space has
+    /// no live windows yet, so restoring it now would drop it. It is kept until its Space comes on screen.
+    /// - visible: the current Space of each display.
+    /// - known: every Space that exists. Empty when Striple cannot read Spaces: then all strips restore now.
+    ///   A strip of a Space that no longer exists also restores now.
+    public func partition(visible: Set<UInt64>, known: Set<UInt64>) -> (now: Session, later: [SessionStrip]) {
+        var now: [SessionStrip] = []
+        var later: [SessionStrip] = []
+        for s in strips {
+            if s.spaceID != 0, !visible.contains(s.spaceID), known.contains(s.spaceID) { later.append(s) } else { now.append(s) }
+        }
+        return (Session(strips: now, floating: floating), later)
+    }
+
+    /// Adds the strips and floating windows kept for later, so a save does not lose them.
+    /// Windows that Striple manages now are left out, so no window is saved twice.
+    public func merging(later: [SessionStrip], laterFloating: [WindowInfo], managed: Set<WindowID>) -> Session {
+        var out = self
+        for saved in later {
+            var strip = saved.strip
+            for w in strip.allWindows where managed.contains(w.id) { _ = strip.remove(w.id) }
+            guard !strip.isEmpty else { continue }
+            if let i = out.strips.firstIndex(where: { $0.displayID == saved.displayID && $0.spaceID == saved.spaceID }) {
+                out.strips[i].strip.columns += strip.columns
+            } else {
+                out.strips.append(SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip))
+            }
+        }
+        out.strips.sort { ($0.displayID, $0.spaceID) < ($1.displayID, $1.spaceID) }
+        let have = Set(out.floating.map(\.id))
+        out.floating += laterFloating.filter { !managed.contains($0.id) && !have.contains($0.id) }
+        return out
     }
 }
 

@@ -101,6 +101,13 @@ public enum Layout {
         public var hidden: Bool
     }
 
+    /// Rounds origin and size each on their own. `CGRect.integral` rounds the edges outward, so the
+    /// width changes by 1 pt when the origin is fractional. Each change is an extra AX resize while
+    /// the strip scrolls.
+    public static func pixelAligned(_ r: CGRect) -> CGRect {
+        CGRect(x: r.origin.x.rounded(), y: r.origin.y.rounded(), width: r.width.rounded(), height: r.height.rounded())
+    }
+
     /// Turns a frame on the strip into a frame macOS accepts.
     ///
     /// - Partly out of view on a side without another display: left as is.
@@ -110,7 +117,7 @@ public enum Layout {
     public static func physical(_ frame: CGRect, display: DisplayGeometry, settings: LayoutSettings) -> Placement {
         let d = display.frame
         let sliver = CGFloat(settings.parkedSliver)
-        var f = frame.integral
+        var f = pixelAligned(frame)
         if f.maxX > d.maxX {
             let hidden = display.neighborRight ? f.midX > d.maxX : f.minX > d.maxX - sliver
             if hidden { return park(f, toRight: true, display: display, sliver: sliver) }

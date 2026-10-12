@@ -94,6 +94,31 @@ enum Policy {
         return r
     }
 
+    /// Where a window goes when Striple lets it go (stop, quit, rebuild).
+    ///
+    /// - target: the strip frame the animation runs toward, for a tiled window on a Space on screen. The window
+    ///   goes to its final place, not to a frame from the middle of the animation.
+    /// - known: otherwise the last frame Striple wrote (or the parked frame of a hidden or minimized window).
+    static func releaseFrame(target: CGRect?, known: CGRect?, display: DisplayGeometry, settings: LayoutSettings) -> CGRect? {
+        let area = display.usable
+        if let target { return bringIntoView(Layout.physical(target, display: display, settings: settings).frame, area: area) }
+        return known.map { bringIntoView($0, area: area) }
+    }
+
+    /// Whether a Space is one of a display's Spaces. True when Spaces are unknown, so nothing is hidden by mistake.
+    /// `known` comes from `Spaces.all()`: "Main" holds all Spaces when displays do not have separate Spaces.
+    static func spaceExists(_ space: UInt64, onDisplay display: String, known: [String: Set<UInt64>]) -> Bool {
+        if space == 0 || known.isEmpty { return true }
+        return (known[display] ?? known["Main"] ?? []).contains(space)
+    }
+
+    /// A left-button drag that moved more than `threshold` points. A click that does not move is not a drag,
+    /// even when Striple's own animation moves the window under the mouse.
+    static func isDrag(from down: CGPoint?, to now: CGPoint, threshold: CGFloat = 4) -> Bool {
+        guard let down else { return false }
+        return hypot(now.x - down.x, now.y - down.y) > threshold
+    }
+
     /// The same place on another display: keeps the position relative to the usable area.
     static func translate(_ frame: CGRect, from a: CGRect, to b: CGRect) -> CGRect {
         let rx = a.width > frame.width ? (frame.minX - a.minX) / (a.width - frame.width) : 0

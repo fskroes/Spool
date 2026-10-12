@@ -108,3 +108,46 @@ import Testing
         #expect(Policy.adoptedWidth(1, metrics: m) == .proportion(0.05))
     }
 }
+
+@Suite struct ReleaseAndDragTests {
+    let display = DisplayGeometry(frame: CGRect(x: 0, y: 0, width: 1200, height: 900),
+                                  usable: CGRect(x: 0, y: 25, width: 1200, height: 875),
+                                  neighborLeft: false, neighborRight: false, neighborBelow: false)
+
+    @Test func releaseUsesTheAnimationTargetNotTheLastFrame() {
+        // Stopped in the middle of an animation: the window goes to the place it was moving to.
+        let target = CGRect(x: 300, y: 35, width: 500, height: 600)
+        #expect(Policy.releaseFrame(target: target, known: CGRect(x: 120, y: 35, width: 500, height: 600),
+                                    display: display, settings: LayoutSettings()) == target)
+    }
+
+    @Test func releaseBringsAParkedTargetIntoView() {
+        let r = Policy.releaseFrame(target: CGRect(x: 2000, y: 35, width: 500, height: 600), known: nil,
+                                    display: display, settings: LayoutSettings())
+        #expect(r.map { display.usable.contains($0) } == true)
+    }
+
+    @Test func releaseOfAHiddenWindowUsesItsParkedFrame() {
+        // Parked at the bottom right corner with a 1 pt sliver, then the app was hidden.
+        let parked = CGRect(x: 1199, y: 899, width: 500, height: 600)
+        let r = Policy.releaseFrame(target: nil, known: parked, display: display, settings: LayoutSettings())
+        #expect(r == CGRect(x: 700, y: 300, width: 500, height: 600))
+        #expect(Policy.releaseFrame(target: nil, known: nil, display: display, settings: LayoutSettings()) == nil)
+    }
+
+    @Test func onlyAMovedMouseIsADrag() {
+        #expect(!Policy.isDrag(from: nil, to: CGPoint(x: 50, y: 50)))
+        #expect(!Policy.isDrag(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 12, y: 13)))
+        #expect(Policy.isDrag(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 15, y: 10)))
+    }
+
+    @Test func spaceOfARemovedDisplay() {
+        let known: [String: Set<UInt64>] = ["A": [1, 2], "B": [5]]
+        #expect(Policy.spaceExists(2, onDisplay: "A", known: known))
+        // macOS has not moved Space 5 to display A (yet): the column must go to A's current Space.
+        #expect(!Policy.spaceExists(5, onDisplay: "A", known: known))
+        #expect(Policy.spaceExists(5, onDisplay: "Z", known: ["Main": [5]]))
+        #expect(Policy.spaceExists(9, onDisplay: "A", known: [:]))
+        #expect(Policy.spaceExists(0, onDisplay: "A", known: known))
+    }
+}

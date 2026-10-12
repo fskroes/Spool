@@ -180,6 +180,17 @@ func layoutSettings(_ mode: CenterMode = .onOverflow) -> LayoutSettings {
         #expect(l.hidden && l.frame.maxX == 1)
     }
 
+    @Test func widthDoesNotChangeWhileTheStripScrolls() {
+        // A fractional scroll offset must not change the size, or each frame is an extra AX resize.
+        var widths = Set<CGFloat>()
+        for step in 0..<40 {
+            let f = CGRect(x: 100 + CGFloat(step) * 0.37, y: 35.5, width: 499.6, height: 500)
+            widths.insert(Layout.physical(f, display: display(), settings: s).frame.width)
+        }
+        #expect(widths == [500])
+        #expect(Layout.pixelAligned(CGRect(x: 10.4, y: 0.6, width: 99.5, height: 50.2)) == CGRect(x: 10, y: 1, width: 100, height: 50))
+    }
+
     @Test func displayBelowKeepsYWhenParked() {
         let p = Layout.physical(CGRect(x: 1500, y: 35, width: 400, height: 500), display: display(below: true), settings: s)
         #expect(p.frame.minY == 35)

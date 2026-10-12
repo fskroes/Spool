@@ -30,11 +30,11 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 | F10 | Trackpad swipe with 3 or 4 fingers, with fling and snap | Settings > General |
 | F11 | Drag a window to a new place in the strip; resize from an edge sets the column width | mouse |
 | F12 | Multi-monitor, one strip each, turn Striple off per display | Settings > Displays, `⌃⌥N` |
-| F13 | The strips come back after a restart of the app | automatic |
+| F13 | The strips come back after a restart of the app, also on Spaces not on screen (restored when you go there) and after a start while the screen is locked | automatic |
 | F14 | Launch at login and start tiling at launch | Settings > General |
 | F15 | Per-app rules (tile, float, fixed place) and smart floating for dialogs | Settings > App Rules |
 | F16 | CLI, URL scheme and Raycast scripts | [docs/CLI.md](docs/CLI.md) |
-| F17 | Sparkle updates, engine log, restart after a crash | menu bar menu |
+| F17 | Sparkle updates, engine log, restart after a crash; repairs a dead app observer and stops cleanly when the Accessibility permission is removed | menu bar menu |
 | F18 | Native fullscreen windows leave the strip and come back | automatic |
 | F19 | No focus stealing by apps that open windows on their own | Settings > General |
 | F20 | Focus follows mouse, mouse follows focus | Settings > General |
@@ -57,6 +57,8 @@ How Striple stays fast:
 - Each app gets its own write queue, so a slow app does not hold up the others.
 - When an app is still busy, only the newest frame for each window is kept. Older frames are dropped, not queued.
 - A frame that has not changed is not written again.
+- Frames are rounded per origin and per size, so a scrolling window keeps its width and gets no extra resize.
+- `AXEnhancedUserInterface` (which makes Chrome and Electron apps animate every move) is read and turned off once per app per animation, not on every frame.
 - The animation ticker runs only while something moves.
 
 `striple stats` shows the live p50 and p95 frame-write time and command latency.

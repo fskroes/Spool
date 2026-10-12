@@ -23,7 +23,21 @@ extension Engine {
     }
 
     /// Finds every window of every app. With a session, puts known windows back in their saved places.
-    func scanAll(session: Session?) {
+    /// Without one, restores the saved strips that were waiting for their Space (or for the screen to unlock).
+    func scanAll(session explicit: Session?) {
+        var session = explicit
+        if session == nil, !laterStrips.isEmpty || !laterFloating.isEmpty {
+            session = Session(strips: laterStrips, floating: laterFloating)
+            laterStrips = []
+            laterFloating = []
+        }
+        // While the screen is locked AX shows no windows, so nothing would match. Keep the session until it unlocks.
+        if let s = session, ScreenLock.isLocked {
+            laterStrips = s.strips
+            laterFloating = s.floating
+            session = nil
+            log.log("session: screen is locked, restoring after it unlocks")
+        }
         var fresh: [Candidate] = []
         for app in WindowTracker.manageableApps() {
             let pid = app.processIdentifier
@@ -37,8 +51,14 @@ extension Engine {
         if !alive.isEmpty {
             for id in Array(windows.keys) where !alive.contains(id) { remove(id) }
         }
+        if let s = session {
+            let known = Set(Spaces.all().values.joined())
+            let split = s.partition(visible: Set(activeSpaces.values), known: known)
+            laterStrips = split.later
+            session = split.now
+        }
         guard let session, !session.strips.isEmpty || !session.floating.isEmpty else {
-            for c in fresh { adopt(c, isNew: false) }
+            for c in fresh { adopt(c, isNew: false, inScan: true) }
             return
         }
         var byID: [WindowID: Candidate] = [:]
@@ -48,14 +68,14 @@ extension Engine {
                 byID[c.info.id] = c
                 live.append(c.info)
             } else {
-                adopt(c, isNew: false)
+                adopt(c, isNew: false, inScan: true)
             }
         }
         let restored = session.restore(live: live)
         for saved in restored.strips {
             guard let first = saved.strip.allWindows.first, let c = byID[first.id] else { continue }
             guard let key = stripKey(for: first.id, element: c.element, preferredDisplay: saved.displayID) else {
-                for w in saved.strip.allWindows { if let c = byID[w.id] { adopt(c, isNew: false) } }
+                for w in saved.strip.allWindows { if let c = byID[w.id] { adopt(c, isNew: false, inScan: true) } }
                 continue
             }
             var strip = strips[key] ?? Strip()
@@ -72,9 +92,11 @@ extension Engine {
             windows[id]?.userFloating = true
         }
         for info in restored.unmatched {
-            if let c = byID[info.id] { adopt(c, isNew: false) }
+            if let c = byID[info.id] { adopt(c, isNew: false, inScan: true) }
         }
-        log.log("session: restored \(restored.strips.count) strips, \(restored.unmatched.count) new windows")
+        // A saved floating window that still exists is on a Space not on screen. One that is gone is dropped.
+        laterFloating = restored.unmatchedFloating.filter { alive.isEmpty || alive.contains($0.id) }
+        log.log("session: restored \(restored.strips.count) strips, \(restored.unmatched.count) new windows, \(laterStrips.count) strips wait for their Space")
     }
 
     /// Finds new windows of one app (after launch, or when its observer came up late).
@@ -107,8 +129,8 @@ extension Engine {
         return StripKey(display: d.uuid, space: space)
     }
 
-    /// Starts managing a window as its rules say.
-    func adopt(_ c: Candidate, isNew: Bool) {
+    /// Starts managing a window as its rules say. `inScan`: part of `scanAll`, whose caller lays out all strips once.
+    func adopt(_ c: Candidate, isNew: Bool, inScan: Bool = false) {
         let now = isNew ? CACurrentMediaTime() : 0
         switch c.decision {
         case .ignore:
@@ -130,7 +152,7 @@ extension Engine {
             strip.insert(c.info, width: .proportion(config.layout.defaultWidth), slot: slot, focus: focus)
             if focus, let m = metrics(key) { strip.ensureFocusVisible(settings: config.layout, metrics: m) }
             strips[key] = strip
-            if isNew {
+            if !inScan {
                 relayout(key)
                 if focus { showMinimap(key) }
                 scheduleSessionSave()
@@ -162,6 +184,29 @@ extension Engine {
     func windowID(of element: AXUIElement, pid: pid_t) -> WindowID? {
         if let id = AX.windowID(element), windows[id] != nil { return id }
         return windows.first { $0.value.info.pid == pid && CFEqual($0.value.element, element) }?.key
+    }
+
+    /// Watches an app again and takes fresh AX elements for its windows. Used when all writes to it fail.
+    func healApp(_ pid: pid_t) {
+        guard NSRunningApplication(processIdentifier: pid) != nil else { return removeApp(pid) }
+        tracker?.rewatch(pid)
+        var fresh: [WindowID: AXUIElement] = [:]
+        for e in AX.elements(AX.app(pid), kAXWindowsAttribute) {
+            if let id = AX.windowID(e) { fresh[id] = e }
+        }
+        var renewed = 0
+        for (id, w) in windows where w.info.pid == pid {
+            // A window that is not listed may be on another Space; keep its old element.
+            guard let e = fresh[id] else { continue }
+            windows[id]?.element = e
+            writer.register(id, element: e, pid: pid)
+            tracker?.observe(window: e, pid: pid)
+            applier.forget(id)
+            renewed += 1
+        }
+        scanApp(pid)
+        relayoutAll(animate: false)
+        log.log("tracker: pid \(pid) watched again, \(renewed) window elements renewed")
     }
 
     // MARK: Tracker events
@@ -321,6 +366,7 @@ extension Engine {
             if let m = metrics(key) { strip.ensureFocusVisible(settings: config.layout, metrics: m) }
             strips[key] = strip
             w.state = state
+            if let p = placements[id], p.hidden { w.parkedFrame = p.frame }
             windows[id] = w
             placements[id] = nil
             relayout(key)
@@ -350,6 +396,7 @@ extension Engine {
         w.state = .tiled
         w.key = key
         w.userFloating = false
+        w.parkedFrame = nil
         windows[id] = w
         applier.forget(id)
         relayout(key)
@@ -497,20 +544,25 @@ extension Engine {
         refreshDisplays()
         let live = Set(displays.map(\.uuid))
         if let main = displays.first {
-            let target = activeKey(main)
+            let known = Spaces.all()
             for key in Array(strips.keys) where !live.contains(key.display) {
                 guard let orphan = strips.removeValue(forKey: key) else { continue }
                 animators[key] = nil
                 layouts[key] = nil
-                var strip = strips[target] ?? Strip()
-                strip.columns += orphan.columns
-                strips[target] = strip
-                for w in orphan.allWindows { windows[w.id]?.key = target }
-                log.log("displays: moved \(orphan.allWindows.count) windows from a removed display to \(main.name)")
+                // Each column goes to the display and Space macOS moved its first window to.
+                for column in orphan.columns {
+                    let target = orphanTarget(column, main: main, known: known)
+                    var strip = strips[target] ?? Strip()
+                    strip.columns.append(column)
+                    strips[target] = strip
+                    for w in column.windows { windows[w.id]?.key = target }
+                }
+                log.log("displays: moved \(orphan.allWindows.count) windows from a removed display")
             }
         }
         overlays.hideAll()
         scanAll(session: nil)
+        reconcileSpaces()
         for (key, var strip) in strips {
             guard let m = metrics(key) else { continue }
             strip.ensureFocusVisible(settings: config.layout, metrics: m)
@@ -520,16 +572,48 @@ extension Engine {
         syncFocusWithSystem()
     }
 
-    /// Moves windows into view on their display. Used when Striple stops, so no window stays parked at an edge.
-    func releaseWindows(_ ids: [WindowID]) {
+    /// The strip for a column whose display was removed. A Space that macOS has not put on a live display
+    /// would hide the column on a strip nobody shows, so that falls back to the display's current Space.
+    private func orphanTarget(_ column: Column, main: EngineDisplay, known: [String: Set<UInt64>]) -> StripKey {
+        guard let first = column.windows.first, let w = windows[first.id],
+              let key = stripKey(for: first.id, element: w.element), let d = display(key.display) else { return activeKey(main) }
+        return Policy.spaceExists(key.space, onDisplay: key.display, known: known) ? key : activeKey(d)
+    }
+
+    /// Moves every window Striple parked back into view and waits until the apps have done it (at most
+    /// `timeout` seconds), then gives the apps back their AXEnhancedUserInterface setting. Used by stop and rebuild,
+    /// so no window stays parked at an edge.
+    func releaseAll(timeout: Double = 2) {
         var writes: [FrameWrite] = []
-        for id in ids {
-            guard let w = windows[id], let key = w.key, let d = display(key.display),
-                  let f = applier.lastWritten(id) ?? AX.frame(w.element) else { continue }
-            let r = Policy.bringIntoView(f, area: d.geometry.usable)
-            if r != f { writes.append(FrameWrite(id: id, pid: w.info.pid, frame: r)) }
+        for (id, w) in windows {
+            let target: CGRect?
+            let known: CGRect?
+            switch w.state {
+            case .tiled:
+                if let key = w.key, isActive(key), let f = layouts[key]?.frames[id] {
+                    target = f
+                    known = nil
+                } else {
+                    target = nil
+                    known = placements[id]?.frame ?? applier.lastWritten(id) ?? AX.frame(w.element)
+                }
+            case .hidden, .minimized:
+                target = nil
+                known = w.parkedFrame
+            case .floating, .fullscreen:
+                // Never parked: a floating window that left the strip was brought into view then. Writing an old
+                // frame back would undo where the user put it.
+                continue
+            }
+            let disp = w.key.flatMap { display($0.display) }
+                ?? known.flatMap { display(containing: CGPoint(x: $0.midX, y: $0.midY)) } ?? displays.first
+            guard let d = disp,
+                  let r = Policy.releaseFrame(target: target, known: known, display: d.geometry, settings: config.layout) else { continue }
+            writes.append(FrameWrite(id: id, pid: w.info.pid, frame: r))
         }
-        guard !writes.isEmpty else { return }
-        applier.applyAndWait(writes)
+        if !writes.isEmpty, applier.applyAndWait(writes, timeout: timeout) == nil {
+            log.log("release: an app did not answer within \(timeout) s, some windows may stay parked")
+        }
+        if !applier.settleAndWait(timeout: 1) { log.log("release: an app did not answer the settle call") }
     }
 }

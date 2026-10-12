@@ -128,6 +128,58 @@ import Testing
     @Test func missingWindowsAreDropped() {
         let r = saved().restore(live: [])
         #expect(r.strips.isEmpty)
+        #expect(r.unmatchedFloating.map(\.id) == [20])
+    }
+
+    func twoSpaces() -> Session {
+        var other = Strip()
+        other.insert(win(30, "mail", "Inbox"), width: .proportion(0.5), focus: true)
+        var s = saved()
+        s.strips.append(SessionStrip(displayID: "D1", spaceID: 8, strip: other))
+        return s
+    }
+
+    @Test func stripsOfSpacesNotOnScreenWait() {
+        // Space 8 exists but is not on screen: AX cannot see its windows yet.
+        let p = twoSpaces().partition(visible: [7], known: [7, 8])
+        #expect(p.now.strips.map(\.spaceID) == [7])
+        #expect(p.now.floating.map(\.id) == [20])
+        #expect(p.later.map(\.spaceID) == [8])
+    }
+
+    @Test func stripsOfRemovedSpacesOrUnknownSpacesRestoreNow() {
+        #expect(twoSpaces().partition(visible: [7], known: [7]).later.isEmpty)
+        #expect(twoSpaces().partition(visible: [0], known: []).later.isEmpty)
+    }
+
+    @Test func savingKeepsTheWaitingStrips() {
+        let p = twoSpaces().partition(visible: [7], known: [7, 8])
+        let live = Session(strips: p.now.strips, floating: [])
+        let merged = live.merging(later: p.later, laterFloating: [win(21, "calc", "Other")], managed: [10, 11, 12])
+        #expect(merged.strips.map(\.spaceID) == [7, 8])
+        #expect(ids(merged.strips[1].strip) == [[30]])
+        #expect(merged.floating.map(\.id) == [21])
+    }
+
+    @Test func aWindowManagedNowIsNotSavedTwice() {
+        // Window 30 was moved to Space 7 while Striple was off; it is managed there now.
+        let p = twoSpaces().partition(visible: [7], known: [7, 8])
+        var strip = p.now.strips[0].strip
+        strip.insert(win(30, "mail", "Inbox"), width: .proportion(0.5), focus: false)
+        let live = Session(strips: [SessionStrip(displayID: "D1", spaceID: 7, strip: strip)], floating: [])
+        let merged = live.merging(later: p.later, laterFloating: [win(20, "calc", "Calc")], managed: [10, 11, 12, 20, 30])
+        #expect(merged.strips.map(\.spaceID) == [7])
+        #expect(merged.floating.isEmpty)
+    }
+
+    @Test func waitingStripOnTheSameKeyIsAppended() {
+        var a = Strip()
+        a.insert(win(40, "x", "a"), width: .proportion(0.5), focus: true)
+        var b = Strip()
+        b.insert(win(41, "y", "b"), width: .proportion(0.5), focus: true)
+        let live = Session(strips: [SessionStrip(displayID: "D1", spaceID: 8, strip: a)], floating: [])
+        let merged = live.merging(later: [SessionStrip(displayID: "D1", spaceID: 8, strip: b)], laterFloating: [], managed: [40])
+        #expect(ids(merged.strips[0].strip) == [[40], [41]])
     }
 
     @Test func codableRoundTrip() throws {

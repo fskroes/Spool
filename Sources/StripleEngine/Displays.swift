@@ -53,6 +53,7 @@ enum Spaces {
     private typealias MainConnection = @convention(c) () -> Int32
     private typealias CurrentSpace = @convention(c) (Int32, CFString) -> UInt64
     private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private typealias DisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
 
     private static func load<T>(_ name: String, as: T.Type) -> T? {
         guard let s = dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) else { return nil }
@@ -62,12 +63,27 @@ enum Spaces {
     private static let mainConnection = load("CGSMainConnectionID", as: MainConnection.self)
     private static let currentSpace = load("CGSManagedDisplayGetCurrentSpace", as: CurrentSpace.self)
     private static let spacesForWindows = load("CGSCopySpacesForWindows", as: SpacesForWindows.self)
+    private static let displaySpaces = load("CGSCopyManagedDisplaySpaces", as: DisplaySpaces.self)
 
     static var available: Bool { mainConnection != nil && currentSpace != nil }
 
     static func current(displayUUID: String) -> UInt64 {
         guard let c = mainConnection, let s = currentSpace else { return 0 }
         return s(c(), displayUUID as CFString)
+    }
+
+    /// Every Space that exists, by display identifier ("Main" when displays do not have separate Spaces).
+    /// Empty when unknown.
+    static func all() -> [String: Set<UInt64>] {
+        guard let c = mainConnection, let f = displaySpaces,
+              let list = f(c())?.takeRetainedValue() as? [[String: Any]] else { return [:] }
+        var out: [String: Set<UInt64>] = [:]
+        for d in list {
+            guard let id = d["Display Identifier"] as? String else { continue }
+            let spaces = (d["Spaces"] as? [[String: Any]] ?? []).compactMap { ($0["ManagedSpaceID"] as? NSNumber)?.uint64Value }
+            out[id, default: []].formUnion(spaces)
+        }
+        return out
     }
 
     /// The Spaces a window is on. Empty when unknown.
@@ -77,6 +93,14 @@ enum Spaces {
         // Mask 7: current, other and user Spaces.
         guard let arr = f(c(), 7, ids)?.takeRetainedValue() as? [NSNumber] else { return [] }
         return arr.map(\.uint64Value)
+    }
+}
+
+/// Whether the login window covers the session. AX lists no windows of other apps then.
+enum ScreenLock {
+    static var isLocked: Bool {
+        guard let d = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (d["CGSSessionScreenIsLocked"] as? Bool) == true
     }
 }
 

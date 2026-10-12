@@ -11,6 +11,7 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     private let lock = NSLock()
     private var log: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] = []
     private var batches: [pid_t] = []
+    private var settled: [pid_t] = []
 
     init(delay: Double = 0, failing: Set<WindowID> = []) {
         self.delay = delay
@@ -18,6 +19,10 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     }
 
     func beginBatch(pid: pid_t) { lock.withLock { batches.append(pid) } }
+    func settle(pid: pid_t) { lock.withLock { settled.append(pid) } }
+    var settledApps: [pid_t] { lock.withLock { settled.sorted() } }
+    /// Writes of one window, in order.
+    func frames(_ id: WindowID) -> [CGRect] { lock.withLock { log.filter { $0.id == id }.map(\.frame) } }
 
     func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
@@ -40,7 +45,7 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         _ = applier.applyAndWait(writes.map { FrameWrite(id: $0.id, pid: $0.pid, frame: rect(-1)) }) // warm up the queues
         var best = Double.infinity
         for round in 0..<5 {
-            let ms = applier.applyAndWait(writes.map { FrameWrite(id: $0.id, pid: $0.pid, frame: rect(CGFloat(round * 10) + $0.frame.minX)) })
+            let ms = applier.applyAndWait(writes.map { FrameWrite(id: $0.id, pid: $0.pid, frame: rect(CGFloat(round * 10) + $0.frame.minX)) })!
             best = min(best, ms)
         }
         print("Frame write, 6 apps x 2 ms AX latency: \(String(format: "%.2f", best)) ms (serial about 12 ms)")
@@ -116,5 +121,58 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
                               FrameWrite(id: 3, pid: 11, frame: rect(2))])
         #expect(writer.batchCount == 2)
         #expect(applier.stats.windowWrites == 3)
+    }
+
+    @Test func writeMergedIntoABusyAppIsWaitedFor() {
+        // The first apply keeps app 10 busy. The second one only adds a frame to its queue; applyAndWait must
+        // still return after that frame is written. Engine.stop relies on this to release parked windows.
+        let writer = FakeWriter(delay: 0.05)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        Thread.sleep(forTimeInterval: 0.01)
+        let ms = applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(500))], timeout: 2)
+        #expect(ms != nil)
+        #expect(writer.frames(1) == [rect(0), rect(500)])
+        #expect(applier.lastWritten(1) == rect(500))
+    }
+
+    @Test func waitGivesUpOnAnAppThatDoesNotAnswer() {
+        let writer = FakeWriter(delay: 0.5)
+        let applier = FrameApplier(writer: writer)
+        let start = Date()
+        #expect(applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))], timeout: 0.05) == nil)
+        #expect(Date().timeIntervalSince(start) < 0.4)
+    }
+
+    @Test func forgettingABusyAppReleasesTheWait() {
+        let writer = FakeWriter(delay: 0.3)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        Thread.sleep(forTimeInterval: 0.01)
+        let done = DispatchSemaphore(value: 0)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { _ in done.signal() }
+        applier.forgetApp(10)
+        #expect(done.wait(timeout: .now() + 0.1) == .success)
+    }
+
+    @Test func settleRunsAfterTheLastWriteOfEachApp() {
+        let writer = FakeWriter(delay: 0.02)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0)), FrameWrite(id: 2, pid: 11, frame: rect(1))])
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.writes.count == 2)
+        #expect(writer.settledApps == [10, 11])
+    }
+
+    @Test func appsWhoseWritesAllFailAreReported() {
+        let writer = FakeWriter(failing: [2])
+        let applier = FrameApplier(writer: writer)
+        for x in 0..<3 {
+            applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(CGFloat(x))), FrameWrite(id: 2, pid: 11, frame: rect(CGFloat(x)))])
+        }
+        #expect(applier.failingApps(threshold: 3) == [11])
+        #expect(applier.failingApps(threshold: 4).isEmpty)
+        applier.clearFailures(11)
+        #expect(applier.failingApps(threshold: 1).isEmpty)
     }
 }

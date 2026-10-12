@@ -23,6 +23,8 @@ public protocol FrameWriter: AnyObject, Sendable {
     /// Called once before a batch of writes to one app, and once after it.
     func beginBatch(pid: pid_t)
     func endBatch(pid: pid_t)
+    /// Called when an animation has settled, after the app's last write.
+    func settle(pid: pid_t)
     /// `previous` is the last frame Striple wrote to this window, nil if none. Return false on an AX error.
     func write(_ write: FrameWrite, previous: CGRect?) -> Bool
 }
@@ -30,6 +32,7 @@ public protocol FrameWriter: AnyObject, Sendable {
 public extension FrameWriter {
     func beginBatch(pid: pid_t) {}
     func endBatch(pid: pid_t) {}
+    func settle(pid: pid_t) {}
 }
 
 /// Sends frames to windows as fast as the apps allow.
@@ -52,6 +55,10 @@ public final class FrameApplier: @unchecked Sendable {
         var busy = false
         var pending: [WindowID: FrameWrite] = [:]
         var pendingOrder: [WindowID] = []
+        /// Run when the queue has nothing left to write.
+        var idleWaiters: [@Sendable () -> Void] = []
+        /// Batches in a row in which every write failed. One success sets it to 0.
+        var failedBatches = 0
     }
 
     private let writer: FrameWriter
@@ -70,7 +77,39 @@ public final class FrameApplier: @unchecked Sendable {
     /// Forget a window, for example after it closed or the user moved it by hand.
     public func forget(_ id: WindowID) { lock.withLock { _ = written.removeValue(forKey: id) } }
 
-    public func forgetApp(_ pid: pid_t) { lock.withLock { _ = apps.removeValue(forKey: pid) } }
+    public func forgetApp(_ pid: pid_t) {
+        let waiters = lock.withLock { apps.removeValue(forKey: pid)?.idleWaiters ?? [] }
+        for w in waiters { w() }
+    }
+
+    /// Apps whose last `threshold` batches all failed: their AX elements or observer are probably dead.
+    public func failingApps(threshold: Int) -> [pid_t] {
+        lock.withLock { apps.filter { $0.value.failedBatches >= threshold }.map(\.key).sorted() }
+    }
+
+    public func clearFailures(_ pid: pid_t) { lock.withLock { apps[pid]?.failedBatches = 0 } }
+
+    /// Tells every app that the animation is over, after its last write. Returns at once.
+    public func settle(completion: (@Sendable () -> Void)? = nil) {
+        let group = DispatchGroup()
+        let queues = lock.withLock { apps.map { ($0.key, $0.value.queue) } }
+        for (pid, queue) in queues {
+            group.enter()
+            queue.async { [writer] in
+                writer.settle(pid: pid)
+                group.leave()
+            }
+        }
+        if let completion { group.notify(queue: .global(qos: .userInteractive), execute: completion) }
+    }
+
+    /// Like `settle`, but waits. Returns false on timeout.
+    @discardableResult
+    public func settleAndWait(timeout: Double) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        settle { done.signal() }
+        return done.wait(timeout: .now() + timeout) == .success
+    }
 
     public func reset() {
         lock.withLock {
@@ -82,14 +121,15 @@ public final class FrameApplier: @unchecked Sendable {
         }
     }
 
-    /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every batch
-    /// started by this call is done, with the wall time in milliseconds. Writes merged into a batch that was
-    /// already running count toward that batch.
+    /// Queues the writes and returns at once. `completion` runs on an unspecified queue when every app that
+    /// got a write from this call has nothing left to write, with the wall time in milliseconds. A write merged
+    /// into an app that was already busy is waited for too.
     public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double) -> Void)? = nil) {
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
         var toStart: [(pid_t, DispatchQueue)] = []
         lock.withLock {
+            var touched = Set<pid_t>()
             for w in writes {
                 let pendingSame = apps[w.pid]?.pending[w.id]
                 if pendingSame == nil, written[w.id] == w.frame { counters.skipped += 1; continue }
@@ -101,10 +141,17 @@ public final class FrameApplier: @unchecked Sendable {
                 } else {
                     counters.coalesced += 1
                 }
+                touched.insert(w.pid)
             }
             for (pid, state) in apps where !state.busy && !state.pending.isEmpty {
                 apps[pid]!.busy = true
                 toStart.append((pid, state.queue))
+            }
+            guard completion != nil else { return }
+            let started = Set(toStart.map(\.0))
+            for pid in touched.subtracting(started) where apps[pid]?.busy == true {
+                group.enter()
+                apps[pid]!.idleWaiters.append { group.leave() }
             }
         }
         for (pid, queue) in toStart {
@@ -120,13 +167,18 @@ public final class FrameApplier: @unchecked Sendable {
         }
     }
 
-    /// Like `apply`, but waits. Returns the wall time in milliseconds. Not for the main thread in a live tick.
+    /// Like `apply`, but waits. Returns the wall time in milliseconds, or nil after `timeout` seconds
+    /// (an app that does not answer). Not for the main thread in a live tick.
     @discardableResult
-    public func applyAndWait(_ writes: [FrameWrite]) -> Double {
+    public func applyAndWait(_ writes: [FrameWrite], timeout: Double = .infinity) -> Double? {
         let done = DispatchSemaphore(value: 0)
         let box = Box()
         apply(writes) { ms in box.value = ms; done.signal() }
-        done.wait()
+        if timeout.isFinite {
+            guard done.wait(timeout: .now() + timeout) == .success else { return nil }
+        } else {
+            done.wait()
+        }
         return box.value
     }
 
@@ -135,9 +187,12 @@ public final class FrameApplier: @unchecked Sendable {
     /// Runs on the app's queue. Writes everything pending, then anything that arrived meanwhile.
     private func drain(_ pid: pid_t) {
         while true {
+            var waiters: [@Sendable () -> Void] = []
             let batch: [(FrameWrite, CGRect?)] = lock.withLock {
                 guard var state = apps[pid], !state.pending.isEmpty else {
                     apps[pid]?.busy = false
+                    waiters = apps[pid]?.idleWaiters ?? []
+                    apps[pid]?.idleWaiters.removeAll()
                     return []
                 }
                 let items = state.pendingOrder.compactMap { id in state.pending[id].map { ($0, written[id]) } }
@@ -146,7 +201,10 @@ public final class FrameApplier: @unchecked Sendable {
                 apps[pid] = state
                 return items
             }
-            if batch.isEmpty { return }
+            if batch.isEmpty {
+                for w in waiters { w() }
+                return
+            }
             writer.beginBatch(pid: pid)
             var results: [(WindowID, CGRect, Bool)] = []
             results.reserveCapacity(batch.count)
@@ -159,6 +217,7 @@ public final class FrameApplier: @unchecked Sendable {
                     counters.windowWrites += 1
                     if ok { written[id] = frame } else { counters.errors += 1; written.removeValue(forKey: id) }
                 }
+                if results.contains(where: \.2) { apps[pid]?.failedBatches = 0 } else { apps[pid]?.failedBatches += 1 }
             }
         }
     }
@@ -188,16 +247,16 @@ final class AXFrameWriter: FrameWriter, @unchecked Sendable {
     }
 
     /// Some apps (Chrome, Electron, Office) animate every AX move while AXEnhancedUserInterface is on, which makes
-    /// tiling slow and wobbly. Turn it off during the batch and back on after.
+    /// tiling slow and wobbly. Turn it off at the first batch of an animation and back on when it settles: one
+    /// read and two writes per app per animation, not per frame.
     func beginBatch(pid: pid_t) {
-        guard let app = lock.withLock({ appElements[pid] }) else { return }
-        if AX.bool(app, "AXEnhancedUserInterface") == true {
-            AX.set(app, "AXEnhancedUserInterface", false)
-            lock.withLock { enhancedUI[pid] = true }
-        }
+        guard let app = lock.withLock({ enhancedUI[pid] == nil ? appElements[pid] : nil }) else { return }
+        let on = AX.bool(app, "AXEnhancedUserInterface") == true
+        if on { AX.set(app, "AXEnhancedUserInterface", false) }
+        lock.withLock { enhancedUI[pid] = on }
     }
 
-    func endBatch(pid: pid_t) {
+    func settle(pid: pid_t) {
         let restore = lock.withLock { enhancedUI.removeValue(forKey: pid) ?? false }
         guard restore, let app = lock.withLock({ appElements[pid] }) else { return }
         AX.set(app, "AXEnhancedUserInterface", true)

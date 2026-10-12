@@ -38,6 +38,9 @@ public final class Engine: ObservableObject {
     var gestureTap: GestureTap?
     var ticker: Ticker?
     var mouseUpMonitor: Any?
+    var mouseDownMonitor: Any?
+    var mouseDraggedMonitor: Any?
+    var healthObserver: NSObjectProtocol?
     var mouseMovedMonitor: Any?
     var cancellables: Set<AnyCancellable> = []
     var permissionTimer: Timer?
@@ -64,6 +67,9 @@ public final class Engine: ObservableObject {
         var createdAt: Double
         /// Floated with toggle-float (kept in the session), not by a rule.
         var userFloating = false
+        /// Where the window was parked when it left the strip (hidden or minimized while out of view).
+        /// Stop moves it back into view from here.
+        var parkedFrame: CGRect?
     }
 
     struct SwipeState {
@@ -100,6 +106,15 @@ public final class Engine: ObservableObject {
     var correctionWork: [WindowID: DispatchWorkItem] = [:]
     var corrections: [WindowID: [Double]] = [:]
     var lastFocusFollow: Double = 0
+    /// Where the left button went down, and whether the mouse has moved far enough since to be a drag.
+    var mouseDownAt: CGPoint?
+    var mouseDragging = false
+    /// Saved strips of Spaces that are not on screen, and saved floating windows not found yet.
+    /// Restored when they appear; included in every save so they are not lost.
+    var laterStrips: [SessionStrip] = []
+    var laterFloating: [WindowInfo] = []
+    /// When an app was last re-watched after its AX writes kept failing.
+    var healedAt: [pid_t: Double] = [:]
 
     public init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -137,6 +152,7 @@ public final class Engine: ObservableObject {
         scanAll(session: loadSession())
         startGestures()
         installMouseMonitors()
+        startHealthChecks()
         relayoutAll(animate: false)
         syncFocusWithSystem()
         log.log("engine: started with \(windows.count) windows on \(strips.count) strips, \(displays.count) displays")
@@ -151,21 +167,79 @@ public final class Engine: ObservableObject {
             return
         case .running: break
         }
-        saveSessionNow()
-        releaseWindows(windows.values.filter { $0.state == .tiled }.map(\.info.id))
-        tracker?.stop()
-        WindowTracker.current = nil
-        tracker = nil
+        tearDown(release: true)
+        status = .stopped
+        log.log("engine: stopped")
+    }
+
+    /// Stops every input first, so no new frame starts. Then saves the session (synchronously: at quit the
+    /// process ends right after) and, with `release`, moves parked windows back into view and waits for it.
+    private func tearDown(release: Bool) {
         ticker?.stop()
         ticker = nil
         gestureTap?.stop()
         gestureTap = nil
         removeMouseMonitors()
+        stopHealthChecks()
+        tracker?.stop()
+        WindowTracker.current = nil
+        tracker = nil
+        swipe = nil
+        drag = nil
+        saveSessionNow(sync: true)
+        if release { releaseAll() }
         overlays.hideAll()
         clearState()
-        status = .stopped
-        log.log("engine: stopped")
     }
+
+    // MARK: Self-healing (F17)
+
+    /// No timer: the check runs when an animation settles and when any app's Accessibility trust changes.
+    private func startHealthChecks() {
+        stopHealthChecks()
+        healthObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { MainActor.assumeIsolated { self?.checkHealth(trustChanged: true) } }
+        }
+    }
+
+    private func stopHealthChecks() {
+        if let o = healthObserver { DistributedNotificationCenter.default().removeObserver(o) }
+        healthObserver = nil
+    }
+
+    /// Two failures the engine can repair without a restart:
+    /// - The Accessibility permission was removed: every AX call fails. Stop and wait until it is back.
+    ///   Checked when the trust notification comes, and when writes fail (macOS versions without the notification).
+    /// - All writes to one app fail: its AX observer or elements are dead (the app restarted its AX server).
+    ///   Watch it again and take fresh window elements. At most once per 30 s per app.
+    func checkHealth(trustChanged: Bool = false) {
+        guard status == .running else { return }
+        let failing = applier.failingApps(threshold: 3)
+        guard trustChanged || !failing.isEmpty else { return }
+        if !Permissions.isTrusted {
+            // Not inside the ticker callback that may have called this: tearDown releases the ticker.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.status == .running, !Permissions.isTrusted else { return }
+                    self.log.log("engine: Accessibility permission was removed, waiting until it is given again")
+                    self.tearDown(release: false)
+                    self.status = .noPermission
+                    self.waitForPermission()
+                }
+            }
+            return
+        }
+        let now = CACurrentMediaTime()
+        for pid in failing {
+            applier.clearFailures(pid)
+            guard now - (healedAt[pid] ?? -.infinity) > 30 else { continue }
+            healedAt[pid] = now
+            log.log("tracker: AX writes to pid \(pid) keep failing, watching the app again")
+            healApp(pid)
+        }
+    }
+
 
     public func restart() {
         restarts += 1
@@ -193,6 +267,11 @@ public final class Engine: ObservableObject {
         focusedID = nil
         floatingBorderFrame = nil
         suppressScrollFor = nil
+        mouseDownAt = nil
+        mouseDragging = false
+        laterStrips.removeAll()
+        laterFloating.removeAll()
+        healedAt.removeAll()
     }
 
     private func waitForPermission() {

@@ -60,6 +60,8 @@ extension Engine {
         updateOverlays()
         if settled && swipe == nil {
             ticker?.stop()
+            applier.settle()
+            checkHealth()
         } else if ticker?.isRunning == false {
             ticker?.start()
         }
@@ -134,6 +136,9 @@ extension Engine {
                 return
             }
             if NSEvent.pressedMouseButtons & 1 != 0, swipe == nil {
+                // Only a real drag counts. After a click that starts Striple's own animation the button is down
+                // too, and the window moves under the mouse; taking that for a drag would reorder the strip.
+                guard mouseDragging else { return }
                 guard let f = AX.frame(element), !Policy.same(f, applier.lastWritten(id)) else { return }
                 if drag?.id != id { drag = DragState(id: id, resize: false) }
                 if let last = applier.lastWritten(id), abs(f.width - last.width) > 2 || abs(f.height - last.height) > 2 {
@@ -239,16 +244,37 @@ extension Engine {
     func installMouseMonitors() {
         if mouseUpMonitor == nil {
             mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] _ in
-                MainActor.assumeIsolated { self?.mouseUp() }
+                MainActor.assumeIsolated {
+                    self?.mouseUp()
+                    self?.mouseDownAt = nil
+                    self?.mouseDragging = false
+                }
+            }
+        }
+        if mouseDownMonitor == nil {
+            mouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.mouseDownAt = NSEvent.mouseLocation
+                    self?.mouseDragging = false
+                }
+            }
+        }
+        if mouseDraggedMonitor == nil {
+            mouseDraggedMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.mouseDragging else { return }
+                    self.mouseDragging = Policy.isDrag(from: self.mouseDownAt, to: NSEvent.mouseLocation)
+                }
             }
         }
         updateFocusFollowsMouse()
     }
 
     func removeMouseMonitors() {
-        if let m = mouseUpMonitor { NSEvent.removeMonitor(m) }
-        if let m = mouseMovedMonitor { NSEvent.removeMonitor(m) }
+        for m in [mouseUpMonitor, mouseDownMonitor, mouseDraggedMonitor, mouseMovedMonitor].compactMap({ $0 }) { NSEvent.removeMonitor(m) }
         mouseUpMonitor = nil
+        mouseDownMonitor = nil
+        mouseDraggedMonitor = nil
         mouseMovedMonitor = nil
     }
 
@@ -343,12 +369,14 @@ extension Engine {
 
     // MARK: Session
 
+    /// The live strips plus the saved ones still waiting for their Space, so a save never drops those.
     func sessionSnapshot() -> Session {
         let saved = strips.filter { !$0.value.isEmpty }
             .map { SessionStrip(displayID: $0.key.display, spaceID: $0.key.space, strip: $0.value) }
             .sorted { ($0.displayID, $0.spaceID) < ($1.displayID, $1.spaceID) }
         let floating = windows.values.filter { $0.state == .floating && $0.userFloating }.map(\.info).sorted { $0.id < $1.id }
         return Session(strips: saved, floating: floating)
+            .merging(later: laterStrips, laterFloating: laterFloating, managed: Set(windows.keys))
     }
 
     func scheduleSessionSave() {
@@ -358,15 +386,17 @@ extension Engine {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
-    func saveSessionNow() {
+    /// `sync`: write before returning. Stop uses it, because at quit the process ends right after.
+    func saveSessionNow(sync: Bool = false) {
         sessionSaveWork?.cancel()
         sessionSaveWork = nil
         guard status == .running, let data = try? JSONEncoder().encode(sessionSnapshot()) else { return }
         let url = StriplePaths.sessionFile
-        DispatchQueue.global(qos: .utility).async {
+        let write: @Sendable () -> Void = {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? data.write(to: url, options: .atomic)
         }
+        if sync { write() } else { DispatchQueue.global(qos: .utility).async(execute: write) }
     }
 
     func loadSession() -> Session? {
@@ -424,8 +454,8 @@ extension Engine {
     /// Starts over with the current windows in their current places (after rule or display changes).
     func rebuild() {
         let session = sessionSnapshot()
-        let wasTiled = windows.values.filter { $0.state == .tiled }
-        releaseWindows(wasTiled.map(\.info.id))
+        ticker?.stop()
+        releaseAll()
         overlays.hideAll()
         clearState()
         scanAll(session: session)
