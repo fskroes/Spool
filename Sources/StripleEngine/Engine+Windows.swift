@@ -347,6 +347,7 @@ extension Engine {
         case .tile(let slot):
             guard let key = stripKey(for: c.info.id, element: c.element) else {
                 register(c, state: .floating, key: nil, createdAt: now)
+                windows[c.info.id]?.offDisplay = true
                 return
             }
             register(c, state: .tiled, key: key, createdAt: now)
@@ -608,12 +609,12 @@ extension Engine {
         if let old = w.key, let d = display(old.display), !isDisabled(d.uuid) {
             let k = Policy.putBackKey(old: StripKey(display: d.uuid, space: old.space), windowSpaces: Spaces.spaces(of: id),
                                       activeSpaces: activeSpaces, allSpaces: Spaces.all)
-            guard !isDisabled(k.display) else { return }
+            guard !isDisabled(k.display) else { return floatOffDisplay(id) }
             key = k
         } else if let k = stripKey(for: id, element: w.element) {
             key = k
         } else {
-            return
+            return floatOffDisplay(id)
         }
         var strip = strips[key] ?? Strip()
         strip.insert(w.info, width: w.width ?? .proportion(config.layout.defaultWidth), slot: w.slot, focus: focus)
@@ -622,10 +623,23 @@ extension Engine {
         w.state = .tiled
         w.key = key
         w.userFloating = false
+        w.offDisplay = false
         w.parkedFrame = nil
         windows[id] = w
         applier.forget(id)
         relayout(key)
+        scheduleSessionSave()
+    }
+
+    /// A window that comes back (unminimized, shown, out of fullscreen) on a display Striple does not manage: it
+    /// floats there, and tiles again when it is moved to a managed display. A floating window stays as it is.
+    private func floatOffDisplay(_ id: WindowID) {
+        guard var w = windows[id], w.state != .floating, w.state != .tiled else { return }
+        w.state = .floating
+        w.offDisplay = true
+        w.parkedFrame = nil
+        windows[id] = w
+        applier.forget(id)
         scheduleSessionSave()
     }
 
@@ -760,7 +774,13 @@ extension Engine {
     func spacesChanged() {
         let before = activeSpaces
         refreshDisplays()
-        guard before != activeSpaces else { return }
+        guard before != activeSpaces else {
+            // A window moved in Mission Control to the Space on screen of another display changes no active Space.
+            let touched = reconcileSpaces()
+            for key in touched { relayout(key) }
+            if !touched.isEmpty { scheduleSessionSave() }
+            return
+        }
         overlays.hideAll()
         scanAll(session: nil)
         reconcileSpaces()
@@ -769,24 +789,55 @@ extension Engine {
     }
 
     /// Moves windows whose Space changed (for example dragged in Mission Control) to the right strip.
-    private func reconcileSpaces() {
-        for (id, w) in windows where w.state == .tiled {
-            guard let key = w.key, (activeSpaces[key.display] ?? 0) != 0,
-                  let target = Policy.respacedKey(old: key, windowSpaces: Spaces.spaces(of: id),
-                                                  activeSpaces: activeSpaces, allSpaces: Spaces.all) else { continue }
-            // Moved to the Space of a display Striple does not manage: the window floats there.
-            if isDisabled(target.display) {
-                takeOff(id, as: .floating, relayoutNow: false)
-                continue
-            }
-            var source = strips[key] ?? Strip()
+    /// Returns the strips that changed; the caller lays them out.
+    @discardableResult
+    private func reconcileSpaces() -> Set<StripKey> {
+        var touched: Set<StripKey> = []
+        for (id, w) in windows where w.state == .tiled || w.offDisplay {
+            touched.formUnion(respace(id, relayoutNow: false))
+        }
+        return touched
+    }
+
+    /// Puts one window on the strip of the display and Space it is on now (see `Policy.respaceAction`).
+    /// Returns the strips that changed.
+    func respace(_ id: WindowID, relayoutNow: Bool) -> Set<StripKey> {
+        guard let w = windows[id] else { return [] }
+        let action = Policy.respaceAction(
+            state: w.state, userFloating: w.userFloating, offDisplay: w.offDisplay, key: w.key,
+            windowSpaces: w.state == .tiled ? Spaces.spaces(of: id) : [], activeSpaces: activeSpaces,
+            allSpaces: Spaces.all, here: { self.stripKey(for: id, element: w.element) }, isDisabled: { self.isDisabled($0) })
+        switch action {
+        case .stay:
+            return []
+        case .float(let from):
+            log.log("respace: window \(id) of \(w.info.bundleID) is on a display Striple does not manage, it floats")
+            takeOff(id, as: .floating, relayoutNow: relayoutNow)
+            windows[id]?.offDisplay = true
+            return [from]
+        case .move(let from, let to):
+            log.log("respace: window \(id) of \(w.info.bundleID) moved to another Space or display")
+            var source = strips[from] ?? Strip()
             let width = source.locate(id).map { source.columns[$0.column].width }
             source.remove(id)
-            strips[key] = source
-            var strip = strips[target] ?? Strip()
+            if let m = metrics(from) { source.ensureFocusVisible(settings: config.layout, metrics: m) }
+            strips[from] = source
+            var strip = strips[to] ?? Strip()
             strip.insert(w.info, width: width ?? .proportion(config.layout.defaultWidth), focus: false)
-            strips[target] = strip
-            windows[id]?.key = target
+            strips[to] = strip
+            windows[id]?.key = to
+            applier.forget(id)
+            if relayoutNow {
+                relayout(from)
+                relayout(to)
+            }
+            return [from, to]
+        case .tile(let to):
+            log.log("respace: window \(id) of \(w.info.bundleID) is on a managed display again, it tiles")
+            if w.key != to { windows[id]?.slot = nil }
+            windows[id]?.key = to
+            putBack(id, focus: false)
+            return [to]
         }
     }
 

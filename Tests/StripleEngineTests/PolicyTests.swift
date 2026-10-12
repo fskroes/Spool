@@ -411,6 +411,33 @@ import Testing
         #expect(Policy.putBackKey(old: K(display: "D1", space: 0), windowSpaces: [9], activeSpaces: [:]) == K(display: "D1", space: 0))
     }
 
+    // Round 12 findings: a window moved in Mission Control to the Space on screen of another display was put back,
+    // and a window that floated on a disabled display never tiled again on a managed one.
+    @Test func aWindowFollowsItsSpaceAndTilesAgainOnAManagedDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2, "OFF": 3]
+        let off: (String) -> Bool = { $0 == "OFF" }
+        let old = K(display: "D1", space: 1)
+        func act(_ state: Engine.ManagedWindow.State, user: Bool = false, offDisplay: Bool = false, key: K? = old,
+                 spaces: [UInt64] = [], here: K? = nil) -> Policy.RespaceAction {
+            Policy.respaceAction(state: state, userFloating: user, offDisplay: offDisplay, key: key, windowSpaces: spaces,
+                                 activeSpaces: active, here: { here }, isDisabled: off)
+        }
+        // Tiled: the active Space of no display changed, but the window is on D2's Space now.
+        #expect(act(.tiled, spaces: [2]) == .move(from: old, to: K(display: "D2", space: 2)))
+        #expect(act(.tiled, spaces: [1]) == .stay)
+        #expect(act(.tiled, spaces: []) == .stay)
+        #expect(act(.tiled, spaces: [3]) == .float(from: old))
+        // Floating because of its display: it tiles where it is when that display is managed.
+        #expect(act(.floating, offDisplay: true, here: K(display: "D1", space: 1)) == .tile(K(display: "D1", space: 1)))
+        #expect(act(.floating, offDisplay: true, key: nil, here: K(display: "D2", space: 2)) == .tile(K(display: "D2", space: 2)))
+        #expect(act(.floating, offDisplay: true, here: nil) == .stay)
+        // The user's floats, rule floats and windows off the strip for another reason stay as they are.
+        #expect(act(.floating, user: true, offDisplay: true, here: old) == .stay)
+        #expect(act(.floating, here: old) == .stay)
+        #expect(act(.minimized, offDisplay: true, spaces: [2], here: old) == .stay)
+    }
+
     @Test func anActivatedAppIsScannedAgainWhenStripleGaveUpOrHoldsItsWindows() {
         func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
             Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)

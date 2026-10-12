@@ -328,6 +328,50 @@ import Testing
         #expect(store.createFileIfMissing())
         #expect(try fm.destinationOfSymbolicLink(atPath: url.path) == dest)
         #expect(try Config.decode(Data(contentsOf: target)).layout.innerGap == 13)
+        // Round 12 finding: the file it made was not loaded, so the save error stayed.
+        #expect(!store.hasProblem)
+        #expect(store.loadError == nil)
+    }
+
+    // Round 12 finding: a link to a file that does not exist yet was never watched, so the file that comes later
+    // (a cloned dotfiles repo) and its edits did not load.
+    @Test func aFileThatComesLaterAtTheLinkTargetIsLoadedAndWatched() async throws {
+        let url = tempFile()
+        let fm = FileManager.default
+        let folder = url.deletingLastPathComponent().appendingPathComponent("dotfiles")
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: "dotfiles/striple.json")
+        let store = ConfigStore(fileURL: url, watch: true, linkRetryDelay: 0.1)
+        #expect(store.hasProblem)
+
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        var c = Config()
+        c.layout.innerGap = 22
+        try c.encoded().write(to: folder.appendingPathComponent("striple.json"))
+        for _ in 0..<40 where store.config.layout.innerGap != 22 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 22)
+        #expect(!store.hasProblem)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        c.layout.innerGap = 23
+        try writeInPlace(c.encoded(), to: folder.appendingPathComponent("striple.json"))
+        for _ in 0..<40 where store.config.layout.innerGap != 23 { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.config.layout.innerGap == 23)
+    }
+
+    // Round 12 finding: a link loop was replaced with a plain file.
+    @Test func aLinkLoopIsNeverReplaced() throws {
+        let url = tempFile()
+        let fm = FileManager.default
+        let other = url.deletingLastPathComponent().appendingPathComponent("b.json")
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: "b.json")
+        try fm.createSymbolicLink(atPath: other.path, withDestinationPath: "config.json")
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 14 }
+        #expect(store.hasProblem)
+        #expect(store.loadError?.contains("loop") == true)
+        #expect(!store.createFileIfMissing())
+        #expect(try fm.destinationOfSymbolicLink(atPath: url.path) == "b.json")
+        #expect(try fm.destinationOfSymbolicLink(atPath: other.path) == "config.json")
     }
 
     @Test func createFileIfMissingMakesStriplesOwnFileAndKeepsAnExistingOne() throws {

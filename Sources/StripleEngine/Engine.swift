@@ -67,6 +67,8 @@ public final class Engine: ObservableObject {
         var createdAt: Double
         /// Floated with toggle-float (kept in the session), not by a rule.
         var userFloating = false
+        /// Floats because it is on a display Striple does not manage. It tiles again when it is on a managed one.
+        var offDisplay = false
         /// Where the window was parked when it left the strip (hidden or minimized while out of view).
         /// Stop moves it back into view from here.
         var parkedFrame: CGRect?

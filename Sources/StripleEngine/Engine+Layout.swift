@@ -164,6 +164,8 @@ extension Engine {
             }
         case .floating:
             if focusedID == id { floatingBorderFrame = AX.frame(element); updateOverlays() }
+            // It may be on a managed display now: it tiles there when the move ends.
+            if w.offDisplay, !w.userFloating { scheduleCorrection(id) }
         default:
             break
         }
@@ -181,8 +183,21 @@ extension Engine {
 
     private func correct(_ id: WindowID) {
         correctionWork[id] = nil
-        guard status == .running, drag == nil, swipe == nil, let w = windows[id], w.state == .tiled else { return }
+        guard status == .running, drag == nil, swipe == nil, let w = windows[id] else { return }
+        if w.state == .floating, w.offDisplay {
+            // Wait until the user lets go of a window that is still dragged.
+            if NSEvent.pressedMouseButtons & 1 != 0 { scheduleCorrection(id); return }
+            _ = respace(id, relayoutNow: true)
+            return
+        }
+        guard w.state == .tiled else { return }
         if ticker?.isRunning == true { scheduleCorrection(id); return }
+        // Moved by macOS to a Space of another display (Mission Control): the window goes to that strip, it is not
+        // put back.
+        if !respace(id, relayoutNow: true).isEmpty {
+            scheduleSessionSave()
+            return
+        }
         guard let f = AX.frame(w.element), let last = applier.lastWritten(id), !Policy.same(f, last) else { return }
         let now = CACurrentMediaTime()
         let recent = (corrections[id] ?? []).filter { now - $0 < 5 }

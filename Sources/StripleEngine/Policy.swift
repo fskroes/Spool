@@ -235,6 +235,36 @@ enum Policy {
         return stripKey(display: old.display, activeSpaces: activeSpaces, windowSpaces: space == 0 ? [] : [space], allSpaces: allSpaces)
     }
 
+    /// What to do with a window after it may have changed Space or display without a drag by the user (Mission
+    /// Control, an app, macOS).
+    enum RespaceAction: Equatable {
+        case stay
+        /// A tiled window goes from strip `from` to strip `to`.
+        case move(from: Engine.StripKey, to: Engine.StripKey)
+        /// A tiled window is now on a display Striple does not manage: it floats there.
+        case float(from: Engine.StripKey)
+        /// A window that floats only because its display was not managed is on a managed display again.
+        case tile(Engine.StripKey)
+    }
+
+    /// `here`: the strip of the window's place now (`Engine.stripKey(for:)`), nil on a disabled display. Only asked
+    /// for a window that floats because of its display.
+    static func respaceAction(state: Engine.ManagedWindow.State, userFloating: Bool, offDisplay: Bool,
+                              key: Engine.StripKey?, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                              allSpaces: () -> [String: Set<UInt64>] = { [:] }, here: () -> Engine.StripKey?,
+                              isDisabled: (String) -> Bool) -> RespaceAction {
+        switch state {
+        case .tiled:
+            guard let key, let target = respacedKey(old: key, windowSpaces: windowSpaces, activeSpaces: activeSpaces,
+                                                    allSpaces: allSpaces) else { return .stay }
+            return isDisabled(target.display) ? .float(from: key) : .move(from: key, to: target)
+        case .floating where offDisplay && !userFloating:
+            return here().map { .tile($0) } ?? .stay
+        default:
+            return .stay
+        }
+    }
+
     /// Whether a live window can take a held slot without the same ID: it is on the held window's Space. Without
     /// Space information it can.
     static func heldWindowFits(heldSpace: UInt64, floats: Bool, windowSpaces: [UInt64]) -> Bool {

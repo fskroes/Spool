@@ -24,6 +24,9 @@ public final class ConfigStore: ObservableObject {
     /// The file itself: an editor or a shell redirect that writes in place changes no folder entry.
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var reloadWork: DispatchWorkItem?
+    /// While `config.json` is a link to a file that does not exist yet: the next look for that file.
+    private var linkRetryWork: DispatchWorkItem?
+    private let linkRetryDelay: TimeInterval
     /// The file on disk did not decode. The next save keeps a copy of it first.
     private var fileIsBroken = false
     /// Why the file did not decode. Kept for the message after a save.
@@ -36,9 +39,11 @@ public final class ConfigStore: ObservableObject {
     /// True while `config.json` has errors. Automatic changes (not made by the user) must wait until it is fixed.
     public var fileHasError: Bool { fileIsBroken }
 
-    public init(fileURL: URL = StriplePaths.configFile, watch: Bool = true, arrowsTaken: Bool = Config.systemTakesArrows) {
+    public init(fileURL: URL = StriplePaths.configFile, watch: Bool = true, arrowsTaken: Bool = Config.systemTakesArrows,
+                linkRetryDelay: TimeInterval = 5) {
         self.fileURL = fileURL
         self.arrowsTaken = arrowsTaken
+        self.linkRetryDelay = linkRetryDelay
         self.config = Config()
         load()
         let missing = lastData == nil && loadError == nil
@@ -162,8 +167,15 @@ public final class ConfigStore: ObservableObject {
         }
     }
 
+    /// Links that point to each other in a loop. A write would replace one of them with a plain file.
+    struct LinkLoop: LocalizedError {
+        let at: URL
+        var errorDescription: String? { "it is a link in a loop, at \(at.path)" }
+    }
+
     /// Makes the folder for `target` when it is Striple's own file, else checks that the user's folder exists.
     private func prepareFolder(of target: URL) throws {
+        if (try? FileManager.default.destinationOfSymbolicLink(atPath: target.path)) != nil { throw LinkLoop(at: target) }
         let dir = target.deletingLastPathComponent()
         if target == fileURL {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -185,6 +197,9 @@ public final class ConfigStore: ObservableObject {
         do {
             try prepareFolder(of: target)
             try config.encoded().write(to: target, options: .atomic)
+            // Load it now: this clears a save error, and the file watch starts on the new file.
+            if watcher != nil { watchFile() }
+            load()
             return true
         } catch {
             return false
@@ -247,8 +262,21 @@ public final class ConfigStore: ObservableObject {
     private func watchFile() {
         fileWatcher?.cancel()
         fileWatcher = nil
+        linkRetryWork?.cancel()
+        linkRetryWork = nil
         let fd = open(fileURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
+        guard fd >= 0 else {
+            // A link to a file that does not exist yet (a dotfiles repo that is not cloned): no folder event tells
+            // when it comes, so look again after a few seconds.
+            if (try? FileManager.default.destinationOfSymbolicLink(atPath: fileURL.path)) != nil {
+                let work = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated { self?.scheduleReload() }
+                }
+                linkRetryWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + linkRetryDelay, execute: work)
+            }
+            return
+        }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename],
                                                                queue: .main)
         source.setEventHandler { [weak self] in
@@ -297,5 +325,6 @@ public final class ConfigStore: ObservableObject {
     deinit {
         watcher?.cancel()
         fileWatcher?.cancel()
+        linkRetryWork?.cancel()
     }
 }

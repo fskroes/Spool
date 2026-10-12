@@ -105,7 +105,8 @@ Edits load automatically, also from editors and tools that write the file in pla
 and edits to that file load too. If that file is read-only (for example managed by Nix), a change in Settings shows
 "Could not save config.json" and stays in use until Striple quits. Striple does not make the folder a link points to:
 if that folder does not exist yet (the dotfiles repo is not cloned), the message names the folder, and "Open File"
-shows the link in Finder. Striple never replaces the link with a plain file.
+shows the link in Finder. When the file comes (for example after the clone), Striple loads it within a few seconds.
+Striple never replaces the link with a plain file, also not a link in a loop.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 
