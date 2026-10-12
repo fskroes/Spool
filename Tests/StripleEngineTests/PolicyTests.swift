@@ -411,6 +411,30 @@ import Testing
         #expect(Policy.putBackKey(old: K(display: "D1", space: 0), windowSpaces: [9], activeSpaces: [:]) == K(display: "D1", space: 0))
     }
 
+    // Round 14 finding: the check of an off-display float was dropped during a swipe or a drag, so it stayed
+    // floating on a managed display.
+    @Test func anOffDisplayFloatIsCheckedAfterADragOrSwipeEnds() {
+        func step(_ state: Engine.ManagedWindow.State, off: Bool = false, user: Bool = false, drag: Bool = false,
+                  swipe: Bool = false, mouse: Bool = false, anim: Bool = false) -> Policy.CorrectionStep {
+            Policy.correctionStep(state: state, offDisplay: off, userFloating: user, dragging: drag, swiping: swipe,
+                                  mouseDown: mouse, animating: anim)
+        }
+        #expect(step(.floating, off: true, swipe: true) == .wait)
+        #expect(step(.floating, off: true, drag: true) == .wait)
+        #expect(step(.floating, off: true, mouse: true) == .wait)
+        #expect(step(.floating, off: true) == .respaceOnly)
+        #expect(step(.floating, off: true, anim: true) == .respaceOnly)
+        // The user's floats and rule floats are not Striple's to move.
+        #expect(step(.floating, off: true, user: true) == .drop)
+        #expect(step(.floating) == .drop)
+        // Tiled windows: as before.
+        #expect(step(.tiled) == .correct)
+        #expect(step(.tiled, anim: true) == .wait)
+        #expect(step(.tiled, swipe: true) == .drop)
+        #expect(step(.tiled, drag: true) == .drop)
+        #expect(step(.minimized, off: true) == .drop)
+    }
+
     // Round 12 findings: a window moved in Mission Control to the Space on screen of another display was put back,
     // and a window that floated on a disabled display never tiled again on a managed one.
     @Test func aWindowFollowsItsSpaceAndTilesAgainOnAManagedDisplay() {

@@ -276,8 +276,13 @@ public final class ConfigStore: ObservableObject {
         // (`mv ~/dotfiles ~/dotfiles.old`). No event in the folder of the link tells, so check every few seconds.
         if (try? FileManager.default.destinationOfSymbolicLink(atPath: fileURL.path)) != nil { scheduleLinkCheck() }
         let fd = open(fileURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
         var info = stat()
+        guard fd >= 0 else {
+            // A file that cannot be opened (no read permission) is still known, so the link check does not reload
+            // it every few seconds.
+            if stat(fileURL.path, &info) == 0 { watchedFile = FileID(device: info.st_dev, inode: info.st_ino) }
+            return
+        }
         if fstat(fd, &info) == 0 { watchedFile = FileID(device: info.st_dev, inode: info.st_ino) }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename],
                                                                queue: .main)

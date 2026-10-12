@@ -754,7 +754,11 @@ extension Engine {
             relayout(target)
             focusWindow(id, scroll: true, fromCommand: true)
         } else {
-            if w.state == .tiled { takeOff(id, as: .floating) }
+            if w.state == .tiled {
+                // Sent to a display Striple does not manage: it tiles again when it comes back to a managed one.
+                takeOff(id, as: .floating)
+                windows[id]?.offDisplay = true
+            }
             guard let f = AX.frame(w.element) else { return }
             let frame = Policy.translate(f, from: from.geometry.usable, to: to.geometry.usable)
             applier.forget(id)
@@ -781,7 +785,10 @@ extension Engine {
             // A window moved in Mission Control to the Space on screen of another display changes no active Space.
             let touched = reconcileSpaces()
             for key in touched { relayout(key) }
-            if !touched.isEmpty { scheduleSessionSave() }
+            if !touched.isEmpty {
+                updateFocusOverlays()
+                scheduleSessionSave()
+            }
             return
         }
         overlays.hideAll()
@@ -820,6 +827,10 @@ extension Engine {
             log.log("respace: window \(id) of \(w.info.bundleID) is on a display Striple does not manage, it floats")
             takeOff(id, as: .floating, relayoutNow: relayoutNow)
             windows[id]?.offDisplay = true
+            if focused {
+                floatingBorderFrame = AX.frame(w.element)
+                updateFocusOverlays()
+            }
             return [from]
         case .move(let from, let to):
             log.log("respace: window \(id) of \(w.info.bundleID) moved to another Space or display")
@@ -834,6 +845,10 @@ extension Engine {
             strips[to] = strip
             windows[id]?.key = to
             applier.forget(id)
+            // The old frame is not where the window is now; a strip not on screen gives it no new one.
+            placements[id] = nil
+            // Focus on a window that went to a Space not on screen is not shown; the next focus event sets it.
+            if focused, !isActive(to) { focusedID = nil }
             if relayoutNow {
                 relayout(from)
                 relayout(to)

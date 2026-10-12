@@ -265,6 +265,32 @@ enum Policy {
         }
     }
 
+    enum CorrectionStep: Equatable {
+        /// Nothing to do: the window is not Striple's to move now.
+        case drop
+        /// Try again a moment later.
+        case wait
+        /// A window that floats because of its display: only check where it is now (`respaceAction`).
+        case respaceOnly
+        /// A tiled window: check its Space, then put it back on its strip.
+        case correct
+    }
+
+    /// What a correction does after a window moved without Striple. An off-display float is checked again only
+    /// after a drag, swipe or mouse press ends, because that check is the only thing that tiles it again.
+    static func correctionStep(state: Engine.ManagedWindow.State, offDisplay: Bool, userFloating: Bool, dragging: Bool,
+                               swiping: Bool, mouseDown: Bool, animating: Bool) -> CorrectionStep {
+        switch state {
+        case .floating where offDisplay && !userFloating:
+            return dragging || swiping || mouseDown ? .wait : .respaceOnly
+        case .tiled:
+            if dragging || swiping { return .drop }
+            return animating ? .wait : .correct
+        default:
+            return .drop
+        }
+    }
+
     /// Whether a live window can take a held slot without the same ID: it is on the held window's Space. Without
     /// Space information it can.
     static func heldWindowFits(heldSpace: UInt64, floats: Bool, windowSpaces: [UInt64]) -> Bool {

@@ -183,15 +183,21 @@ extension Engine {
 
     private func correct(_ id: WindowID) {
         correctionWork[id] = nil
-        guard status == .running, drag == nil, swipe == nil, let w = windows[id] else { return }
-        if w.state == .floating, w.offDisplay {
-            // Wait until the user lets go of a window that is still dragged.
-            if NSEvent.pressedMouseButtons & 1 != 0 { scheduleCorrection(id); return }
+        guard status == .running, let w = windows[id] else { return }
+        switch Policy.correctionStep(state: w.state, offDisplay: w.offDisplay, userFloating: w.userFloating,
+                                     dragging: drag != nil, swiping: swipe != nil,
+                                     mouseDown: NSEvent.pressedMouseButtons & 1 != 0, animating: ticker?.isRunning == true) {
+        case .drop:
+            return
+        case .wait:
+            scheduleCorrection(id)
+            return
+        case .respaceOnly:
             _ = respace(id, relayoutNow: true)
             return
+        case .correct:
+            break
         }
-        guard w.state == .tiled else { return }
-        if ticker?.isRunning == true { scheduleCorrection(id); return }
         // Moved by macOS to a Space of another display (Mission Control): the window goes to that strip, it is not
         // put back.
         if !respace(id, relayoutNow: true).isEmpty {
