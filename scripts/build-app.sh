@@ -107,6 +107,9 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Helpers" "$CONTENTS/Resources" \
 
 ditto "$BIN/StripleApp" "$CONTENTS/MacOS/Striple"
 ditto "$BIN/striple" "$CONTENTS/Helpers/striple"
+# Remove the debug map (STABS). It holds absolute paths of this Mac, with the user name, and the
+# app does not need it. Symbols for crash reports stay. The binaries are signed again below.
+strip -S -no_code_signature_warning "$CONTENTS/MacOS/Striple" "$CONTENTS/Helpers/striple"
 ditto "$ICON_DIR/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 ditto "$SPARKLE_SRC" "$CONTENTS/Frameworks/Sparkle.framework"
 ditto "$ROOT/Packaging/LaunchAgents/$AGENT_PLIST" "$CONTENTS/Library/LaunchAgents/$AGENT_PLIST"

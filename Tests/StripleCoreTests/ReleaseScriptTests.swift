@@ -60,6 +60,8 @@ import Testing
         let feed = try Self.call("striple_updates_value", env, "STRIPLE_FEED_URL").output
         let key = try Self.call("striple_updates_value", env, "STRIPLE_ED_PUBLIC_KEY").output
         let account = try Self.call("striple_updates_value", env, "STRIPLE_ED_KEY_ACCOUNT").output
+        let cert = try Self.call("striple_updates_value", env, "STRIPLE_SIGNING_CERT_SHA1").output
+        #expect(try Self.call("striple_sha1_equal", cert, cert).status == 0, "a 40 digit SHA-1, got '\(cert)'")
         #expect(repo.split(separator: "/").count == 2)
         #expect(feed == (try Self.call("striple_feed_url_for_repo", repo).output))
         #expect(feed.hasPrefix("https://"))
@@ -195,6 +197,38 @@ import Testing
         #expect(try Self.call("striple_dr_is_local", local, "com.fskroes.Other", hash).status == 1)
         #expect(try Self.call("striple_dr_is_local", local, "com.fskroes.Striple", "0000").status == 1)
         #expect(try Self.call("striple_dr_is_local", local, "com.fskroes.Striple", "").status == 1)
+    }
+
+    @Test func sha1ComparisonIgnoresCaseColonsAndSpaces() throws {
+        let hash = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+        #expect(try Self.call("striple_sha1_equal", hash, hash.lowercased()).status == 0)
+        #expect(try Self.call("striple_sha1_equal", hash, "B6:08:FA:4F:3D:9A:1F:C1:4C:DB:AB:47:42:1A:66:0E:42:90:53:DC").status == 0)
+        #expect(try Self.call("striple_sha1_equal", hash, "C" + hash.dropFirst()).status == 1)
+        #expect(try Self.call("striple_sha1_equal", "", "").status == 1)
+        #expect(try Self.call("striple_sha1_equal", "ABCD", "ABCD").status == 1)
+    }
+
+    @Test func appcastLatestURLIsTheEnclosureOfTheHighestBuild() throws {
+        let f = try Self.temp("appcast.xml", Self.appcast(items: [
+            ("0.1.0", "36", "https://x/a.zip", "1", "c2ln"), ("0.2.0", "52", "https://x/b.zip", "1", "c2ln"),
+        ]))
+        #expect(try Self.call("striple_appcast_latest_url", f.path).output == "https://x/b.zip")
+        let empty = try Self.temp("appcast.xml", Self.appcast(items: []))
+        #expect(try Self.call("striple_appcast_latest_url", empty.path).status == 1)
+    }
+
+    @Test func privateStringsAreFoundInAnyFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-private-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let nested = dir.appendingPathComponent("Striple.app/Contents/MacOS")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data([0, 1, 2] + Array("/Users/someone/dev/x.o".utf8) + [0]).write(to: nested.appendingPathComponent("Striple"))
+        try Data("clean".utf8).write(to: dir.appendingPathComponent("README"))
+        let hit = try Self.call("striple_private_strings", dir.path, "/Users/someone", "")
+        #expect(hit.status == 1)
+        #expect(hit.output.hasSuffix("Striple.app/Contents/MacOS/Striple"))
+        #expect(try Self.call("striple_private_strings", dir.path, "nobody", "").status == 0)
+        #expect(try Self.call("striple_private_strings", dir.path, "", "").status == 0)
     }
 
     @Test func downloadPrefixIsPerTag() throws {

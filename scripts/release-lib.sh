@@ -106,3 +106,37 @@ striple_dr_is_local() {
     hash=$(tr 'A-F' 'a-f' <<<"$3")
     [[ -n "$hash" && "$dr" == *"identifier \"$bundle\" and certificate leaf = H\"$hash\""* ]]
 }
+
+# Prints each file under DIR that contains one of the other arguments as bytes (for example $HOME
+# and $USER). Empty arguments are ignored. Status 0 when no file has one.
+striple_private_strings() {
+    local dir=$1 needle found=1
+    shift
+    local -a args=()
+    for needle in "$@"; do [[ -n "$needle" ]] && args+=(-e "$needle"); done
+    [[ ${#args[@]} -gt 0 ]] || return 0
+    LC_ALL=C grep -rlF "${args[@]}" "$dir" 2>/dev/null && found=0
+    return $(( 1 - found ))
+}
+
+# Prints the url attribute of the enclosure of the item with the highest build number.
+striple_appcast_latest_url() {
+    local file=$1 n i build url best_build=-1 best_url=""
+    n=$(xmllint --xpath 'count(//item)' "$file" 2>/dev/null) || return 1
+    for (( i = 1; i <= n; i++ )); do
+        build=$(xmllint --xpath "string(//item[$i]/*[local-name()='version'])" "$file" 2>/dev/null)
+        url=$(xmllint --xpath "string(//item[$i]/enclosure/@url)" "$file" 2>/dev/null)
+        [[ -n "$url" && "$build" =~ ^[0-9]+$ ]] || continue
+        if (( build > best_build )); then best_build=$build; best_url=$url; fi
+    done
+    [[ -n "$best_url" ]] || return 1
+    printf '%s\n' "$best_url"
+}
+
+# Status 0 when two certificate SHA-1 values are the same (any case, spaces and colons ignored).
+striple_sha1_equal() {
+    local a b
+    a=$(tr -d ' :' <<<"$1" | tr 'a-f' 'A-F')
+    b=$(tr -d ' :' <<<"$2" | tr 'a-f' 'A-F')
+    [[ "$a" =~ ^[0-9A-F]{40}$ && "$a" == "$b" ]]
+}

@@ -2,7 +2,8 @@ import Foundation
 import Testing
 
 /// Runs scripts/make-signing-cert.sh with a fake `security` tool first on PATH and a temporary keychain path,
-/// so the keychains of this Mac are never read or changed. The fake logs each call to `calls.log`.
+/// so the keychains of this Mac are never read or changed. The fake logs each call to `calls.log`: argv as is,
+/// and a command read by `security -i` from stdin as `stdin: <command>`.
 @Suite(.serialized) struct SigningScriptTests {
     static let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -14,6 +15,7 @@ import Testing
         var password: Bool         // the password item is in the login keychain
         var identity: Bool         // the identity is in the Striple keychain
         var listed = false         // the Striple keychain is on the search list
+        var emptyList = false      // the user search list is empty
     }
 
     struct Result { var output: String; var status: Int32; var calls: [String] }
@@ -28,13 +30,19 @@ import Testing
         let name = "\"Striple Local Signing\""
         let fake = """
         #!/bin/sh
-        echo "$*" >> '\(log.path)'
+        if [ "$1" = "-i" ]; then
+          read -r line
+          echo "stdin: $line" >> '\(log.path)'
+          set -- $line
+        else
+          echo "$*" >> '\(log.path)'
+        fi
         case "$1" in
-          find-generic-password) \(k.password ? "echo secret" : "exit 44") ;;
+          find-generic-password) \(k.password ? "echo 5ec7e7" : "exit 44") ;;
           unlock-keychain) exit 0 ;;
           list-keychains)
             if [ "$3" = "-s" ]; then exit 0; fi
-            echo '    "/Users/x/Library/Keychains/login.keychain-db"'
+            \(k.emptyList ? "exit 0" : "echo '    \"/Users/x/Library/Keychains/login.keychain-db\"'")
             \(k.listed ? "echo '    \"\(keychain.path)\"'" : "") ;;
           find-identity)
             \(k.identity ? "echo '  1) ABCD1234 \(name) (CSSMERR_TP_NOT_TRUSTED)'" : "")
@@ -53,6 +61,7 @@ import Testing
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = dir.path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
         env["STRIPLE_SIGNING_KEYCHAIN"] = keychain.path
+        env["HOME"] = "/Users/x"
         p.environment = env
         let out = Pipe()
         p.standardOutput = out
@@ -97,11 +106,50 @@ import Testing
         let r = try Self.run(Keychain(file: false, password: false, identity: false), ["--dry-run"])
         #expect(r.status == 0)
         #expect(r.output.contains("[dry-run] 2. security create-keychain"))
+        #expect(r.output.contains("[dry-run] 8. write the backup"))
         #expect(r.calls.isEmpty)
     }
 
-    @Test func removeDeletesTheKeychainThePasswordAndTheListEntry() throws {
+    // The keychain exists but is not on the search list: a real run would unlock it and change the list.
+    @Test func aDryRunWithAKeychainDoesNotTouchIt() throws {
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: false), ["--dry-run"])
+        #expect(r.status == 0)
+        #expect(r.output.contains("makes nothing new"))
+        #expect(r.calls.isEmpty)
+    }
+
+    @Test func theKeychainPasswordIsNeverAnArgument() throws {
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: false), [])
+        #expect(r.status == 0)
+        #expect(r.calls.contains { $0.hasPrefix("stdin: unlock-keychain -p 5ec7e7 ") })
+        #expect(!r.calls.contains { !$0.hasPrefix("stdin: ") && $0.contains("5ec7e7") }, "\(r.calls)")
+    }
+
+    // bash 3.2 fails on an empty array under set -u, and an empty list would hide the login keychain.
+    @Test func anEmptySearchListGetsTheLoginKeychainBack() throws {
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, emptyList: true), [])
+        #expect(r.status == 0, "\(r.output)")
+        let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
+        #expect(set?.hasPrefix("list-keychains -d user -s /Users/x/Library/Keychains/login.keychain-db ") == true)
+        #expect(set?.hasSuffix("striple-signing.keychain-db") == true)
+    }
+
+    @Test func removeWithoutYesWarnsAndChangesNothing() throws {
         let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true), ["--remove"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("--import <backup file>"))
+        #expect(r.calls.isEmpty)
+    }
+
+    @Test func importNeedsAReadableBackup() throws {
+        let r = try Self.run(Keychain(file: false, password: false, identity: false), ["--import", "/nonexistent.p12"])
+        #expect(r.status == 1)
+        #expect(r.output.contains("no such file: /nonexistent.p12"))
+        #expect(try Self.run(Keychain(file: false, password: false, identity: false), ["--yes"]).status == 1)
+    }
+
+    @Test func removeDeletesTheKeychainThePasswordAndTheListEntry() throws {
+        let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true), ["--remove", "--yes"])
         #expect(r.status == 0)
         #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password -s Striple Local Signing keychain") })

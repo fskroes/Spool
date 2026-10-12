@@ -3,7 +3,7 @@
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
 
-.PHONY: build test bench release app icon dmg install uninstall run clean publish publish-dry
+.PHONY: build test bench release app icon dmg install uninstall run clean publish publish-dry publish-finish
 
 build:
 	swift build
@@ -46,6 +46,10 @@ publish-dry:
 # Publishes VERSION to the GitHub releases repository in Packaging/updates.env.
 publish:
 	./scripts/release.sh
+
+# Checks and tags a release that a stopped `make publish` made public already.
+publish-finish:
+	./scripts/release.sh --finish
 
 run: app
 	open dist/Striple.app

@@ -96,8 +96,8 @@ codesign -d -r - dist/Striple.app
 Make a self-signed code signing certificate one time. Then each build has the same designated requirement: the bundle ID plus the hash of your certificate. The permission stays after a rebuild.
 
 ```sh
-./scripts/make-signing-cert.sh --dry-run   # show the steps, do not change the keychain
-./scripts/make-signing-cert.sh             # make the identity "Striple Local Signing"
+./scripts/make-signing-cert.sh --dry-run   # show the steps; reads and changes no keychain
+./scripts/make-signing-cert.sh             # make the identity "Striple Local Signing" and its backup
 ```
 
 The script:
@@ -108,11 +108,20 @@ The script:
 4. Imports the identity into the new keychain. Only `codesign` can use the key, and `set-key-partition-list` stops the "allow access" prompt.
 5. Adds the new keychain to your keychain search list. `codesign` finds identities only in keychains on that list.
 6. Signs a test file and checks that its designated requirement names the certificate hash.
-7. Deletes the key files from `.build/signing-cert`.
+7. Writes the backup `~/Striple-signing-identity.p12` (`STRIPLE_SIGNING_BACKUP` sets another path). The file is encrypted with a random passphrase that the script prints one time.
+8. Deletes the key files from `.build/signing-cert`.
 
-The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain.
+The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see.
 
-When you run the script again and the identity works, the script does nothing. If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove` first.
+**Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete the file. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
+
+Restore the identity from the backup (on a new Mac, or after `--remove`):
+
+```sh
+./scripts/make-signing-cert.sh --import ~/Striple-signing-identity.p12   # asks for the passphrase
+```
+
+When you run the script again and the identity works, the script does nothing. If the keychain is there but not usable (for example, the password item was deleted), the script tells you to run `--remove --yes` first, then `--import` your backup.
 
 After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
 
@@ -126,10 +135,10 @@ codesign -d -r - /Applications/Striple.app
 
 `security find-identity -v` does not show the identity, because `-v` shows only trusted identities. That is correct and does not stop signing.
 
-Remove the identity (the keychain, its password item and its search list entry):
+Remove the identity (the keychain, its password item and its search list entry). Without `--yes` the script only warns, because only the backup can bring the key back:
 
 ```sh
-./scripts/make-signing-cert.sh --remove
+./scripts/make-signing-cert.sh --remove --yes
 ```
 
 Notes:

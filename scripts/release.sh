@@ -4,16 +4,20 @@
 #
 #   1. Checks: a clean tree on main, a VERSION higher than the published one, a CHANGELOG.md
 #      section for VERSION, the Sparkle private key matches Packaging/updates.env, and the local
-#      signing identity exists (scripts/make-signing-cert.sh).
+#      signing identity is the one Packaging/updates.env pins (STRIPLE_SIGNING_CERT_SHA1).
+#      The published archive must have the same signing identity and update key.
 #   2. Builds dist/Striple.app (universal, updates on) and checks its Info.plist and signature.
 #   3. Makes dist/release/<version>/: Striple-<version>.zip (the Sparkle archive), Striple.dmg,
 #      appcast.xml (one item, EdDSA signed), SHA256SUMS.txt and notes.md.
-#   4. Verifies the EdDSA signature of the archive.
+#   4. Verifies the EdDSA signature of the archive, and that no file in the zip or the DMG has
+#      your home path, user name or Git email in it.
 #   5. Not with --dry-run: makes the releases repository if it is missing, uploads a draft
 #      release, publishes it, downloads the feed and the archive again and compares them,
 #      then tags HEAD v<version> in this repository (local tag, nothing is pushed).
 #
-# Usage: scripts/release.sh [--dry-run]
+# Usage: scripts/release.sh [--dry-run | --finish]
+#   --finish  only step 5 after the publish: when a run published the release but stopped
+#             before the tag. It uses the files in dist/release/<version>/ of that run.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -32,10 +36,12 @@ log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 DRY=0
+FINISH=0
 case "${1:-}" in
     "") ;;
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --finish) FINISH=1 ;;
+    -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
 esac
 
@@ -56,8 +62,9 @@ REPO=$(striple_updates_value "$UPDATES_ENV" STRIPLE_RELEASES_REPO)
 FEED=$(striple_updates_value "$UPDATES_ENV" STRIPLE_FEED_URL)
 KEY=$(striple_updates_value "$UPDATES_ENV" STRIPLE_ED_PUBLIC_KEY)
 ACCOUNT=$(striple_updates_value "$UPDATES_ENV" STRIPLE_ED_KEY_ACCOUNT)
-[[ -n "$REPO" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" ]] \
-    || die "Packaging/updates.env needs STRIPLE_RELEASES_REPO, STRIPLE_FEED_URL, STRIPLE_ED_PUBLIC_KEY and STRIPLE_ED_KEY_ACCOUNT"
+CERT=$(striple_updates_value "$UPDATES_ENV" STRIPLE_SIGNING_CERT_SHA1)
+[[ -n "$REPO" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$CERT" ]] \
+    || die "Packaging/updates.env needs STRIPLE_RELEASES_REPO, STRIPLE_FEED_URL, STRIPLE_ED_PUBLIC_KEY, STRIPLE_ED_KEY_ACCOUNT and STRIPLE_SIGNING_CERT_SHA1"
 [[ "$FEED" == "$(striple_feed_url_for_repo "$REPO")" ]] \
     || die "STRIPLE_FEED_URL must be $(striple_feed_url_for_repo "$REPO")"
 [[ -z "${SIGN_IDENTITY:-}" ]] || die "unset SIGN_IDENTITY: releases are signed with the local identity only"
@@ -80,11 +87,52 @@ ACTUAL_KEY=$("$SPARKLE_BIN/generate_keys" --account "$ACCOUNT" -p 2>/dev/null | 
 [[ "$ACTUAL_KEY" == "$KEY" ]] || die "the Sparkle key in your keychain (account $ACCOUNT) does not match STRIPLE_ED_PUBLIC_KEY.
 Import your backup: $SPARKLE_BIN/generate_keys --account $ACCOUNT -f <private-key-file>"
 
-HASH=$(striple_signing_identity) || die "no local signing identity. Run scripts/make-signing-cert.sh.
+HASH=$(striple_signing_identity) || die "no local signing identity. Restore it from your backup:
+scripts/make-signing-cert.sh --import <backup file>
 An update with another signature makes macOS ask for the Accessibility permission again."
+striple_sha1_equal "$HASH" "$CERT" || die "the local signing identity is $HASH, but Packaging/updates.env pins $CERT.
+Releases must keep one identity, else every installed copy loses its Accessibility permission.
+Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/striple-release.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
+OUT="$ROOT/dist/release/$VERSION"
+ZIP_NAME="Striple-$VERSION.zip"
+PREFIX=$(striple_download_prefix "$REPO" "$VERSION")
+
+# Step 5 after the publish: the feed serves the new appcast and the archive is the uploaded one.
+verify_published_and_tag() {
+    # GitHub can take some seconds before /latest/ points to the new release.
+    log "Checking the published files"
+    local ok=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -fsSL --max-time 30 -o "$TMP/feed.xml" "$FEED" && cmp -s "$TMP/feed.xml" "$OUT/appcast.xml"; then
+            ok=1; break
+        fi
+        sleep 3
+    done
+    [[ $ok -eq 1 ]] || die "$FEED does not return the new appcast. Check https://github.com/$REPO/releases/tag/$TAG,
+then run: scripts/release.sh --finish"
+    curl -fsSL --max-time 300 -o "$TMP/$ZIP_NAME" "$PREFIX$ZIP_NAME" || die "cannot download $PREFIX$ZIP_NAME"
+    cmp -s "$TMP/$ZIP_NAME" "$OUT/$ZIP_NAME" || die "the downloaded $ZIP_NAME is not the same as the uploaded one"
+    git tag -a "$TAG" -m "Striple $VERSION (build $BUILD)"
+    log "Published Striple $VERSION: https://github.com/$REPO/releases/tag/$TAG"
+    log "Feed: $FEED"
+}
+
+if [[ $FINISH -eq 1 ]]; then
+    for f in "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt; do
+        [[ -f "$OUT/$f" ]] || die "$OUT/$f is missing. --finish needs the files of the run that published $TAG."
+    done
+    (cd "$OUT" && shasum -a 256 -c SHA256SUMS.txt >/dev/null) || die "the files in $OUT do not match SHA256SUMS.txt"
+    # The build number is the commit count: the tag must go on the commit the release was built from.
+    read -r _ RUN_BUILD < <(striple_appcast_latest "$OUT/appcast.xml") || die "$OUT/appcast.xml has no release item"
+    [[ "$RUN_BUILD" == "$BUILD" ]] || die "$OUT was built at build $RUN_BUILD, HEAD is build $BUILD. Check out that commit first."
+    [[ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" == false ]] \
+        || die "$TAG is not a published release in $REPO. Run scripts/release.sh (without --finish)."
+    verify_published_and_tag
+    exit 0
+fi
 
 # The published feed: the new release must be newer.
 CODE=$(curl -sSL --max-time 30 -o "$TMP/published.xml" -w '%{http_code}' "$FEED") || die "cannot read $FEED"
@@ -92,13 +140,30 @@ case "$CODE" in
     200)
         read -r PREV_VERSION PREV_BUILD < <(striple_appcast_latest "$TMP/published.xml") \
             || die "the published feed has no release item: $FEED"
+        [[ "$VERSION" != "$PREV_VERSION" ]] || die "$VERSION is published already. If its run stopped before the tag,
+run: scripts/release.sh --finish. Else increase VERSION."
         striple_version_gt "$VERSION" "$PREV_VERSION" || die "VERSION $VERSION is not higher than the published $PREV_VERSION"
         (( BUILD > PREV_BUILD )) || die "build $BUILD is not higher than the published build $PREV_BUILD"
         log "Published now: $PREV_VERSION ($PREV_BUILD). New: $VERSION ($BUILD)"
+        # Installed copies accept the update only with the same update key, and keep their
+        # Accessibility permission only with the same signing identity.
+        PREV_URL=$(striple_appcast_latest_url "$TMP/published.xml") || die "the published feed has no enclosure URL"
+        curl -fsSL --max-time 300 -o "$TMP/published.zip" "$PREV_URL" || die "cannot download $PREV_URL"
+        mkdir "$TMP/published"
+        ditto -x -k "$TMP/published.zip" "$TMP/published" || die "cannot unpack $PREV_URL"
+        PREV_APP="$TMP/published/Striple.app"
+        striple_dr_is_local "$(codesign -d -r - "$PREV_APP" 2>&1)" "$BUNDLE_ID" "$HASH" \
+            || die "the published $PREV_VERSION is not signed with $HASH. Restore its identity from your backup
+(scripts/make-signing-cert.sh --import <file>), else every installed copy loses its Accessibility permission."
+        [[ "$(plutil -extract SUPublicEDKey raw -o - "$PREV_APP/Contents/Info.plist" 2>/dev/null)" == "$KEY" ]] \
+            || die "the published $PREV_VERSION has another SUPublicEDKey than Packaging/updates.env.
+Installed copies would refuse this update. Use the key of the published release."
+        log "The published $PREV_VERSION has the same signing identity and update key"
         ;;
     404)
-        if [[ $DRY -eq 0 ]] && gh release list --repo "$REPO" --limit 1 2>/dev/null | grep -q .; then
-            die "$REPO has releases but no feed at $FEED. Fix the latest release first."
+        # Drafts are not public; a failed draft of this version is handled before the upload.
+        if [[ $DRY -eq 0 ]] && gh release list --repo "$REPO" --exclude-drafts --limit 1 2>/dev/null | grep -q .; then
+            die "$REPO has published releases but no feed at $FEED. Fix the latest release first."
         fi
         log "No release published yet. New: $VERSION ($BUILD)"
         ;;
@@ -125,10 +190,8 @@ for arch in arm64 x86_64; do
 done
 
 # --- 3. Files ---------------------------------------------------------------------------------
-OUT="$ROOT/dist/release/$VERSION"
 case "$OUT" in */dist/release/*) rm -rf "$OUT" ;; *) die "unexpected output path: $OUT" ;; esac
 mkdir -p "$OUT"
-ZIP_NAME="Striple-$VERSION.zip"
 log "Making $ZIP_NAME and Striple.dmg"
 # No extended attributes: macOS adds com.apple.provenance to built files, and the signature
 # does not need it (a signed bundle keeps its signature in _CodeSignature).
@@ -137,7 +200,6 @@ env -u SIGN_IDENTITY "$ROOT/scripts/make-dmg.sh" >/dev/null
 mv "$ROOT/dist/Striple-$VERSION.dmg" "$OUT/Striple.dmg"
 printf '%s\n' "$NOTES" > "$OUT/notes.md"
 
-PREFIX=$(striple_download_prefix "$REPO" "$VERSION")
 log "Making appcast.xml"
 mkdir "$TMP/archives"
 cp "$OUT/$ZIP_NAME" "$TMP/archives/"
@@ -158,6 +220,21 @@ ditto -x -k "$OUT/$ZIP_NAME" "$TMP/unpacked"
 codesign --verify --deep --strict "$TMP/unpacked/Striple.app" || die "the app in $ZIP_NAME has no valid signature"
 striple_dr_is_local "$(codesign -d -r - "$TMP/unpacked/Striple.app" 2>&1)" "$BUNDLE_ID" "$HASH" \
     || die "the app in $ZIP_NAME is not signed with the local identity"
+# The files are public: nothing may name this Mac's user.
+log "Checking the zip and the DMG for your home path, user name and Git email"
+PRIVATE=("$HOME" "$USER" "$(git config user.email || true)")
+LEAKS=$(striple_private_strings "$TMP/unpacked" "${PRIVATE[@]}") \
+    || die "files in $ZIP_NAME contain your home path, user name or Git email:
+$LEAKS"
+hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$TMP/dmg" "$OUT/Striple.dmg" >/dev/null \
+    || die "cannot open Striple.dmg"
+LEAKS=$(striple_private_strings "$TMP/dmg" "${PRIVATE[@]}") || {
+    hdiutil detach "$TMP/dmg" -quiet || true
+    die "files in Striple.dmg contain your home path, user name or Git email:
+$LEAKS"
+}
+[[ -d "$TMP/dmg/Striple.app" ]] || { hdiutil detach "$TMP/dmg" -quiet || true; die "Striple.dmg has no Striple.app"; }
+hdiutil detach "$TMP/dmg" -quiet
 (cd "$OUT" && shasum -a 256 "$ZIP_NAME" Striple.dmg appcast.xml > SHA256SUMS.txt)
 log "Files in $OUT:"
 (cd "$OUT" && ls -l "$ZIP_NAME" Striple.dmg appcast.xml SHA256SUMS.txt notes.md | awk '{ printf "    %10s  %s\n", $5, $9 }')
@@ -198,19 +275,4 @@ gh release create "$TAG" --repo "$REPO" --draft --title "Striple $VERSION" --not
 log "Publishing $TAG"
 gh release edit "$TAG" --repo "$REPO" --draft=false --latest >/dev/null
 
-# GitHub can take some seconds before /latest/ points to the new release.
-log "Checking the published files"
-ok=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsSL --max-time 30 -o "$TMP/feed.xml" "$FEED" && cmp -s "$TMP/feed.xml" "$OUT/appcast.xml"; then
-        ok=1; break
-    fi
-    sleep 3
-done
-[[ $ok -eq 1 ]] || die "$FEED does not return the new appcast. Check https://github.com/$REPO/releases/tag/$TAG"
-curl -fsSL --max-time 300 -o "$TMP/$ZIP_NAME" "$PREFIX$ZIP_NAME" || die "cannot download $PREFIX$ZIP_NAME"
-cmp -s "$TMP/$ZIP_NAME" "$OUT/$ZIP_NAME" || die "the downloaded $ZIP_NAME is not the same as the uploaded one"
-
-git tag -a "$TAG" -m "Striple $VERSION (build $BUILD)"
-log "Published Striple $VERSION ($BUILD): https://github.com/$REPO/releases/tag/$TAG"
-log "Feed: $FEED"
+verify_published_and_tag

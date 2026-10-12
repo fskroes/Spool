@@ -22,9 +22,9 @@ Striple publishes its builds on GitHub, in the public repository [fskroes/stripl
 
 | Thing | Where | Secret? |
 |---|---|---|
-| Feed URL, public EdDSA key, releases repo, key account | `Packaging/updates.env` (committed) | No |
-| Sparkle private EdDSA key | login keychain, account `com.fskroes.Striple` | **Yes** |
-| Code signing identity "Striple Local Signing" | `~/Library/Keychains/striple-signing.keychain-db` | **Yes** |
+| Feed URL, public EdDSA key, releases repo, key account, signing certificate SHA-1 | `Packaging/updates.env` (committed) | No |
+| Sparkle private EdDSA key | login keychain, account `com.fskroes.Striple`; backup in your password manager | **Yes** |
+| Code signing identity "Striple Local Signing" | `~/Library/Keychains/striple-signing.keychain-db`; backup `.p12` and passphrase in your password manager | **Yes** |
 | Release notes | `CHANGELOG.md`, one `## <version>` section per release | No |
 | GitHub login | `gh auth login` (keyring) | Yes |
 
@@ -41,7 +41,7 @@ The feed URL is `https://github.com/fskroes/striple-releases/releases/latest/dow
    gh auth login        # GitHub.com, HTTPS, log in with a web browser
    ```
 
-2. Make the code signing identity: `./scripts/make-signing-cert.sh` (see [INSTALL.md](INSTALL.md#keep-the-accessibility-permission-after-a-rebuild)).
+2. Make the code signing identity: `./scripts/make-signing-cert.sh` (see [INSTALL.md](INSTALL.md#keep-the-accessibility-permission-after-a-rebuild)). **Put the backup file and the passphrase it prints in your password manager**, then delete the file. Set `STRIPLE_SIGNING_CERT_SHA1` in `Packaging/updates.env` to the SHA-1 it prints. On a new Mac, restore it with `./scripts/make-signing-cert.sh --import <file>`.
 3. The Sparkle key pair exists already. Its public key is in `Packaging/updates.env`. **Make a backup of the private key** and keep it in your password manager:
 
    ```sh
@@ -51,7 +51,7 @@ The feed URL is `https://github.com/fskroes/striple-releases/releases/latest/dow
 
    Without the private key, the installed apps cannot accept new updates. On a new Mac, import it with `generate_keys --account com.fskroes.Striple -f striple-sparkle-key.txt`.
 
-Releases must come from the Mac that has both identities. With another code signing identity, the designated requirement changes, and macOS asks for the Accessibility permission again after the update.
+Releases need both keys. With another code signing identity, the designated requirement changes, and macOS asks for the Accessibility permission again after the update. With another EdDSA key, installed apps refuse the update. `make publish` checks both against `Packaging/updates.env` and against the published release.
 
 ## Publish a release
 
@@ -79,10 +79,12 @@ Releases must come from the Mac that has both identities. With another code sign
 | `VERSION` and the build number are higher than the ones in the published feed | Sparkle offers only a higher build. |
 | `CHANGELOG.md` has a section for `VERSION` | The update window shows these notes. |
 | The private key in the keychain matches `STRIPLE_ED_PUBLIC_KEY` | Else every installed app refuses the update. |
-| The local signing identity exists, `SIGN_IDENTITY` is not set | Same designated requirement, so macOS keeps the Accessibility permission. |
+| The local signing identity is the one `STRIPLE_SIGNING_CERT_SHA1` pins, `SIGN_IDENTITY` is not set | Same designated requirement, so macOS keeps the Accessibility permission. |
+| The published release is signed with the same identity and has the same `SUPublicEDKey` | An update that changes either one breaks every installed copy. |
 | The app is universal, has the feed URL and the key, and is signed with the local identity | No broken build goes out. |
 | The appcast has one item with the right version, build, URL, length and an EdDSA signature | The feed matches the archive. |
 | The archive unpacks to an app with a valid signature and the same designated requirement | This is what an update installs. |
+| No file in the zip or the DMG contains your home path, user name or Git email | The files are public. `build-app.sh` removes the debug map (`strip -S`), which had the build paths. |
 
 Then it uploads the files to a **draft** release, publishes it, downloads the feed and the archive again and compares them byte for byte, and tags the commit `v<version>` (local tag only).
 
@@ -93,7 +95,9 @@ The files stay in `dist/release/<version>/`.
 | Problem | Fix |
 |---|---|
 | "the release vX exists" after a failed run | The draft is still there. `gh release delete vX --repo fskroes/striple-releases --yes`, then run again. |
-| "does not return the new appcast" | GitHub was slow. Open the release page, check that it is published and "Latest". Then check `curl -sL <feed URL>`. |
+| "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the check and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed and the archive with them, and makes the tag. |
+| "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
+| "the local signing identity is …, but Packaging/updates.env pins …" | Restore the pinned identity: `./scripts/make-signing-cert.sh --remove --yes`, then `--import <backup file>`. |
 | "the Sparkle key … does not match" | Import the backup with `generate_keys --account com.fskroes.Striple -f <file>`. |
 | A bad release is out | Publish a fixed version with a higher `VERSION`. Do not delete a published archive: installed apps can be in the middle of an update. |
 
