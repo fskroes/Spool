@@ -290,7 +290,18 @@ public struct IPCClient: Sendable {
     }
 
     public func send(_ request: IPCRequest) throws -> IPCResponse {
-        try IPCConnection(socketPath: socketPath, timeout: timeout).send(request)
+        try IPCConnection(socketPath: socketPath, timeout: Self.timeout(for: request, base: timeout)).send(request)
+    }
+
+    /// Start, stop and restart answer only after the engine moved every parked window back and the apps
+    /// confirmed it. One slow app can make that take seconds, so these commands wait longer.
+    public static let lifecycleTimeout: TimeInterval = 10
+
+    public static func timeout(for request: IPCRequest, base: TimeInterval) -> TimeInterval {
+        switch request.command {
+        case .start?, .stop?, .toggleEngine?, .restart?: return max(base, lifecycleTimeout)
+        default: return base
+        }
     }
 }
 

@@ -4,6 +4,8 @@ All default shortcuts use Control-Option (`⌃⌥`), so plain Option stays free 
 Shift adds "move" to a "focus" shortcut. Command adds "to the end".
 
 You can change every shortcut in **Settings > Shortcuts**. Click a shortcut and press the new keys.
+A shortcut needs `⌃`, or `⌥` and `⌘` together, or a function key (F1 to F20). The recorder refuses `⌘` alone
+(apps use it, for example `⌘W`) and `⌥` alone (it types characters, for example `⌥2` is € and `⌥L` is @ on a German layout).
 The page shows a warning when two actions use the same keys, or when macOS or another app already owns a combination.
 The key names below are for a US layout. The Settings page shows the names for your active keyboard layout.
 

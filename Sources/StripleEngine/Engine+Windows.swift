@@ -598,7 +598,7 @@ extension Engine {
     /// Moves every window Striple parked back into view and waits until the apps have done it (at most
     /// `timeout` seconds), then gives the apps back their AXEnhancedUserInterface setting. Used by stop and rebuild,
     /// so no window stays parked at an edge.
-    func releaseAll(timeout: Double = 2) {
+    func releaseAll(timeout: Double = Engine.releaseWait) {
         var writes: [FrameWrite] = []
         for (id, w) in windows {
             let target: CGRect?
@@ -629,6 +629,10 @@ extension Engine {
         if !writes.isEmpty, applier.applyAndWait(writes, timeout: timeout) == nil {
             log.log("release: an app did not answer within \(timeout) s, some windows may stay parked")
         }
-        if !applier.settleAndWait(timeout: 1) { log.log("release: an app did not answer the settle call") }
+        if !applier.settleAndWait(timeout: Engine.settleWait) { log.log("release: an app did not answer the settle call") }
     }
+
+    /// The longest `releaseAll` waits for the apps. `IPCClient.lifecycleTimeout` must stay above the sum.
+    nonisolated public static let releaseWait: Double = 2
+    nonisolated public static let settleWait: Double = 1
 }

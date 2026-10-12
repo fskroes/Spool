@@ -35,6 +35,28 @@ import StripleCore
         #expect(RecorderRules.evaluate(keyCode: KeyCode.escape, modifiers: [.control]) == .cancel)
         #expect(RecorderRules.evaluate(keyCode: KeyCode.delete, modifiers: []) == .cancel)
     }
+
+    @Test func optionAloneTypesCharactersSoItIsRefused() {
+        // ⌥2 is € (US), ⌥L is @ (German), ⌥⇧7 is \ (German), ⌥← moves the cursor one word.
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.two, modifiers: [.option]) == .typesCharacters)
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.l, modifiers: [.option]) == .typesCharacters)
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.seven, modifiers: [.option, .shift]) == .typesCharacters)
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.left, modifiers: [.option]) == .typesCharacters)
+        // With ⌃ or ⌘, or on a function key, ⌥ types nothing.
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.l, modifiers: [.option, .control]) == .accept(KeyCombo(KeyCode.l, [.option, .control])))
+        let f5 = FunctionKeys.codes[4]
+        #expect(RecorderRules.evaluate(keyCode: f5, modifiers: [.option]) == .accept(KeyCombo(f5, [.option])))
+    }
+
+    @Test func theRuleTextMatchesTheRules() {
+        // The recorder hint and the Shortcuts tab show ruleText. It must name what evaluate accepts.
+        #expect(RecorderRules.ruleText.contains("⌃"))
+        #expect(RecorderRules.ruleText.contains("⌥ and ⌘ together"))
+        #expect(!RecorderRules.ruleText.contains("⌘ alone"))
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.h, modifiers: [.control]) == .accept(KeyCombo(KeyCode.h, [.control])))
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.h, modifiers: [.option]) == .typesCharacters)
+        #expect(RecorderRules.evaluate(keyCode: KeyCode.h, modifiers: [.command]) == .appShortcut)
+    }
 }
 
 @Suite struct LoginItemRulesTests {

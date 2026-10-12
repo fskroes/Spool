@@ -132,6 +132,10 @@ struct LaunchAtLoginRow: View {
         Toggle("Open Striple when you log in", isOn: Binding(get: { store.config.behavior.launchAtLogin }, set: set))
             .disabled(state == .unavailable)
             .onAppear { state = LoginItem.state }
+            // The user approves Striple in System Settings and comes back: show the new state.
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                state = LoginItem.state
+            }
         if state == .unavailable {
             Note("Available in the app bundle.")
         }

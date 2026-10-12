@@ -14,6 +14,7 @@ readonly BIN_DIR="$HOME/.local/bin"
 readonly LINK="$BIN_DIR/striple"
 
 PREFIX=""
+PREFIX_GIVEN=0
 SOURCE_APP="$ROOT/dist/Striple.app"
 DRY_RUN=0
 UNINSTALL=0
@@ -25,7 +26,7 @@ say() { printf '%s\n' "$*"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --prefix) [[ $# -ge 2 ]] || die "--prefix needs a directory"; PREFIX=$2; shift 2 ;;
+        --prefix) [[ $# -ge 2 ]] || die "--prefix needs a directory"; PREFIX=$2; PREFIX_GIVEN=1; shift 2 ;;
         --app) [[ $# -ge 2 ]] || die "--app needs a path"; SOURCE_APP=$2; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
@@ -90,20 +91,42 @@ on_path() {
     case ":$PATH:" in *":$BIN_DIR:"*) return 0 ;; *) return 1 ;; esac
 }
 
+# The apps to remove. With --prefix only that one. Without it, every place `install` could have used:
+# the app the CLI link points into, /Applications and ~/Applications. So an install with --prefix
+# is found too, and its login agent does not start a deleted app at the next login.
+uninstall_targets() {
+    if [[ $PREFIX_GIVEN -eq 1 ]]; then
+        printf '%s\n' "$DEST"
+        return
+    fi
+    local linked=""
+    if link_points_into_striple; then
+        linked=$(readlink "$LINK")
+        linked=${linked%/Contents/Helpers/striple}
+    fi
+    printf '%s\n' "$linked" /Applications/Striple.app "$HOME/Applications/Striple.app" | awk 'NF && !seen[$0]++'
+}
+
 if [[ $UNINSTALL -eq 1 ]]; then
     [[ $DRY_RUN -eq 1 ]] && say "Dry run. Nothing is changed."
     quit_striple
-    if [[ -x "$DEST/Contents/MacOS/Striple" && "$(bundle_id_of "$DEST")" == "$BUNDLE_ID" ]]; then
-        # Removes the LaunchAgent and the login item, so macOS does not keep an entry for a deleted app.
-        say "Turning off Launch at login"
-        run "$DEST/Contents/MacOS/Striple" --unregister-login
-    fi
-    if [[ -d "$DEST" ]]; then
-        say "Removing $DEST"
-        remove_app "$DEST"
-    else
-        say "No app at $DEST"
-    fi
+    found=0
+    while IFS= read -r app; do
+        [[ -d "$app" ]] || continue
+        if [[ "$(bundle_id_of "$app")" != "$BUNDLE_ID" ]]; then
+            warn "$app is not $BUNDLE_ID. Not removed."
+            continue
+        fi
+        found=1
+        if [[ -x "$app/Contents/MacOS/Striple" ]]; then
+            # Removes the LaunchAgent and the login item, so macOS does not keep an entry for a deleted app.
+            say "Turning off Launch at login ($app)"
+            run "$app/Contents/MacOS/Striple" --unregister-login </dev/null
+        fi
+        say "Removing $app"
+        remove_app "$app"
+    done < <(uninstall_targets)
+    [[ $found -eq 1 ]] || say "No Striple.app found"
     if link_points_into_striple; then
         say "Removing $LINK"
         run rm -f "$LINK"

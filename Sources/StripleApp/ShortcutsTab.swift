@@ -57,7 +57,7 @@ struct ShortcutsTab: View {
             }
             .id(layoutGeneration)
 
-            Note("Click + and press the new key combination. Use ⌃ or ⌥ with the key (⌘ only together with ⌃ or ⌥), or a function key alone. Press Esc to cancel. The labels follow your keyboard layout.")
+            Note("Click + and press the new key combination. \(RecorderRules.ruleText) Press Esc to cancel. The labels follow your keyboard layout.")
                 .padding(12)
         }
         .confirmationDialog("Reset all shortcuts to the defaults?", isPresented: $confirmReset) {

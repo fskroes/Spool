@@ -12,9 +12,15 @@ enum RecorderRules {
         case needsModifier
         /// ⌘ or ⌘⇧ with a key belongs to the apps (⌘W, ⌘C, ⌘Tab...). A global hotkey would take it from every app.
         case appShortcut
+        /// ⌥ or ⌥⇧ with a key types a character (⌥2 is € on a US layout, ⌥L is @ on a German one) or moves
+        /// the text cursor (⌥←). A global hotkey would take it from every text field.
+        case typesCharacters
         /// macOS already uses the combination (System Settings > Keyboard > Keyboard Shortcuts).
         case systemShortcut(KeyCombo)
     }
+
+    /// The rule in one sentence, for the recorder hint and the Shortcuts tab.
+    static let ruleText = "Use ⌃ with the key, or ⌥ and ⌘ together, or a function key (F1 to F20) alone."
 
     static func evaluate(keyCode: UInt16, modifiers: KeyModifiers, systemShortcuts: Set<KeyCombo> = []) -> Outcome {
         if keyCode == KeyCode.escape { return .cancel }
@@ -23,6 +29,7 @@ enum RecorderRules {
         guard function || !modifiers.isDisjoint(with: [.control, .option, .command]) else { return .needsModifier }
         let combo = KeyCombo(keyCode, modifiers)
         if !function && modifiers.contains(.command) && modifiers.isDisjoint(with: [.control, .option]) { return .appShortcut }
+        if !function && modifiers.contains(.option) && modifiers.isDisjoint(with: [.control, .command]) { return .typesCharacters }
         if systemShortcuts.contains(combo) { return .systemShortcut(combo) }
         return .accept(combo)
     }
@@ -99,10 +106,13 @@ final class ShortcutRecorder: ObservableObject {
         case .cancel:
             stop()
         case .needsModifier:
-            hint = "Hold ⌃, ⌥ or ⌘ with the key. F1 to F20 work alone."
+            hint = RecorderRules.ruleText
             NSSound.beep()
         case .appShortcut:
             hint = "Apps use ⌘ with a key (for example ⌘W closes a window). Add ⌃ or ⌥."
+            NSSound.beep()
+        case .typesCharacters:
+            hint = "⌥ with a key types a character or moves the text cursor. Add ⌃ or ⌘."
             NSSound.beep()
         case .systemShortcut(let combo):
             hint = "macOS uses \(KeyLabel.label(combo)). Choose other keys, or turn it off in System Settings > Keyboard > Keyboard Shortcuts."

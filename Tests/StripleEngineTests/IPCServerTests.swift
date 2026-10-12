@@ -279,3 +279,11 @@ private func makeStaleSocket(at path: String) {
         #expect(outputs[2] == .init(stderr: "Already stopped.\n", code: .failed))
     }
 }
+
+@Suite struct LifecycleTimeoutTests {
+    @Test func theCLIWaitsLongerThanTheEngineReleasesWindows() {
+        // stop answers after releaseAll: up to releaseWait for the writes, then settleWait, then a session save.
+        // restart adds a scan. Keep at least 3 s for those, or `striple stop` reports a timeout although it worked.
+        #expect(IPCClient.lifecycleTimeout >= Engine.releaseWait + Engine.settleWait + 3)
+    }
+}

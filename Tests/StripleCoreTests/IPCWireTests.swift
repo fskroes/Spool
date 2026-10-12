@@ -375,3 +375,15 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         }
     }
 }
+
+@Suite struct ClientTimeoutTests {
+    @Test func startStopAndRestartWaitLonger() {
+        for c: Command in [.start, .stop, .toggleEngine, .restart] {
+            #expect(IPCClient.timeout(for: IPCRequest(command: c), base: IPCClient.defaultTimeout) == IPCClient.lifecycleTimeout)
+        }
+        #expect(IPCClient.timeout(for: IPCRequest(command: .focusLeft), base: IPCClient.defaultTimeout) == IPCClient.defaultTimeout)
+        #expect(IPCClient.timeout(for: IPCRequest(query: .state), base: IPCClient.defaultTimeout) == IPCClient.defaultTimeout)
+        // A longer timeout from the caller is never made shorter.
+        #expect(IPCClient.timeout(for: IPCRequest(command: .stop), base: 30) == 30)
+    }
+}
