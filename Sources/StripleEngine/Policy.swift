@@ -51,13 +51,32 @@ enum Policy {
 
     // MARK: Geometry
 
-    /// True when two frames are the same within `tolerance` points. Used to tell Striple's own writes from user moves.
     /// Apps whose windows Striple manages: regular apps that still run, never Striple itself.
     /// This leaves out loginwindow (the lock screen), agents and menu bar apps.
-    static func isManageableApp(policy: NSApplication.ActivationPolicy, pid: pid_t, ownPID: pid_t, terminated: Bool) -> Bool {
-        policy == .regular && pid != ownPID && !terminated
+    /// `manageOnly` (test only, see `manageOnlyBundleIDs`): when not nil, only apps with one of these bundle IDs.
+    static func isManageableApp(policy: NSApplication.ActivationPolicy, pid: pid_t, ownPID: pid_t, terminated: Bool,
+                                bundleID: String? = nil, manageOnly: Set<String>? = nil) -> Bool {
+        policy == .regular && pid != ownPID && !terminated && isAllowed(bundleID: bundleID, manageOnly: manageOnly)
     }
 
+    /// The environment variable of the E2E test seam. See docs/E2E.md.
+    static let manageOnlyEnvironmentKey = "STRIPLE_MANAGE_ONLY"
+
+    /// The bundle IDs in `STRIPLE_MANAGE_ONLY` (comma separated). nil when the variable is not set: Striple manages
+    /// every app. Set but empty gives an empty set: Striple manages no app. A test seam must fail closed.
+    static func manageOnlyBundleIDs(environment: [String: String]) -> Set<String>? {
+        guard let raw = environment[manageOnlyEnvironmentKey] else { return nil }
+        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+
+    /// With a manage-only list, an app without a bundle ID or with another bundle ID is never managed.
+    static func isAllowed(bundleID: String?, manageOnly: Set<String>?) -> Bool {
+        guard let manageOnly else { return true }
+        guard let bundleID else { return false }
+        return manageOnly.contains(bundleID)
+    }
+
+    /// True when two frames are the same within `tolerance` points. Used to tell Striple's own writes from user moves.
     static func same(_ a: CGRect, _ b: CGRect?, tolerance: CGFloat = 2) -> Bool {
         guard let b else { return false }
         return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
