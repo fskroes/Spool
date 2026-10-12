@@ -117,6 +117,11 @@ public final class Engine: ObservableObject {
     /// Restored when they appear; included in every save so they are not lost.
     var laterStrips: [SessionStrip] = []
     var laterFloating: [WindowInfo] = []
+    /// Saved tiled windows of apps that did not answer during a restore. They go back to their slot when the app
+    /// answers; included in every save.
+    var heldWindows: [HeldWindow] = []
+    /// Apps that were watched but did not answer a scan: the attempt of the next scan.
+    var quietRescans: [pid_t: Int] = [:]
     /// When an app was last re-watched after its AX writes kept failing.
     var healedAt: [pid_t: Double] = [:]
 
@@ -278,6 +283,8 @@ public final class Engine: ObservableObject {
         buttonMoves.removeAll()
         laterStrips.removeAll()
         laterFloating.removeAll()
+        heldWindows.removeAll()
+        quietRescans.removeAll()
         healedAt.removeAll()
     }
 

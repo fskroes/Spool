@@ -64,5 +64,10 @@ import Testing
         old.bindings[.moveLeft] = [left]
         let c = try Config.decode(old.encoded(), arrowsTaken: false)
         #expect(c.bindings[.moveLeft] == [left])
+        // The version stays 1, so the migration runs after an upgrade to macOS 15.
+        #expect(c.version == 1)
+        let later = try Config.decode(c.encoded(), arrowsTaken: true)
+        #expect(later.bindings[.moveLeft]?.contains(left) == false)
+        #expect(later.version == Config.currentVersion)
     }
 }

@@ -51,12 +51,21 @@ extension Engine {
             log.log("session: screen is locked, restoring after it unlocks")
         }
         var fresh: [Candidate] = []
+        // Apps that do not answer. Their windows are found when they answer (a watch retry, or a rescan).
+        var quiet: [pid_t: String] = [:]
         for app in WindowTracker.manageableApps() {
             let pid = app.processIdentifier
             tracker?.watch(pid)
-            // An app that does not answer is tried again later; its windows are found when it answers.
-            if tracker?.isWaiting(for: pid) == true { continue }
-            for element in AX.elements(AX.app(pid), kAXWindowsAttribute) {
+            if tracker?.isWaiting(for: pid) == true {
+                quiet[pid] = app.bundleIdentifier ?? ""
+                continue
+            }
+            guard let elements = AX.windows(of: pid) else {
+                quiet[pid] = app.bundleIdentifier ?? ""
+                scheduleQuietRescan(pid)
+                continue
+            }
+            for element in elements {
                 guard let c = classify(element, pid: pid, onlyNew: true) else { continue }
                 fresh.append(c)
             }
@@ -70,6 +79,12 @@ extension Engine {
             let split = s.partition(visible: Set(activeSpaces.values), known: known)
             laterStrips = split.later
             session = split.now
+            // Saved windows of apps that do not answer keep their slot until the app answers.
+            if let now = session, !quiet.isEmpty {
+                let held = now.holdingBack(bundles: Set(quiet.values))
+                session = held.session
+                heldWindows += held.held
+            }
         }
         guard let session, !session.strips.isEmpty || !session.floating.isEmpty else {
             for c in fresh { adopt(c, isNew: false, inScan: true) }
@@ -115,22 +130,60 @@ extension Engine {
         }
         // A saved floating window that still exists is on a Space not on screen. One that is gone is dropped.
         laterFloating = restored.unmatchedFloating.filter { alive.isEmpty || alive.contains($0.id) }
-        log.log("session: restored \(restored.strips.count) strips, \(restored.unmatched.count) new windows, \(laterStrips.count) strips wait for their Space")
+        log.log("session: restored \(restored.strips.count) strips, \(restored.unmatched.count) new windows, \(laterStrips.count) strips wait for their Space, \(heldWindows.count) windows wait for their app")
     }
 
-    /// Finds new windows of one app (after launch, or when its observer came up late).
+    /// Finds new windows of one app (after launch, or when its observer came up late). A window that a restore
+    /// held for this app goes back to its saved slot.
     func scanApp(_ pid: pid_t) {
         guard pid != getpid() else { return }
         tracker?.watch(pid)
         if tracker?.isWaiting(for: pid) == true { return }
+        guard let elements = AX.windows(of: pid) else { return scheduleQuietRescan(pid) }
+        quietRescans[pid] = nil
         // An observer that came up late (a retry after a hang) has no window notifications yet. observe skips
         // windows it already has.
         for w in windows.values where w.info.pid == pid { tracker?.observe(window: w.element, pid: pid) }
-        for element in AX.elements(AX.app(pid), kAXWindowsAttribute) {
+        var back: [(Candidate, HeldWindow)] = []
+        for element in elements {
             guard let c = classify(element, pid: pid, onlyNew: true) else { continue }
-            adopt(c, isNew: true)
+            if case .tile = c.decision, let h = HeldWindow.take(&heldWindows, for: c.info) {
+                back.append((c, h))
+            } else {
+                adopt(c, isNew: true)
+            }
         }
+        for (c, h) in back.sorted(by: { ($0.1.slot, $0.0.info.id) < ($1.1.slot, $1.0.info.id) }) { putInHeldSlot(c, h) }
         takeOffWindowsOfHiddenApps(pid: pid, relayoutNow: true)
+    }
+
+    /// Puts a window that the restore held back into its saved slot, without focus.
+    private func putInHeldSlot(_ c: Candidate, _ h: HeldWindow) {
+        guard let key = stripKey(for: c.info.id, element: c.element, preferredDisplay: h.displayID) else {
+            return adopt(c, isNew: false)
+        }
+        var strip = strips[key] ?? Strip()
+        strip.insert(c.info, width: h.width, slot: h.slot, focus: false)
+        strips[key] = strip
+        register(c, state: .tiled, key: key, createdAt: 0)
+        relayout(key)
+        scheduleSessionSave()
+    }
+
+    /// A watched app did not answer a scan. Scan it again later, with the watch retry delays.
+    func scheduleQuietRescan(_ pid: pid_t) {
+        let n = (quietRescans[pid] ?? 0) + 1
+        guard let delay = Policy.watchRetryDelay(attempt: n), NSRunningApplication(processIdentifier: pid) != nil else {
+            quietRescans[pid] = nil
+            return
+        }
+        quietRescans[pid] = n
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.status == .running, self.quietRescans[pid] == n else { return }
+                self.scanApp(pid)
+            }
+        }
     }
 
     /// AX lists the windows of a hidden (⌘H) app, but they are not on screen. Take them off the strip, as the
@@ -257,7 +310,12 @@ extension Engine {
             scanApp(pid)
         case .appTerminated(let pid):
             removeApp(pid)
-        case .appActivated(let pid), .focusedWindowChanged(let pid):
+        case .appActivated(let pid):
+            // An app that was given up on (it did not answer for a long time) is watched again when it is used.
+            if let tracker, !tracker.isWatching(pid), !tracker.isWaiting(for: pid),
+               let app = NSRunningApplication(processIdentifier: pid), WindowTracker.isManageable(app) { scanApp(pid) }
+            focusChanged(pid: pid)
+        case .focusedWindowChanged(let pid):
             focusChanged(pid: pid)
         case .appHidden(let pid):
             for (id, w) in windows where w.info.pid == pid && w.state == .tiled { takeOff(id, as: .hidden) }
@@ -466,6 +524,7 @@ extension Engine {
     }
 
     func removeApp(_ pid: pid_t) {
+        quietRescans[pid] = nil
         for (id, w) in windows where w.info.pid == pid { remove(id) }
         writer.unregisterApp(pid)
         applier.forgetApp(pid)

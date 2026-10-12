@@ -55,6 +55,45 @@ import Testing
         #expect(c?.disabledDisplays == ["UUID-1"])
     }
 
+    // Round 6 finding: an app that did not answer during a restore lost the saved slots of its windows.
+    @Test func windowsOfAnAppThatDoesNotAnswerKeepTheirSlots() {
+        func w(_ id: WindowID, _ app: String, _ title: String = "") -> WindowInfo { WindowInfo(id: id, pid: 1, bundleID: app, title: title) }
+        var strip = Strip()
+        for (i, info) in [w(1, "a"), w(2, "x", "Doc"), w(3, "a"), w(4, "x", "Notes")].enumerated() {
+            strip.insert(info, width: .proportion(Double(i + 1) / 10), slot: i + 1, focus: false)
+        }
+        var mixed = Strip()
+        mixed.insert(w(5, "a"), width: .proportion(0.5), slot: 1, focus: false)
+        mixed.columns[0].windows.append(w(6, "x"))
+        mixed.columns[0].heights.append(1)
+        let onlyX = Strip(columns: [Column(window: w(7, "x"), width: .proportion(0.5))], focusedColumn: 0)
+        let s = Session(strips: [SessionStrip(displayID: "D", spaceID: 1, strip: strip),
+                                 SessionStrip(displayID: "D", spaceID: 2, strip: mixed),
+                                 SessionStrip(displayID: "D", spaceID: 3, strip: onlyX)])
+
+        let split = s.holdingBack(bundles: ["x"])
+
+        #expect(split.session.strips.map(\.spaceID) == [1, 2])
+        #expect(split.session.strips[0].strip.allWindows.map(\.id) == [1, 3])
+        #expect(split.session.strips[1].strip.allWindows.map(\.id) == [5])
+        #expect(split.held.map(\.info.id) == [2, 4, 6, 7])
+        #expect(split.held.map(\.slot) == [2, 4, 2, 1])
+        #expect(split.held[0].width == .proportion(0.2))
+
+        // Putting them back in slot order rebuilds the saved order.
+        var back = split.session.strips[0].strip
+        for h in split.held where h.spaceID == 1 { back.insert(h.info, width: h.width, slot: h.slot, focus: false) }
+        #expect(back.allWindows.map(\.id) == [1, 2, 3, 4])
+
+        // A live window finds its held slot by ID, then title, then app.
+        var held = split.held
+        #expect(HeldWindow.take(&held, for: w(99, "x", "Notes"))?.info.id == 4)
+        #expect(HeldWindow.take(&held, for: w(6, "x"))?.info.id == 6)
+        #expect(HeldWindow.take(&held, for: w(98, "x"))?.info.id == 2)
+        #expect(HeldWindow.take(&held, for: w(97, "b")) == nil)
+        #expect(s.holdingBack(bundles: []).session == s)
+    }
+
     @Test func behaviourDefaultsMatchSpec() {
         let c = Config()
         #expect(!c.appearance.focusBorder && !c.appearance.dimInactive)

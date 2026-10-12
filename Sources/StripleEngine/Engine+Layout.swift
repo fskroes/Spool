@@ -335,19 +335,25 @@ extension Engine {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
-        let own = getpid()
-        var candidates: [(id: WindowID, bounds: CGRect)] = []
-        for info in list {
-            guard (info[kCGWindowLayer as String] as? Int) == 0,
-                  (info[kCGWindowOwnerPID as String] as? Int32) != own,
-                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                  let b = info[kCGWindowBounds as String] as? NSDictionary,
-                  let r = CGRect(dictionaryRepresentation: b),
-                  let n = info[kCGWindowNumber as String] as? UInt32 else { continue }
-            candidates.append((n, r))
-        }
+        let candidates = Self.hitCandidates(list, ownPID: getpid(), managed: Set(windows.keys))
         let parked = Set(placements.lazy.filter { $0.value.hidden }.map(\.key))
         return Policy.pressedWindow(at: p, frontToBack: candidates, slop: slop, parked: parked)
+    }
+
+    /// Normal windows (level 0) and windows Striple manages at any level (a video player set to "Float on Top"),
+    /// front to back. Striple's own windows (overlays) are left out.
+    nonisolated static func hitCandidates(_ list: [[String: Any]], ownPID: pid_t, managed: Set<WindowID>) -> [(id: WindowID, bounds: CGRect)] {
+        var out: [(id: WindowID, bounds: CGRect)] = []
+        for info in list {
+            guard let n = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  (info[kCGWindowLayer as String] as? Int) == 0 || managed.contains(n),
+                  (info[kCGWindowOwnerPID as String] as? Int32) != ownPID,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let b = info[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: b) else { continue }
+            out.append((n, r))
+        }
+        return out
     }
 
     // MARK: Swipes
@@ -402,10 +408,11 @@ extension Engine {
 
     /// The live strips plus the saved ones still waiting for their Space, so a save never drops those.
     func sessionSnapshot() -> Session {
-        let off = windows.values.compactMap { w -> (info: WindowInfo, key: StripKey, slot: Int?, width: ColumnWidth?)? in
+        var off = windows.values.compactMap { w -> (info: WindowInfo, key: StripKey, slot: Int?, width: ColumnWidth?)? in
             guard w.state == .hidden || w.state == .minimized, let key = w.key else { return nil }
             return (w.info, key, w.slot, w.width)
         }
+        off += heldWindows.map { (info: $0.info, key: StripKey(display: $0.displayID, space: $0.spaceID), slot: Optional($0.slot), width: Optional($0.width)) }
         let all = Policy.stripsForSession(strips, offStrip: off, defaultWidth: .proportion(config.layout.defaultWidth))
         let saved = all.filter { !$0.value.isEmpty }
             .map { SessionStrip(displayID: $0.key.display, spaceID: $0.key.space, strip: $0.value) }

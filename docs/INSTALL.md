@@ -142,6 +142,7 @@ The bundle has a launch agent: `Contents/Library/LaunchAgents/com.fskroes.Stripl
 | `ThrottleInterval` | 5 | Wait at least 5 seconds between two starts. |
 
 When you turn on "Launch at login" in Striple, the app registers the agent with `SMAppService.agent(plistName: "com.fskroes.Striple.agent.plist")`. If that fails, it uses `SMAppService.mainApp` (a normal login item without crash restart). macOS shows a "Background Items Added" notification the first time. You can turn the item off in System Settings > General > Login Items (on macOS 15 and later: Login Items & Extensions).
+Then the agent status is `requiresApproval`, and the toggle in Striple shows off with the note "Turned off in System Settings, or waiting for your approval".
 
 `man launchd.plist` says that `BundleProgram` "is only supported for plists that are installed using SMAppService". Do not copy the plist to `~/Library/LaunchAgents`.
 

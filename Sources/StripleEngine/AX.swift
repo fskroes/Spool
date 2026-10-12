@@ -25,6 +25,17 @@ enum AX {
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), messagingTimeout)
     }
 
+    /// The windows of an app. nil when the app does not answer (timeout), so the caller can tell a hung app
+    /// from an app without windows.
+    static func windows(of pid: pid_t) -> [AXUIElement]? {
+        var v: CFTypeRef?
+        let r = AXUIElementCopyAttributeValue(app(pid), kAXWindowsAttribute as CFString, &v)
+        if r == .cannotComplete { return nil }
+        return (v as? [AnyObject])?.compactMap { obj in
+            CFGetTypeID(obj) == AXUIElementGetTypeID() ? (obj as! AXUIElement) : nil
+        } ?? []
+    }
+
     static func app(_ pid: pid_t) -> AXUIElement {
         let e = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(e, messagingTimeout)

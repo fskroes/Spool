@@ -85,8 +85,9 @@ extension LoginItem {
     /// Makes the setting show the real state. The user can change it in System Settings too.
     @MainActor
     static func syncConfig(_ store: ConfigStore) {
-        guard isAvailable else { return }
-        let on = state == .enabled || state == .requiresApproval
+        // A save while config.json has errors replaces the user's file. Only the user may cause that.
+        guard isAvailable, !store.fileHasError else { return }
+        let on = showsOn(state)
         store.update { $0.behavior.launchAtLogin = on }
     }
 }

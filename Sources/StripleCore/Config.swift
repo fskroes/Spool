@@ -248,10 +248,13 @@ public struct Config: Codable, Equatable, Sendable {
             for (name, combos) in raw { if let cmd = Command(name: name) { b[cmd] = combos } }
             let taken = decoder.userInfo[.arrowsTakenBySystem] as? Bool ?? Config.systemTakesArrows
             bindings = Config.migrate(b, from: version, arrowsTaken: taken)
+            // On macOS 13 and 14 the version 1 shortcuts stay, and so does version 1. After an upgrade to
+            // macOS 15 the migration then runs once.
+            version = version < 2 && !taken ? version : Config.currentVersion
         } else {
             bindings = d.bindings
+            version = Config.currentVersion
         }
-        version = Config.currentVersion
     }
 
     /// Brings saved shortcuts up to date.

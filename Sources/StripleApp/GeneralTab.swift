@@ -146,7 +146,7 @@ struct LaunchAtLoginRow: View {
         }
         if state == .requiresApproval {
             HStack {
-                Note("macOS needs your approval. Allow Striple in Login Items.")
+                Note("Turned off in System Settings, or waiting for your approval. Allow Striple in Login Items.")
                 Spacer()
                 Button("Open Login Items") { LoginItem.openSystemSettings() }
             }
@@ -164,7 +164,7 @@ struct LaunchAtLoginRow: View {
             self.error = "Could not change the login item: \(error.localizedDescription)"
         }
         state = LoginItem.state
-        store.update { $0.behavior.launchAtLogin = state == .enabled || state == .requiresApproval }
+        store.update { $0.behavior.launchAtLogin = LoginItem.showsOn(state) }
     }
 }
 

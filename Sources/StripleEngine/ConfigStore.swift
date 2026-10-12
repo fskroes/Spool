@@ -6,6 +6,8 @@ import StripleCore
 /// Changes apply at once and are saved to `config.json`. Edits made to the file in a text editor
 /// are loaded automatically. A file with errors is not applied: `loadError` tells why. A save while the file
 /// has errors keeps that file as `config.json.broken`, so the user's edits are never lost.
+/// Each good load and save also writes `config.json.lastgood`. When `config.json` has errors at launch,
+/// Striple starts with the settings in that copy, not with the factory settings.
 @MainActor
 public final class ConfigStore: ObservableObject {
     @Published public private(set) var config: Config
@@ -17,13 +19,22 @@ public final class ConfigStore: ObservableObject {
     private var reloadWork: DispatchWorkItem?
     /// The file on disk did not decode. The next save keeps a copy of it first.
     private var fileIsBroken = false
+    /// Why the file did not decode. Kept for the message after a save.
+    private var decodeError: String?
+    private var lastGoodData: Data?
+    private let arrowsTaken: Bool
 
     public var brokenCopyURL: URL { fileURL.appendingPathExtension("broken") }
+    public var lastGoodURL: URL { fileURL.appendingPathExtension("lastgood") }
+    /// True while `config.json` has errors. Automatic changes (not made by the user) must wait until it is fixed.
+    public var fileHasError: Bool { fileIsBroken }
 
-    public init(fileURL: URL = StriplePaths.configFile, watch: Bool = true) {
+    public init(fileURL: URL = StriplePaths.configFile, watch: Bool = true, arrowsTaken: Bool = Config.systemTakesArrows) {
         self.fileURL = fileURL
+        self.arrowsTaken = arrowsTaken
         self.config = Config()
         load()
+        if fileIsBroken { loadLastGood() }
         if lastData == nil && loadError == nil { save() }
         if watch { startWatching() }
     }
@@ -53,23 +64,49 @@ public final class ConfigStore: ObservableObject {
 
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else {
+            // The file was removed: there is nothing to keep, and the next save writes a new file.
             lastData = nil
+            if fileIsBroken {
+                fileIsBroken = false
+                decodeError = nil
+                loadError = nil
+            }
             return
         }
         guard data != lastData else { return }
         lastData = data
         do {
-            var next = try Config.decode(data)
+            var next = try Config.decode(data, arrowsTaken: arrowsTaken)
             next.layout = next.layout.sanitized()
             fileIsBroken = false
+            decodeError = nil
             loadError = nil
             if next != config { config = next }
             // Save a migrated file once, so the migration does not run again on a later edit.
-            if let v = Config.fileVersion(data), v < Config.currentVersion { save() }
+            if let v = Config.fileVersion(data), v < next.version {
+                save()
+            } else {
+                keepLastGood(data)
+            }
         } catch {
             fileIsBroken = true
-            loadError = "config.json has an error, so Striple keeps the last good settings: \(Self.describe(error))"
+            decodeError = Self.describe(error)
+            loadError = "config.json has an error, so Striple keeps the last good settings: \(decodeError ?? "")"
         }
+    }
+
+    /// At launch with a broken `config.json`: use the settings of the last good file, if there is one.
+    private func loadLastGood() {
+        guard let data = try? Data(contentsOf: lastGoodURL),
+              var good = try? Config.decode(data, arrowsTaken: arrowsTaken) else { return }
+        good.layout = good.layout.sanitized()
+        lastGoodData = data
+        config = good
+    }
+
+    private func keepLastGood(_ data: Data) {
+        guard data != lastGoodData else { return }
+        if (try? data.write(to: lastGoodURL, options: .atomic)) != nil { lastGoodData = data }
     }
 
     private func save() {
@@ -77,15 +114,20 @@ public final class ConfigStore: ObservableObject {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try config.encoded()
             var kept: String?
-            if fileIsBroken {
-                try? FileManager.default.removeItem(at: brokenCopyURL)
-                try FileManager.default.copyItem(at: fileURL, to: brokenCopyURL)
+            if fileIsBroken, let user = try? Data(contentsOf: fileURL) {
+                // An atomic write: an old copy stays until the new one is complete.
+                try user.write(to: brokenCopyURL, options: .atomic)
                 kept = brokenCopyURL.lastPathComponent
             }
             lastData = data
             try data.write(to: fileURL, options: .atomic)
             fileIsBroken = false
-            loadError = kept.map { "config.json had an error. Striple saved its settings and kept your file as \($0)." }
+            keepLastGood(data)
+            loadError = kept.map { name in
+                let why = decodeError.map { " (\($0))" } ?? ""
+                return "config.json had an error\(why). Striple saved its settings and kept your file as \(name)."
+            }
+            decodeError = nil
         } catch {
             loadError = "Could not save config.json: \(error.localizedDescription)"
         }

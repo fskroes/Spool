@@ -315,4 +315,27 @@ import Testing
     @Test func theGlobalTimeoutCanBeSet() {
         #expect(AX.setGlobalTimeout() == .success)
     }
+
+    // Round 6 finding: with the global 0.25 s timeout, a slow app's writes counted as errors and it was healed.
+    @Test func aTimedOutFrameWriteCountsAsSent() {
+        #expect(Policy.frameWriteWorked([.success, .success]))
+        #expect(Policy.frameWriteWorked([.success, .cannotComplete]))
+        #expect(Policy.frameWriteWorked([.cannotComplete]))
+        #expect(!Policy.frameWriteWorked([.success, .invalidUIElement]))
+        #expect(!Policy.frameWriteWorked([.failure]))
+    }
+
+    // Round 6 finding: the hit test skipped tiled windows above level 0, so they could not be dragged.
+    @Test func managedWindowsAtOtherLevelsCanBePressed() {
+        func entry(_ id: UInt32, layer: Int, pid: Int32 = 50) -> [String: Any] {
+            [kCGWindowNumber as String: NSNumber(value: id), kCGWindowLayer as String: layer,
+             kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 100, height: 100).dictionaryRepresentation]
+        }
+        let list = [entry(1, layer: 3), entry(2, layer: 25), entry(3, layer: 0), entry(4, layer: 0, pid: 99)]
+        let ids = Engine.hitCandidates(list, ownPID: 99, managed: [1]).map(\.id)
+        #expect(ids == [1, 3])
+        #expect(Policy.pressedWindow(at: CGPoint(x: 50, y: 50), frontToBack: Engine.hitCandidates(list, ownPID: 99, managed: [1]),
+                                     slop: 0, parked: []) == 1)
+    }
 }

@@ -55,6 +55,10 @@ enum LoginItem {
 
     static var isEnabled: Bool { state == .enabled }
 
+    /// The toggle shows the real state: on only when Striple opens at the next login. A user who turns Striple
+    /// off in System Settings > Login Items gets `.requiresApproval`, so that state shows off.
+    static func showsOn(_ state: State) -> Bool { state == .enabled }
+
     /// SMAppService.h: unregistering a LaunchAgent that is running kills it. So a process that the agent
     /// started must not unregister the agent while it runs; it does so when it quits.
     static func mustWaitForQuit(startedByAgent: Bool, agentStatus: SMAppService.Status) -> Bool {

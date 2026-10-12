@@ -186,6 +186,12 @@ enum Policy {
 
     /// Seconds before the next try to watch an app that did not answer, or nil to give up.
     /// Fast at first (an app that is starting), then every 5 s for about two minutes (a large app that is busy).
+    /// A frame write worked unless a call really failed. `.cannotComplete` is a timeout: the app got the request
+    /// and applies it when it can, so the frame counts as written and the app is not healed for being slow.
+    static func frameWriteWorked(_ results: [AXError]) -> Bool {
+        results.allSatisfy { $0 == .success || $0 == .cannotComplete }
+    }
+
     /// Registers the app notifications in order. It stops at the first timeout: every later call to a hung app
     /// waits the full timeout too, on the main thread. `hung` makes the caller try again later.
     static func registerUntilHung(_ names: [String], add: (String) -> AXError) -> (registered: Int, hung: Bool) {

@@ -16,6 +16,33 @@ public struct SessionStrip: Codable, Equatable, Sendable {
     }
 }
 
+/// A saved tiled window whose app did not answer during a restore. It waits in its slot for the app.
+public struct HeldWindow: Equatable, Sendable {
+    public var info: WindowInfo
+    public var displayID: String
+    public var spaceID: UInt64
+    /// 1-based column on the strip.
+    public var slot: Int
+    public var width: ColumnWidth
+
+    public init(info: WindowInfo, displayID: String, spaceID: UInt64, slot: Int, width: ColumnWidth) {
+        self.info = info
+        self.displayID = displayID
+        self.spaceID = spaceID
+        self.slot = slot
+        self.width = width
+    }
+
+    /// Takes the held window that a live window of the app is: the same ID, then the same title, then the first
+    /// one of the app (the order of `Session.restore`).
+    public static func take(_ held: inout [HeldWindow], for live: WindowInfo) -> HeldWindow? {
+        let i = held.firstIndex { $0.info.id == live.id && $0.info.bundleID == live.bundleID }
+            ?? (live.title.isEmpty ? nil : held.firstIndex { $0.info.bundleID == live.bundleID && $0.info.title == live.title })
+            ?? held.firstIndex { $0.info.bundleID == live.bundleID }
+        return i.map { held.remove(at: $0) }
+    }
+}
+
 /// The saved state of all strips. Stored in `~/Library/Application Support/Striple/session.json`.
 public struct Session: Codable, Equatable, Sendable {
     public var version = 1
@@ -111,6 +138,33 @@ public struct Session: Codable, Equatable, Sendable {
             if s.spaceID != 0, !visible.contains(s.spaceID), known.contains(s.spaceID) { later.append(s) } else { now.append(s) }
         }
         return (Session(strips: now, floating: floating), later)
+    }
+
+    /// Takes the tiled windows of `bundles` out of the session, with their slots. Their apps did not answer during
+    /// the restore, so `restore` would drop them. The engine puts them back in these slots when the app answers.
+    ///
+    /// A held window gets its own column. Its slot counts the columns that stay and the held ones before it, so
+    /// inserting the held windows in slot order rebuilds the saved order.
+    public func holdingBack(bundles: Set<String>) -> (session: Session, held: [HeldWindow]) {
+        guard !bundles.isEmpty else { return (self, []) }
+        var out = self
+        var held: [HeldWindow] = []
+        out.strips = strips.compactMap { saved in
+            var strip = saved.strip
+            var pos = 0
+            for column in saved.strip.columns {
+                let wait = column.windows.filter { bundles.contains($0.bundleID) }
+                if wait.count < column.windows.count { pos += 1 }
+                for w in wait {
+                    pos += 1
+                    held.append(HeldWindow(info: w, displayID: saved.displayID, spaceID: saved.spaceID, slot: pos, width: column.width))
+                    _ = strip.remove(w.id)
+                }
+            }
+            guard !strip.isEmpty else { return nil }
+            return SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip)
+        }
+        return (out, held)
     }
 
     /// Adds the strips and floating windows kept for later, so a save does not lose them.

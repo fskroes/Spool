@@ -12,12 +12,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "", action: #selector(toggleEngine), keyEquivalent: "")
     private let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+    private let configErrorItem = NSMenuItem(title: "", action: #selector(openSettings), keyEquivalent: "")
     private var cancellable: AnyCancellable?
 
     init(app: AppModel) {
         self.app = app
         super.init()
         buildMenu()
+        showConfigError(app.store.loadError)
         item.menu = menu
         // @Published sends the new value before the property changes, so use the value it sends.
         cancellable = app.engine.$status.sink { [weak self] status in self?.show(status) }
@@ -28,6 +30,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.delegate = self
         statusLine.isEnabled = false
         menu.addItem(statusLine)
+        menu.addItem(target(configErrorItem))
         menu.addItem(target(toggleItem))
         menu.addItem(target(NSMenuItem(title: "Restart Engine", action: #selector(restartEngine), keyEquivalent: "")))
         menu.addItem(.separator())
@@ -63,6 +66,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updatesItem.isEnabled = Updater.shared.isConfigured
         show(app.engine.status)
+        showConfigError(app.store.loadError)
+    }
+
+    private func showConfigError(_ message: String?) {
+        configErrorItem.isHidden = message == nil
+        configErrorItem.title = StatusIcon.configErrorTitle
+        configErrorItem.toolTip = message
+        configErrorItem.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
     }
 
     @objc private func toggleEngine() { app.engine.toggle() }
@@ -77,6 +88,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 }
 
 enum StatusIcon {
+    /// Opens Settings, which shows the full message.
+    static let configErrorTitle = "Problem With config.json…"
     static func symbolName(_ status: Engine.Status) -> String {
         switch status {
         case .running: return "rectangle.split.3x1.fill"

@@ -294,12 +294,12 @@ final class AXFrameWriter: FrameWriter, @unchecked Sendable {
         guard let e = lock.withLock({ elements[w.id] }) else { return false }
         let sizeChanged = previous.map { $0.size != w.frame.size } ?? true
         let originChanged = previous.map { $0.origin != w.frame.origin } ?? true
-        var ok = true
+        var results: [AXError] = []
         // Size, position, size: the first size keeps a large window from being pushed back by the display edge
         // when it moves; the last one applies the size the app may have refused at the old position.
-        if sizeChanged { ok = AX.setSize(e, w.frame.size) == .success && ok }
-        if originChanged { ok = AX.setPosition(e, w.frame.origin) == .success && ok }
+        if sizeChanged { results.append(AX.setSize(e, w.frame.size)) }
+        if originChanged { results.append(AX.setPosition(e, w.frame.origin)) }
         if sizeChanged && originChanged { AX.setSize(e, w.frame.size) }
-        return ok
+        return Policy.frameWriteWorked(results)
     }
 }

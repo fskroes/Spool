@@ -74,9 +74,10 @@ the macOS shortcut in **System Settings > Keyboard > Keyboard Shortcuts > Window
 
 A `config.json` from an earlier version of Striple (version 1) can still have `⌃⌥⇧` + arrow on the move commands.
 On macOS 15 and later, Striple removes those four combinations when it reads the file. On macOS 13 and 14 it keeps
-them, because macOS does not use them there. A command that is not in your file (because it is newer than the file)
-gets its default shortcut, unless your file uses that combination for another command. Then Striple saves the file
-once as version 2, so a combination that you add again later is kept.
+them, because macOS does not use them there, and the file stays version 1. A command that is not in your file
+(because it is newer than the file) gets its default shortcut, unless your file uses that combination for another
+command. On macOS 15 and later, Striple then saves the file once as version 2, so a combination that you add again
+later is kept. If you upgrade from macOS 14 to macOS 15, the removal runs once at the first start after the upgrade.
 
 ## Trackpad
 

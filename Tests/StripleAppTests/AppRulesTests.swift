@@ -60,6 +60,14 @@ import StripleCore
 }
 
 @Suite struct LoginItemRulesTests {
+    // Round 6 finding: turning Striple off in System Settings gives .requiresApproval, and the toggle stayed on.
+    @Test func theToggleIsOnOnlyWhenStripleOpensAtLogin() {
+        #expect(LoginItem.showsOn(.enabled))
+        #expect(!LoginItem.showsOn(.requiresApproval))
+        #expect(!LoginItem.showsOn(.disabled))
+        #expect(!LoginItem.showsOn(.unavailable))
+    }
+
     @Test func fallBackOnlyWhenTheAgentIsNotRegistered() {
         #expect(LoginItem.mayFallBack(agentStatus: .notRegistered))
         #expect(LoginItem.mayFallBack(agentStatus: .notFound))

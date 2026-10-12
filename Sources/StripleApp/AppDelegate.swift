@@ -39,7 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pending.forEach(model.engine.perform)
         pending.removeAll()
 
-        if !model.store.config.behavior.onboardingDone { model.openGuide() }
+        // With a broken config.json the guide would save over the user's file when it closes.
+        if !model.store.config.behavior.onboardingDone, !model.store.fileHasError { model.openGuide() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

@@ -93,6 +93,9 @@ An ad hoc signed build gets a new signature with each rebuild, and macOS then fo
 Settings live in `~/Library/Application Support/Striple/config.json`. The engine log is `~/Library/Logs/Striple/engine.log`.
 If you edit the file and it has an error, Striple keeps the last good settings and Settings shows the error and where it is.
 If a setting changes before you fix the file, Striple keeps your file as `config.json.broken`.
+After each good load or save, Striple writes a copy named `config.json.lastgood`. If `config.json` has an error when
+Striple starts, Striple uses that copy, not the factory settings. The menu bar menu then shows "Problem With config.json…".
+Only a change that you make saves over the file while it has an error.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 

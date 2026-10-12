@@ -125,6 +125,8 @@ final class WindowTracker {
         attemptWatch(pid)
     }
 
+    func isWatching(_ pid: pid_t) -> Bool { watches[pid] != nil }
+
     /// True while the app did not answer and a retry waits. Its windows are found when the retry works.
     func isWaiting(for pid: pid_t) -> Bool { watches[pid] == nil && retries[pid] != nil }
 
