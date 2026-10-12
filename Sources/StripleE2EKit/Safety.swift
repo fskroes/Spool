@@ -8,13 +8,17 @@ public struct WindowSnapshot: Codable, Equatable, Sendable {
     public var owner: String
     public var layer: Int
     public var bounds: CGRect
+    /// True when the owner is a regular app (`NSApplication.ActivationPolicy.regular`). Striple manages only
+    /// regular apps (`Policy.isManageableApp`), so it cannot write to the windows of other processes.
+    public var regularApp: Bool
 
-    public init(number: UInt32, pid: Int32, owner: String, layer: Int, bounds: CGRect) {
+    public init(number: UInt32, pid: Int32, owner: String, layer: Int, bounds: CGRect, regularApp: Bool = true) {
         self.number = number
         self.pid = pid
         self.owner = owner
         self.layer = layer
         self.bounds = bounds
+        self.regularApp = regularApp
     }
 }
 
@@ -25,8 +29,10 @@ public enum SafetyCheck {
     public static let normalLayer = 0
 
     /// The windows of other apps at the normal level, from a CGWindowList result. Windows of `excluding`
-    /// (the test app, Striple, the runner) are left out.
-    public static func snapshot(_ list: [[String: Any]], excluding: Set<Int32>) -> [WindowSnapshot] {
+    /// (the test app, Striple, the runner) are left out. `isRegularApp` tells the regular apps from background
+    /// processes (for example the AutoFill helper of Safari, which resizes its own windows).
+    public static func snapshot(_ list: [[String: Any]], excluding: Set<Int32>,
+                                isRegularApp: (Int32) -> Bool = { _ in true }) -> [WindowSnapshot] {
         list.compactMap { w in
             guard let n = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
@@ -35,7 +41,7 @@ public enum SafetyCheck {
                   let dict = w[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary) else { return nil }
             return WindowSnapshot(number: n, pid: pid, owner: w[kCGWindowOwnerName as String] as? String ?? "?",
-                                  layer: layer, bounds: bounds)
+                                  layer: layer, bounds: bounds, regularApp: isRegularApp(pid))
         }
     }
 
@@ -57,19 +63,26 @@ public enum SafetyCheck {
         }
     }
 
-    /// The safety row of the report. FAIL when a window moved or resized. SKIP (counts as a failure) when fewer
-    /// than half of the windows from before still exist after: then the compare proves too little.
+    /// The safety row of the report. FAIL when a window of a regular app moved or resized. SKIP (counts as a
+    /// failure) when fewer than half of those windows from before still exist after: then the compare proves too
+    /// little. Windows of background processes are compared too, but a change there is only listed: Striple
+    /// cannot write to them, and some (AutoFill) resize themselves.
     public static func verdict(before: [WindowSnapshot], after: [WindowSnapshot]) -> (result: Report.Result, details: String) {
         let found = Set(after.map(\.number))
-        let compared = before.filter { found.contains($0.number) }.count
+        let apps = before.filter(\.regularApp)
+        let compared = apps.filter { found.contains($0.number) }.count
         let changed = changes(before: before, after: after)
-        if !changed.isEmpty { return (.fail, changed.map(\.description).joined(separator: "\n")) }
-        if before.isEmpty { return (.pass, "no windows of other apps to compare") }
-        let counts = "\(compared) of \(before.count) windows of other apps compared"
-        if compared * 2 < before.count {
-            return (.skip, "\(counts): too many windows closed during the run to prove that none moved. Run again.")
+        let failed = changed.filter(\.before.regularApp)
+        let ignored = changed.filter { !$0.before.regularApp }
+        let background = ignored.isEmpty ? "" : "\nNot counted, \(ignored.count) window(s) of background processes changed "
+            + "(Striple manages only regular apps):\n" + ignored.map(\.description).joined(separator: "\n")
+        if !failed.isEmpty { return (.fail, failed.map(\.description).joined(separator: "\n") + background) }
+        if apps.isEmpty { return (.pass, "no windows of other apps to compare" + background) }
+        let counts = "\(compared) of \(apps.count) windows of other apps compared"
+        if compared * 2 < apps.count {
+            return (.skip, "\(counts): too many windows closed during the run to prove that none moved. Run again." + background)
         }
-        return (.pass, "\(counts), 0 px allowed: none moved or resized")
+        return (.pass, "\(counts), 0 px allowed: none moved or resized" + background)
     }
 }
 

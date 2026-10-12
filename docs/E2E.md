@@ -103,6 +103,10 @@ The test runs on your work Mac, next to your own windows. These rules keep it aw
    it compares them: 0 points of change allowed. A window that closed or opened during the run is not a change.
    When fewer than half of the windows still exist, the result is SKIP, which counts as a failure: the compare
    proves too little. Menu bar items and other high layers change on their own, so they are not compared.
+   Windows of background processes (not a regular app, for example the AutoFill helper of Safari) are compared,
+   but a change there is only listed under "Not counted": Striple manages only regular apps, and these
+   windows resize themselves. One run saw 5 AutoFill windows change by the same 14 points while no Striple
+   command touched them.
 3. **Your settings are not touched.** Striple starts with `STRIPLE_HOME` set to a new `/tmp/striple-e2e-XXXXXX`
    folder with a `config.json` (`onboardingDone: true`, other values default). The socket, config, session and logs
    are in that folder. The login item is not registered or changed, and Sparkle does not check for updates. The folder is deleted at the end.

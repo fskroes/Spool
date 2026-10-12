@@ -89,7 +89,9 @@ func otherWindows(excluding: Set<Int32>) -> [WindowSnapshot] {
     // All windows, not only on-screen ones: a window on another Space, or minimized, keeps its bounds, so a Space
     // switch by the user during the run does not hide a move from the compare.
     let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-    return SafetyCheck.snapshot(list, excluding: excluding)
+    return SafetyCheck.snapshot(list, excluding: excluding) { pid in
+        NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular
+    }
 }
 
 func makeTempHome() -> URL {

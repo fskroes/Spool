@@ -168,6 +168,43 @@ import Testing
     @Test func noWindowsPass() {
         #expect(SafetyCheck.verdict(before: [], after: [w(1)]).result == .pass)
     }
+
+    func helper(_ n: UInt32, y: Double) -> WindowSnapshot {
+        WindowSnapshot(number: n, pid: 92849, owner: "AutoFill", layer: 0,
+                       bounds: CGRect(x: 0, y: y, width: 312, height: 237), regularApp: false)
+    }
+
+    @Test func aBackgroundProcessThatResizesItsOwnWindowIsListedNotFailed() {
+        // Seen live: the AutoFill helper of Safari (activation policy prohibited) resized its windows during a run.
+        let v = SafetyCheck.verdict(before: [w(1), w(2), helper(9, y: 1092)], after: [w(1), w(2), helper(9, y: 1078)])
+        #expect(v.result == .pass)
+        #expect(v.details.hasPrefix("2 of 2 windows"))
+        #expect(v.details.contains("Not counted, 1 window(s) of background processes changed"))
+        #expect(v.details.contains("AutoFill (pid 92849, window 9)"))
+    }
+
+    @Test func aRegularAppStillFailsNextToABackgroundChange() {
+        let v = SafetyCheck.verdict(before: [w(1), helper(9, y: 1092)], after: [w(1, x: 3), helper(9, y: 1078)])
+        #expect(v.result == .fail)
+        #expect(v.details.hasPrefix("Notes (pid 10, window 1)"))
+        #expect(v.details.contains("AutoFill"))
+    }
+
+    @Test func onlyBackgroundWindowsDoNotCountForTheRatio() {
+        // Two background windows closed, the one app window stayed: the compare still proves the app window.
+        let v = SafetyCheck.verdict(before: [w(1), helper(8, y: 0), helper(9, y: 0)], after: [w(1)])
+        #expect(v.result == .pass)
+    }
+
+    @Test func snapshotAsksWhichOwnersAreRegularApps() {
+        let list: [[String: Any]] = [10, 92849].map { pid in
+            [kCGWindowNumber as String: NSNumber(value: pid), kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowLayer as String: NSNumber(value: 0), kCGWindowOwnerName as String: "x",
+             kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 1, height: 1).dictionaryRepresentation]
+        }
+        let s = SafetyCheck.snapshot(list, excluding: []) { $0 == 10 }
+        #expect(s.map(\.regularApp) == [true, false])
+    }
 }
 
 @Suite struct ReportTests {
