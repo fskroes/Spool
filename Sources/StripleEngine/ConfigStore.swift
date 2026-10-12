@@ -11,7 +11,11 @@ import StripleCore
 @MainActor
 public final class ConfigStore: ObservableObject {
     @Published public private(set) var config: Config
+    /// A message for the user: the file has an error, a save failed, or a save kept the user's file as a copy.
     @Published public private(set) var loadError: String?
+    /// True while something is wrong now: the file has an error, or the last save failed. False for the note
+    /// that a save kept the user's file as `config.json.broken`.
+    @Published public private(set) var hasProblem = false
 
     public let fileURL: URL
     private var lastData: Data?
@@ -59,17 +63,24 @@ public final class ConfigStore: ObservableObject {
         }
     }
 
+    /// Hides the note that a save kept the user's file as a copy. A real problem stays.
+    public func dismissNote() {
+        if !hasProblem { loadError = nil }
+    }
+
     /// Reads the file again. Called by the file watcher; public for "Reload" buttons and tests.
     public func reload() { load() }
 
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else {
-            // The file was removed: there is nothing to keep, and the next save writes a new file.
             lastData = nil
             if fileIsBroken {
+                // The user removed the broken file. Write the settings in use, so the next launch has them too.
                 fileIsBroken = false
                 decodeError = nil
                 loadError = nil
+                hasProblem = false
+                save()
             }
             return
         }
@@ -81,6 +92,7 @@ public final class ConfigStore: ObservableObject {
             fileIsBroken = false
             decodeError = nil
             loadError = nil
+            hasProblem = false
             if next != config { config = next }
             // Save a migrated file once, so the migration does not run again on a later edit.
             if let v = Config.fileVersion(data), v < next.version {
@@ -90,6 +102,7 @@ public final class ConfigStore: ObservableObject {
             }
         } catch {
             fileIsBroken = true
+            hasProblem = true
             decodeError = Self.describe(error)
             loadError = "config.json has an error, so Striple keeps the last good settings: \(decodeError ?? "")"
         }
@@ -122,6 +135,7 @@ public final class ConfigStore: ObservableObject {
             lastData = data
             try data.write(to: fileURL, options: .atomic)
             fileIsBroken = false
+            hasProblem = false
             keepLastGood(data)
             loadError = kept.map { name in
                 let why = decodeError.map { " (\($0))" } ?? ""
@@ -130,6 +144,7 @@ public final class ConfigStore: ObservableObject {
             decodeError = nil
         } catch {
             loadError = "Could not save config.json: \(error.localizedDescription)"
+            hasProblem = true
         }
     }
 

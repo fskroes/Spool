@@ -122,6 +122,8 @@ public final class Engine: ObservableObject {
     var heldWindows: [HeldWindow] = []
     /// Apps that were watched but did not answer a scan: the attempt of the next scan.
     var quietRescans: [pid_t: Int] = [:]
+    /// Apps whose quiet rescans stopped before the app answered. Scanned again when the app is activated.
+    var staleApps: Set<pid_t> = []
     /// When an app was last re-watched after its AX writes kept failing.
     var healedAt: [pid_t: Double] = [:]
 
@@ -285,6 +287,7 @@ public final class Engine: ObservableObject {
         laterFloating.removeAll()
         heldWindows.removeAll()
         quietRescans.removeAll()
+        staleApps.removeAll()
         healedAt.removeAll()
     }
 

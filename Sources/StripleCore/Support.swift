@@ -16,30 +16,69 @@ public struct SessionStrip: Codable, Equatable, Sendable {
     }
 }
 
-/// A saved tiled window whose app did not answer during a restore. It waits in its slot for the app.
+/// A saved tiled window whose app did not answer during a restore. It waits for the app, then goes back to
+/// its saved place.
 public struct HeldWindow: Equatable, Sendable {
     public var info: WindowInfo
     public var displayID: String
     public var spaceID: UInt64
-    /// 1-based column on the strip.
-    public var slot: Int
+    /// The windows that came before it on the strip, nearest first: live IDs of restored windows, and the IDs
+    /// of held windows. A position number would go wrong when a restore drops columns (closed windows).
+    public var after: [WindowID]
     public var width: ColumnWidth
 
-    public init(info: WindowInfo, displayID: String, spaceID: UInt64, slot: Int, width: ColumnWidth) {
+    public init(info: WindowInfo, displayID: String, spaceID: UInt64, after: [WindowID], width: ColumnWidth) {
         self.info = info
         self.displayID = displayID
         self.spaceID = spaceID
-        self.slot = slot
+        self.after = after
         self.width = width
     }
 
-    /// Takes the held window that a live window of the app is: the same ID, then the same title, then the first
-    /// one of the app (the order of `Session.restore`).
-    public static func take(_ held: inout [HeldWindow], for live: WindowInfo) -> HeldWindow? {
-        let i = held.firstIndex { $0.info.id == live.id && $0.info.bundleID == live.bundleID }
-            ?? (live.title.isEmpty ? nil : held.firstIndex { $0.info.bundleID == live.bundleID && $0.info.title == live.title })
-            ?? held.firstIndex { $0.info.bundleID == live.bundleID }
-        return i.map { held.remove(at: $0) }
+    /// The 1-based slot in `strip`: right after the column of the nearest window before it that is on the strip.
+    public func slot(in strip: Strip) -> Int {
+        for id in after { if let c = strip.locate(id)?.column { return c + 2 } }
+        return 1
+    }
+
+    /// Takes the held windows that `live` windows are, in the order of `Session.restore`: first the same ID or
+    /// title for all windows, so a loose match never steals an exact one; then (with `byApp`) the remaining
+    /// held windows of the same app, in saved order. The result is in the order of `held`, so placing the pairs
+    /// in that order finds the anchors of later ones.
+    public static func take(_ held: inout [HeldWindow], for live: [WindowInfo], byApp: Bool) -> [(live: WindowInfo, held: HeldWindow)] {
+        var pool = live
+        var pick: [Int: WindowInfo] = [:]
+        for (i, h) in held.enumerated() {
+            if let j = pool.firstIndex(where: { $0.id == h.info.id && $0.bundleID == h.info.bundleID })
+                ?? (h.info.title.isEmpty ? nil : pool.firstIndex { $0.bundleID == h.info.bundleID && $0.title == h.info.title }) {
+                pick[i] = pool.remove(at: j)
+            }
+        }
+        if byApp {
+            for (i, h) in held.enumerated() where pick[i] == nil {
+                if let j = pool.firstIndex(where: { $0.bundleID == h.info.bundleID }) { pick[i] = pool.remove(at: j) }
+            }
+        }
+        let out = held.indices.compactMap { i in pick[i].map { (live: $0, held: held[i]) } }
+        held = held.indices.filter { pick[$0] == nil }.map { held[$0] }
+        return out
+    }
+
+    /// A held window came back with a new ID (after a restart). Later held windows that come after it use the new ID.
+    public static func rename(_ held: inout [HeldWindow], from old: WindowID, to new: WindowID) {
+        guard old != new else { return }
+        for i in held.indices { held[i].after = held[i].after.map { $0 == old ? new : $0 } }
+    }
+
+    /// The strips with the held windows put in their places, in order. For a session save.
+    public static func placed<K: Hashable>(_ held: [HeldWindow], into strips: [K: Strip], key: (HeldWindow) -> K) -> [K: Strip] {
+        var out = strips
+        for h in held {
+            var strip = out[key(h)] ?? Strip()
+            strip.insert(h.info, width: h.width, slot: h.slot(in: strip), focus: false)
+            out[key(h)] = strip
+        }
+        return out
     }
 }
 
@@ -60,10 +99,15 @@ public struct Session: Codable, Equatable, Sendable {
     /// in saved order. Saved windows with no match are dropped. Live windows with no
     /// match are returned in `unmatched` so the engine can insert them normally. Saved floating
     /// windows with no match are returned in `unmatchedFloating`.
-    public func restore(live: [WindowInfo]) -> (strips: [SessionStrip], floating: Set<WindowID>, unmatched: [WindowInfo],
-                                                 unmatchedFloating: [WindowInfo]) {
+    ///
+    /// Tiled windows of the apps in `waitingFor` (apps that do not answer yet) are not dropped: they are returned
+    /// in `held`, with the windows that come before them, so the engine can put them back when the app answers.
+    public func restore(live: [WindowInfo], waitingFor: Set<String> = []) -> (strips: [SessionStrip], floating: Set<WindowID>,
+                                                                             unmatched: [WindowInfo], unmatchedFloating: [WindowInfo],
+                                                                             held: [HeldWindow]) {
         var pool = live
         func take(_ saved: WindowInfo) -> WindowInfo? {
+            if waitingFor.contains(saved.bundleID) { return nil }
             if let i = pool.firstIndex(where: { $0.id == saved.id && $0.bundleID == saved.bundleID }) { return pool.remove(at: i) }
             if !saved.title.isEmpty, let i = pool.firstIndex(where: { $0.bundleID == saved.bundleID && $0.title == saved.title }) {
                 return pool.remove(at: i)
@@ -71,7 +115,7 @@ public struct Session: Codable, Equatable, Sendable {
             return nil
         }
         func takeByApp(_ saved: WindowInfo) -> WindowInfo? {
-            guard let i = pool.firstIndex(where: { $0.bundleID == saved.bundleID }) else { return nil }
+            guard !waitingFor.contains(saved.bundleID), let i = pool.firstIndex(where: { $0.bundleID == saved.bundleID }) else { return nil }
             return pool.remove(at: i)
         }
 
@@ -88,6 +132,18 @@ public struct Session: Codable, Equatable, Sendable {
         }
         for i in floatingResolved.indices where floatingResolved[i] == nil { floatingResolved[i] = takeByApp(floating[i]) }
         for w in floatingResolved.compactMap({ $0 }) { floatingIDs.insert(w.id) }
+
+        var held: [HeldWindow] = []
+        for (s, saved) in strips.enumerated() {
+            var anchors: [WindowID] = []
+            for (c, column) in saved.strip.columns.enumerated() {
+                if let first = resolved[s][c].compactMap({ $0 }).first { anchors.insert(first.id, at: 0) }
+                for w in column.windows where waitingFor.contains(w.bundleID) {
+                    held.append(HeldWindow(info: w, displayID: saved.displayID, spaceID: saved.spaceID, after: anchors, width: column.width))
+                    anchors.insert(w.id, at: 0)
+                }
+            }
+        }
 
         var out: [SessionStrip] = []
         for (s, saved) in strips.enumerated() {
@@ -121,7 +177,7 @@ public struct Session: Codable, Equatable, Sendable {
             out.append(SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip))
         }
         let lostFloating = floating.indices.filter { floatingResolved[$0] == nil }.map { floating[$0] }
-        return (out, floatingIDs, pool, lostFloating)
+        return (out, floatingIDs, pool, lostFloating, held)
     }
 
     /// Splits the saved strips into the ones to restore now and the ones to keep for later.
@@ -138,33 +194,6 @@ public struct Session: Codable, Equatable, Sendable {
             if s.spaceID != 0, !visible.contains(s.spaceID), known.contains(s.spaceID) { later.append(s) } else { now.append(s) }
         }
         return (Session(strips: now, floating: floating), later)
-    }
-
-    /// Takes the tiled windows of `bundles` out of the session, with their slots. Their apps did not answer during
-    /// the restore, so `restore` would drop them. The engine puts them back in these slots when the app answers.
-    ///
-    /// A held window gets its own column. Its slot counts the columns that stay and the held ones before it, so
-    /// inserting the held windows in slot order rebuilds the saved order.
-    public func holdingBack(bundles: Set<String>) -> (session: Session, held: [HeldWindow]) {
-        guard !bundles.isEmpty else { return (self, []) }
-        var out = self
-        var held: [HeldWindow] = []
-        out.strips = strips.compactMap { saved in
-            var strip = saved.strip
-            var pos = 0
-            for column in saved.strip.columns {
-                let wait = column.windows.filter { bundles.contains($0.bundleID) }
-                if wait.count < column.windows.count { pos += 1 }
-                for w in wait {
-                    pos += 1
-                    held.append(HeldWindow(info: w, displayID: saved.displayID, spaceID: saved.spaceID, slot: pos, width: column.width))
-                    _ = strip.remove(w.id)
-                }
-            }
-            guard !strip.isEmpty else { return nil }
-            return SessionStrip(displayID: saved.displayID, spaceID: saved.spaceID, strip: strip)
-        }
-        return (out, held)
     }
 
     /// Adds the strips and floating windows kept for later, so a save does not lose them.

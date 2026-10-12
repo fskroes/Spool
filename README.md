@@ -94,8 +94,9 @@ Settings live in `~/Library/Application Support/Striple/config.json`. The engine
 If you edit the file and it has an error, Striple keeps the last good settings and Settings shows the error and where it is.
 If a setting changes before you fix the file, Striple keeps your file as `config.json.broken`.
 After each good load or save, Striple writes a copy named `config.json.lastgood`. If `config.json` has an error when
-Striple starts, Striple uses that copy, not the factory settings. The menu bar menu then shows "Problem With config.json…".
-Only a change that you make saves over the file while it has an error.
+Striple starts, Striple uses that copy, not the factory settings. While the file has an error, the menu bar menu
+shows "Problem With config.json…". Only a change that you make saves over the file while it has an error.
+If you delete the broken file, Striple writes a new `config.json` with the settings in use.
 
 When you quit Striple (from the menu, at logout, or with a plain `kill`), every window that is out of view comes back onto the screen.
 

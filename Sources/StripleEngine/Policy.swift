@@ -194,6 +194,13 @@ enum Policy {
 
     /// Registers the app notifications in order. It stops at the first timeout: every later call to a hung app
     /// waits the full timeout too, on the main thread. `hung` makes the caller try again later.
+    /// Whether an activated app is scanned again: when it is not watched (the watch retries gave up), when its
+    /// quiet rescans gave up, or when it has held windows. Not while a retry or a rescan is pending.
+    static func rescanOnActivate(watching: Bool, waiting: Bool, rescanPending: Bool, gaveUp: Bool, holdsWindows: Bool) -> Bool {
+        if waiting || rescanPending { return false }
+        return !watching || gaveUp || holdsWindows
+    }
+
     static func registerUntilHung(_ names: [String], add: (String) -> AXError) -> (registered: Int, hung: Bool) {
         var registered = 0
         for name in names {

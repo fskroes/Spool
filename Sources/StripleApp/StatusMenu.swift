@@ -19,7 +19,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         self.app = app
         super.init()
         buildMenu()
-        showConfigError(app.store.loadError)
+        showConfigError()
         item.menu = menu
         // @Published sends the new value before the property changes, so use the value it sends.
         cancellable = app.engine.$status.sink { [weak self] status in self?.show(status) }
@@ -66,13 +66,13 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updatesItem.isEnabled = Updater.shared.isConfigured
         show(app.engine.status)
-        showConfigError(app.store.loadError)
+        showConfigError()
     }
 
-    private func showConfigError(_ message: String?) {
-        configErrorItem.isHidden = message == nil
+    private func showConfigError() {
+        configErrorItem.isHidden = !app.store.hasProblem
         configErrorItem.title = StatusIcon.configErrorTitle
-        configErrorItem.toolTip = message
+        configErrorItem.toolTip = app.store.loadError
         configErrorItem.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
     }
 

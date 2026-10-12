@@ -55,43 +55,85 @@ import Testing
         #expect(c?.disabledDisplays == ["UUID-1"])
     }
 
-    // Round 6 finding: an app that did not answer during a restore lost the saved slots of its windows.
-    @Test func windowsOfAnAppThatDoesNotAnswerKeepTheirSlots() {
-        func w(_ id: WindowID, _ app: String, _ title: String = "") -> WindowInfo { WindowInfo(id: id, pid: 1, bundleID: app, title: title) }
+    private func w(_ id: WindowID, _ app: String, _ title: String = "") -> WindowInfo {
+        WindowInfo(id: id, pid: 1, bundleID: app, title: title)
+    }
+
+    private func oneStrip(_ infos: [WindowInfo], space: UInt64 = 1) -> SessionStrip {
         var strip = Strip()
-        for (i, info) in [w(1, "a"), w(2, "x", "Doc"), w(3, "a"), w(4, "x", "Notes")].enumerated() {
-            strip.insert(info, width: .proportion(Double(i + 1) / 10), slot: i + 1, focus: false)
+        for (i, info) in infos.enumerated() { strip.insert(info, width: .proportion(Double(i + 1) / 10), slot: i + 1, focus: false) }
+        return SessionStrip(displayID: "D", spaceID: space, strip: strip)
+    }
+
+    // Round 6 finding: an app that did not answer during a restore lost the saved places of its windows.
+    // Round 7 finding: a slot number went wrong when the restore dropped a closed window before it.
+    @Test func aWindowOfAnAppThatDoesNotAnswerGoesBackAfterTheSameNeighbour() {
+        // Safari, Mail (not running), Xcode (does not answer), Notes.
+        let s = Session(strips: [oneStrip([w(1, "safari"), w(2, "mail"), w(3, "xcode"), w(4, "notes")])])
+        let r = s.restore(live: [w(11, "safari"), w(14, "notes")], waitingFor: ["xcode"])
+        #expect(r.strips[0].strip.allWindows.map(\.id) == [11, 14])
+        #expect(r.held.map(\.info.id) == [3])
+        #expect(r.held[0].after == [11])
+        #expect(r.held[0].width == .proportion(0.3))
+        var strip = r.strips[0].strip
+        strip.insert(w(33, "xcode"), width: r.held[0].width, slot: r.held[0].slot(in: strip), focus: false)
+        #expect(strip.allWindows.map(\.id) == [11, 33, 14])
+    }
+
+    @Test func heldWindowsInARowKeepTheirOrder() {
+        // x1, a, x2 (stacked with b), x3, d. Only x does not answer.
+        var saved = oneStrip([w(1, "x"), w(2, "a"), w(3, "x"), w(5, "x"), w(6, "d")])
+        saved.strip.columns[2].windows.insert(w(4, "b"), at: 0)
+        saved.strip.columns[2].heights = [0.5, 0.5]
+        let s = Session(strips: [saved, oneStrip([w(7, "x")], space: 2)])
+        let r = s.restore(live: [w(2, "a"), w(4, "b"), w(6, "d")], waitingFor: ["x"])
+
+        #expect(r.strips.map(\.spaceID) == [1])
+        #expect(r.held.map(\.info.id) == [1, 3, 5, 7])
+        #expect(r.held.map(\.after) == [[], [4, 2, 1], [3, 4, 2, 1], []])
+
+        // The windows come back with new IDs, in held order. Each new ID is passed on to the later ones.
+        var held = r.held
+        var strip = r.strips[0].strip
+        for (old, new) in [(WindowID(1), WindowID(21)), (3, 23), (5, 25)] {
+            let h = held.first { $0.info.id == old }!
+            strip.insert(w(new, "x"), width: h.width, slot: h.slot(in: strip), focus: false)
+            held.removeAll { $0.info.id == old }
+            HeldWindow.rename(&held, from: old, to: new)
         }
-        var mixed = Strip()
-        mixed.insert(w(5, "a"), width: .proportion(0.5), slot: 1, focus: false)
-        mixed.columns[0].windows.append(w(6, "x"))
-        mixed.columns[0].heights.append(1)
-        let onlyX = Strip(columns: [Column(window: w(7, "x"), width: .proportion(0.5))], focusedColumn: 0)
-        let s = Session(strips: [SessionStrip(displayID: "D", spaceID: 1, strip: strip),
-                                 SessionStrip(displayID: "D", spaceID: 2, strip: mixed),
-                                 SessionStrip(displayID: "D", spaceID: 3, strip: onlyX)])
+        #expect(strip.allWindows.map(\.id) == [21, 2, 4, 23, 25, 6])
+    }
 
-        let split = s.holdingBack(bundles: ["x"])
+    @Test func aSaveKeepsHeldWindowsInTheirPlaces() {
+        let s = Session(strips: [oneStrip([w(1, "a"), w(2, "x"), w(3, "x"), w(4, "b")])])
+        let r = s.restore(live: [w(1, "a"), w(4, "b")], waitingFor: ["x"])
+        let placed = HeldWindow.placed(r.held, into: [1: r.strips[0].strip]) { $0.spaceID }
+        #expect(placed[1]?.allWindows.map(\.id) == [1, 2, 3, 4])
+        #expect(s.restore(live: [w(1, "a"), w(4, "b")]).held.isEmpty)
+    }
 
-        #expect(split.session.strips.map(\.spaceID) == [1, 2])
-        #expect(split.session.strips[0].strip.allWindows.map(\.id) == [1, 3])
-        #expect(split.session.strips[1].strip.allWindows.map(\.id) == [5])
-        #expect(split.held.map(\.info.id) == [2, 4, 6, 7])
-        #expect(split.held.map(\.slot) == [2, 4, 2, 1])
-        #expect(split.held[0].width == .proportion(0.2))
+    // Round 7 finding: matching one window at a time let a new window take the place of another one.
+    @Test func exactMatchesComeFirstForHeldWindows() {
+        let held0 = [HeldWindow(info: w(1, "x", "Proj1"), displayID: "D", spaceID: 1, after: [], width: .proportion(0.5)),
+                     HeldWindow(info: w(2, "x", "Proj2"), displayID: "D", spaceID: 1, after: [1], width: .proportion(0.5))]
+        // After a restart the IDs are new. A "Welcome" window is in front.
+        let live = [w(30, "x", "Welcome"), w(31, "x", "Proj1"), w(32, "x", "Proj2")]
 
-        // Putting them back in slot order rebuilds the saved order.
-        var back = split.session.strips[0].strip
-        for h in split.held where h.spaceID == 1 { back.insert(h.info, width: h.width, slot: h.slot, focus: false) }
-        #expect(back.allWindows.map(\.id) == [1, 2, 3, 4])
+        var held = held0
+        let pairs = HeldWindow.take(&held, for: live, byApp: true)
+        #expect(pairs.map(\.live.id) == [31, 32])
+        #expect(pairs.map(\.held.info.id) == [1, 2])
+        #expect(held.isEmpty)
 
-        // A live window finds its held slot by ID, then title, then app.
-        var held = split.held
-        #expect(HeldWindow.take(&held, for: w(99, "x", "Notes"))?.info.id == 4)
-        #expect(HeldWindow.take(&held, for: w(6, "x"))?.info.id == 6)
-        #expect(HeldWindow.take(&held, for: w(98, "x"))?.info.id == 2)
-        #expect(HeldWindow.take(&held, for: w(97, "b")) == nil)
-        #expect(s.holdingBack(bundles: []).session == s)
+        // Without byApp only exact matches count.
+        held = held0
+        #expect(HeldWindow.take(&held, for: [w(30, "x", "Welcome")], byApp: false).isEmpty)
+        #expect(held.count == 2)
+        // With byApp, the remaining held windows take the remaining windows of the app, in held order.
+        #expect(HeldWindow.take(&held, for: [w(40, "x", "A"), w(41, "x", "B")], byApp: true).map(\.held.info.id) == [1, 2])
+        held = held0
+        #expect(HeldWindow.take(&held, for: [w(2, "x", "Renamed")], byApp: false).map(\.held.info.id) == [2])
+        #expect(HeldWindow.take(&held, for: [w(9, "y", "Proj1")], byApp: true).isEmpty)
     }
 
     @Test func behaviourDefaultsMatchSpec() {

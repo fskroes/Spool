@@ -88,6 +88,8 @@ test in `Tests/`.
   come back without a reshuffle. Windows are matched by window ID first, then by app and title.
 - Windows of hidden apps and minimized windows keep their slot across a restart.
 - A restored strip scrolls so its focused column is in view, also when some saved windows are gone.
+- Windows of an app that does not answer during the restore wait for it. When it answers, each goes back
+  after the window that came before it on the strip.
 
 ### F14 Launch at login and auto-start
 - Optional launch at login. Optional automatic start of tiling when the app starts.

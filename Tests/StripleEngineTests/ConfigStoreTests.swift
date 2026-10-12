@@ -157,6 +157,40 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: store.brokenCopyURL.path))
     }
 
+    // Round 7 finding: a broken file deleted while Striple ran gave factory settings at the next launch.
+    @Test func aDeletedBrokenFileIsWrittenWithTheSettingsInUse() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        store.update { $0.layout.innerGap = 19 }
+        try Data("{ not json".utf8).write(to: url)
+        store.reload()
+        try FileManager.default.removeItem(at: url)
+        store.reload()
+        #expect(try Config.decode(Data(contentsOf: url)).layout.innerGap == 19)
+
+        let next = ConfigStore(fileURL: url, watch: false)
+        #expect(next.config.layout.innerGap == 19)
+        #expect(try Config.decode(Data(contentsOf: next.lastGoodURL)).layout.innerGap == 19)
+    }
+
+    // Round 7 finding: the menu said "Problem With config.json" after a save had fixed the file.
+    @Test func theNoteAboutTheCopyIsNotAProblem() throws {
+        let url = tempFile()
+        let store = ConfigStore(fileURL: url, watch: false)
+        #expect(!store.hasProblem)
+        try Data("{ not json".utf8).write(to: url)
+        store.reload()
+        #expect(store.hasProblem)
+        store.dismissNote()
+        #expect(store.loadError != nil)
+
+        store.update { $0.layout.innerGap = 3 }
+        #expect(!store.hasProblem)
+        #expect(store.loadError?.contains("config.json.broken") == true)
+        store.dismissNote()
+        #expect(store.loadError == nil)
+    }
+
     @Test func anOldBrokenCopyIsReplacedByTheNewOne() throws {
         let url = tempFile()
         let store = ConfigStore(fileURL: url, watch: false)

@@ -48,7 +48,7 @@ struct SettingsView: View {
 
             VStack(spacing: 0) {
                 if let error = store.loadError {
-                    ConfigErrorBanner(message: error)
+                    ConfigErrorBanner(message: error, isProblem: store.hasProblem)
                 }
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,6 +71,7 @@ struct SettingsView: View {
 
 struct ConfigErrorBanner: View {
     let message: String
+    let isProblem: Bool
     @EnvironmentObject var app: AppModel
 
     var body: some View {
@@ -78,7 +79,13 @@ struct ConfigErrorBanner: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
             Text(message).fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button("Open File") { app.openConfigFile() }
+            if isProblem {
+                Button("Open File") { app.openConfigFile() }
+            } else {
+                // config.json is good again; the note is about the copy of the user's file.
+                Button("Show the Copy") { NSWorkspace.shared.activateFileViewerSelecting([app.store.brokenCopyURL]) }
+                Button("OK") { app.store.dismissNote() }
+            }
         }
         .padding(10)
         .background(Color.orange.opacity(0.15))

@@ -408,12 +408,12 @@ extension Engine {
 
     /// The live strips plus the saved ones still waiting for their Space, so a save never drops those.
     func sessionSnapshot() -> Session {
-        var off = windows.values.compactMap { w -> (info: WindowInfo, key: StripKey, slot: Int?, width: ColumnWidth?)? in
+        let off = windows.values.compactMap { w -> (info: WindowInfo, key: StripKey, slot: Int?, width: ColumnWidth?)? in
             guard w.state == .hidden || w.state == .minimized, let key = w.key else { return nil }
             return (w.info, key, w.slot, w.width)
         }
-        off += heldWindows.map { (info: $0.info, key: StripKey(display: $0.displayID, space: $0.spaceID), slot: Optional($0.slot), width: Optional($0.width)) }
-        let all = Policy.stripsForSession(strips, offStrip: off, defaultWidth: .proportion(config.layout.defaultWidth))
+        let withHeld = HeldWindow.placed(heldWindows, into: strips) { StripKey(display: $0.displayID, space: $0.spaceID) }
+        let all = Policy.stripsForSession(withHeld, offStrip: off, defaultWidth: .proportion(config.layout.defaultWidth))
         let saved = all.filter { !$0.value.isEmpty }
             .map { SessionStrip(displayID: $0.key.display, spaceID: $0.key.space, strip: $0.value) }
             .sorted { ($0.displayID, $0.spaceID) < ($1.displayID, $1.spaceID) }

@@ -338,4 +338,17 @@ import Testing
         #expect(Policy.pressedWindow(at: CGPoint(x: 50, y: 50), frontToBack: Engine.hitCandidates(list, ownPID: 99, managed: [1]),
                                      slop: 0, parked: []) == 1)
     }
+
+    // Round 7 finding: after the quiet rescans gave up, a watched app was never scanned again.
+    @Test func anActivatedAppIsScannedAgainWhenStripleGaveUpOrHoldsItsWindows() {
+        func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
+            Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)
+        }
+        #expect(!r())
+        #expect(r(watching: false))
+        #expect(r(gaveUp: true))
+        #expect(r(holds: true))
+        #expect(!r(watching: false, waiting: true))
+        #expect(!r(pending: true, gaveUp: true))
+    }
 }
