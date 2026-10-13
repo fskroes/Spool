@@ -45,14 +45,19 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 
 ## Performance
 
-Measured on this Mac (Apple silicon, macOS 26) with `make bench` on 2026-10-12, load average 6.8:
+Measured on this Mac (Apple silicon, macOS 26) with `make bench` on 2026-10-13, load average 4.8:
 
 | Metric | Budget (docs/SPEC.md) | Measured |
 |---|---|---|
-| Layout and placement of 50 columns, per frame | < 50 µs | 7.3 µs |
-| Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds | < 4 ms | 2.65 ms (one after the other: 15.0 ms) |
-| Applier time in that frame write (wall time minus the slowest write), p95 | < 2 ms | 0.10 ms |
+| Layout and placement of 50 columns, per frame | < 50 µs | 6.3 µs |
+| Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds | < 4 ms | 3.18 ms (one after the other: 18.1 ms) |
+| Applier time in that frame write (wall time minus the slowest write), p95 | < 2 ms | 0.13 ms |
+| Striple's part of that frame write (wall time minus the AX time of the slowest app), p95 | < 1 ms | 0.12 ms |
 | Idle | no timer, no display link | the ticker stops when all windows are at rest |
+
+With the real app and the E2E test app (`make e2e`, 3 windows, 2026-10-13): frame write p95 0.80 to 0.97 ms and
+command latency p95 2.2 to 6.2 ms in 7 of 9 runs (1.14 and 12.3 ms in a run at load average 7.5, 1.01 and 7.3 ms in a run at load average 9.8). The rest of a frame write is the time the app and WindowServer need to answer
+the AX calls; Striple cannot make that shorter. Details: [docs/E2E.md](docs/E2E.md#limits).
 
 How Striple stays fast:
 
@@ -60,10 +65,14 @@ How Striple stays fast:
 - When an app is still busy, only the newest frame for each window is kept. Older frames are dropped, not queued.
 - A frame that has not changed is not written again.
 - Frames are rounded per origin and per size, so a scrolling window keeps its width and gets no extra resize.
+- During an animation a window keeps one size and only moves: a resize costs the app several times a move. A
+  growing window gets its new size on the first frame, a shrinking one when its size settles.
+- When no animation runs, the key handler writes the first frame of a command, so the windows start to move
+  without a wait for the next display refresh. During an animation the display link writes the next frame.
 - `AXEnhancedUserInterface` (which makes Chrome and Electron apps animate every move) is read and turned off once per app per animation, not on every frame.
 - The animation ticker runs only while something moves.
 
-`striple stats` shows the live p50 and p95 frame-write time and command latency, and the apps with the slowest AX writes.
+`striple stats` shows the live p50 and p95 frame-write time, Striple's part of it (without the AX calls), command latency, and the apps with the slowest AX writes.
 
 ## Install
 

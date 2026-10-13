@@ -78,11 +78,14 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = MetricsStore(directory: dir, appVersion: "test")
         let recorder = StatsRecorder()
-        Engine.recordTick(recorder, metrics: store, commandStart: nil)(2.5)
-        Engine.recordTick(recorder, metrics: store, commandStart: 0)(3)
+        Engine.recordTick(recorder, metrics: store, commandStart: nil)(.init(wallMs: 2.5, axMs: 2))
+        Engine.recordTick(recorder, metrics: store, commandStart: 0)(.init(wallMs: 3, axMs: 2.75))
         Engine.recordTick(recorder, metrics: store, commandStart: 0)(nil)
         let day = store.snapshot()
         #expect(day.frameWrite.count == 2)
+        #expect(day.frameWrite.sum == 5.5)
+        #expect(day.frameOwn.count == 2)
+        #expect(day.frameOwn.sum == 0.75)
         #expect(day.commandLatency.count == 1)
         #expect(recorder.snapshot().batches == 2)
     }
@@ -94,9 +97,10 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = MetricsStore(directory: dir, appVersion: "test")
         let recorder = StatsRecorder()
-        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: true, now: { 10.0625 })(3)
+        let timing = FrameApplier.FrameTiming(wallMs: 3, axMs: 2)
+        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: true, now: { 10.0625 })(timing)
         Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: true, now: { 10.0625 })(nil)
-        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: false, now: { 10.0625 })(3)
+        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: false, now: { 10.0625 })(timing)
         let day = store.snapshot()
         #expect(day.commandLatency.count == 2)
         #expect(day.commandSettle.count == 1)
@@ -132,7 +136,8 @@ extension CommandClock {
     @Test func fromRestTheFirstLinkTickTakesTheStart() {
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
-        // The kick tick inside perform has dt = 0: every frame is where Striple placed the window.
+        // A kick tick inside perform that moves nothing: every frame is where Striple placed the window. From rest
+        // the kick tick moves (`Engine.animationStart`); the clock must still work when it does not.
         clock.tick(moved: false)
         clock.performEnded(changedTargets: true)
         #expect(clock.pending == 10)
@@ -616,5 +621,198 @@ extension CommandClock {
         for command in Command.bindable + [.focusWindow(7)] {
             #expect(Engine.recordsWhenStopped(command) == always.contains(command), "\(command.name)")
         }
+    }
+}
+
+/// F2: the first frame of a command is written in the key handler, and it already moves the windows.
+@Suite struct AnimationStartTests {
+    private static let rest: (Double) -> Bool = { _ in true }
+
+    @Test func fromRestTheSpringsStartOneFrameEarlier() {
+        #expect(Engine.animationStart(now: 10, velocityX: nil, settled: Self.rest) == 10 - Engine.firstFrameLead)
+        #expect(Engine.firstFrameLead == 1.0 / 60)
+    }
+
+    /// During an animation the springs continue from where they are: a start in the past would make them jump.
+    @Test func duringAnAnimationTheSpringsStartNow() {
+        #expect(Engine.animationStart(now: 10, velocityX: nil, settled: { _ in false }) == 10)
+    }
+
+    /// A swipe's release speed applies from the release.
+    @Test func afterASwipeTheSpringsStartNow() {
+        #expect(Engine.animationStart(now: 10, velocityX: 1200, settled: Self.rest) == 10)
+        #expect(Engine.animationStart(now: 10, velocityX: 0, settled: Self.rest) == 10)
+    }
+
+    /// Rest is checked at the early start time: settled at `now` but not one lead before it starts at `now`.
+    @Test func restIsCheckedAtTheEarlyStart() {
+        var asked: [Double] = []
+        let start = Engine.animationStart(now: 10, velocityX: nil, settled: { t in asked.append(t); return t >= 10 })
+        #expect(start == 10)
+        #expect(asked == [10 - Engine.firstFrameLead])
+    }
+
+    /// Round 3 critic: a shrink 800 -> 400 settles, and a few ms later a command sets 600. The springs were settled at
+    /// `now` but not at `now - lead`, so the retarget read the old held width (800) and the window went
+    /// 400 -> 800 -> 600 on screen. The frame after the retarget must keep 400 (the size on screen) or show 600.
+    @Test func aRetargetJustAfterASettleKeepsTheSizeOnScreen() {
+        let wide = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let narrow = CGRect(x: 0, y: 0, width: 400, height: 600)
+        let middle = CGRect(x: 0, y: 0, width: 600, height: 600)
+        var anim = FrameAnimator()
+        anim.setTargets([1: wide], at: 0, animate: false)
+        anim.setTargets([1: narrow], at: 1, animate: true)
+        var settledAt = 1.0
+        while !anim.isSettled(at: settledAt) { settledAt += 0.0005 }
+        #expect(anim.writeFrame(1, at: settledAt)!.width == 400, "the settle frame wrote the target")
+        #expect(!anim.isSettled(at: settledAt + 0.005 - Engine.firstFrameLead), "the gap the bug needs")
+
+        for gap in [0.001, 0.005, 0.010, 0.016, 0.017, 0.030] {
+            var a = anim
+            let now = settledAt + gap
+            a.setTargets([1: middle], at: Engine.animationStart(now: now, velocityX: nil, settled: { a.isSettled(at: $0) }),
+                         animate: true)
+            var t = now
+            while !a.isSettled(at: t) {
+                let w = a.writeFrame(1, at: t)!.width
+                #expect(w == 400 || w == 600, "gap \(gap) s, t \(t): width \(w)")
+                t += 1.0 / 120
+            }
+        }
+    }
+
+    /// The kick tick at `now` writes a frame that moved: without the lead it would be the start frame (dt = 0),
+    /// and the first moved frame would wait for the next display refresh.
+    @Test func theKickFrameHasMoved() {
+        let from = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let to = CGRect(x: 600, y: 0, width: 100, height: 100)
+        var anim = FrameAnimator()
+        anim.setTargets([1: from], at: 0, animate: true)
+        let now = 5.0
+        anim.setTargets([1: to], at: Engine.animationStart(now: now, velocityX: nil, settled: { anim.isSettled(at: $0) }),
+                        animate: true)
+        let first = anim.writeFrame(1, at: now)!
+        #expect(first.minX > 0.5, "the first frame moved")
+        #expect(first.minX < 100, "and it is a small step, not a jump")
+        #expect(!anim.isSettled(at: now))
+
+        var noLead = FrameAnimator()
+        noLead.setTargets([1: from], at: 0, animate: true)
+        noLead.setTargets([1: to], at: now, animate: true)
+        #expect(noLead.writeFrame(1, at: now)!.minX == 0)
+    }
+}
+
+
+@Suite struct SizedAwayTests {
+    private let final = CGRect(x: 8, y: 0, width: 2040, height: 1000)
+
+    @Test func aNewSizeAwayFromTheFinalPositionIsMarked() {
+        let old = CGRect(x: 1200, y: 0, width: 800, height: 1000)
+        #expect(Engine.sizedAway(previous: old, write: CGRect(x: 1190, y: 0, width: 2040, height: 1000), final: final))
+        #expect(Engine.sizedAway(previous: nil, write: CGRect(x: 1190, y: 0, width: 2040, height: 1000), final: final))
+    }
+
+    @Test func aMoveOrASizeAtTheFinalPositionIsNotMarked() {
+        let held = CGRect(x: 1190, y: 0, width: 2040, height: 1000)
+        #expect(!Engine.sizedAway(previous: held, write: CGRect(x: 600, y: 0, width: 2040, height: 1000), final: final),
+                "a move only: the size is not written")
+        #expect(!Engine.sizedAway(previous: CGRect(x: 20, y: 0, width: 2100, height: 1000), write: final, final: final),
+                "the write applies the size at the final position")
+        #expect(!Engine.sizedAway(previous: nil, write: final, final: final))
+    }
+
+    /// The bug of the first E2E run with held sizes: a growing window got its new size on the first frame, at its
+    /// old position, where the system cut it at the display edge. The later frames only moved it, so it kept the cut
+    /// size (E2E scenario d: width 711, want 1016).
+    @Test func aGrowingWindowGetsItsFullSizeAtTheEnd() {
+        let fixed = simulateGrow(resizeAtEnd: true)
+        let unfixed = simulateGrow(resizeAtEnd: false)
+        #expect(fixed == final)
+        #expect(unfixed.width < final.width, "the model must show the bug without the last resize")
+    }
+
+    /// Runs the steps of `Engine.tick` for one window at 60 Hz, against a window that cannot reach past x = 2056.
+    /// The marks and the AX calls are the production helpers: `sizedAway`, `resizeMarked`, `AXFrameWriter.steps`.
+    private func simulateGrow(resizeAtEnd: Bool) -> CGRect {
+        let start = CGRect(x: 1200, y: 0, width: 800, height: 1000)
+        var anim = FrameAnimator(response: 0.22)
+        anim.setTargets([1: start], at: 0, animate: false)
+        anim.setTargets([1: final], at: 0, animate: true)
+        var window = ClampingWindow(edge: 2056, frame: start)
+        var placed: CGRect? = start
+        var written: CGRect? = start
+        var marks: Set<WindowID> = []
+        var t = 0.0
+        while t < 5 {
+            t += 1.0 / 60
+            guard let f = anim.writeFrames(at: t)[1] else { break }
+            if Engine.sizedAway(previous: placed, write: f, final: final) { marks.insert(1) }
+            placed = f
+            let ends = anim.isSettled(at: t)
+            var writes = [FrameWrite(id: 1, pid: 1, frame: f)]
+            if ends && resizeAtEnd { Engine.resizeMarked(&writes, marks: &marks, exists: { _ in true }) }
+            if writes[0].frame != written || writes[0].resize {
+                window.write(writes[0], previous: written)
+                written = writes[0].frame
+            }
+            if ends { break }
+        }
+        return window.frame
+    }
+}
+
+@Suite struct ResizeMarkedTests {
+    @Test func markedWindowsWithAWriteGetResizeAndLoseTheirMark() {
+        var writes = [FrameWrite(id: 1, pid: 1, frame: .zero), FrameWrite(id: 2, pid: 1, frame: .zero)]
+        var marks: Set<WindowID> = [1]
+        Engine.resizeMarked(&writes, marks: &marks, exists: { _ in true })
+        #expect(writes.map(\.resize) == [true, false])
+        #expect(marks.isEmpty)
+    }
+
+    /// A dragged window, or one on a strip that went off screen, has no write on the last tick: it must keep its
+    /// mark, else it keeps a size that the system cut (critic round 1).
+    @Test func aMarkedWindowWithoutAWriteKeepsItsMarkWhileItExists() {
+        var writes = [FrameWrite(id: 1, pid: 1, frame: .zero)]
+        var marks: Set<WindowID> = [1, 2, 3]
+        Engine.resizeMarked(&writes, marks: &marks, exists: { $0 != 3 })
+        #expect(writes.map(\.resize) == [true])
+        #expect(marks == [2], "2 waits for a later write, 3 is gone")
+    }
+}
+
+/// A window whose app cuts its width at a display edge. It gets the AX calls of `AXFrameWriter.steps`.
+private struct ClampingWindow {
+    let edge: CGFloat
+    var frame: CGRect
+
+    mutating func setSize(_ s: CGSize) { frame.size = CGSize(width: min(s.width, edge - frame.minX), height: s.height) }
+
+    mutating func write(_ w: FrameWrite, previous: CGRect?) {
+        let steps = AXFrameWriter.steps(w, previous: previous)
+        if steps.size { setSize(w.frame.size) }
+        if steps.position { frame.origin = w.frame.origin }
+        if steps.sizeAgain { setSize(w.frame.size) }
+    }
+}
+
+@Suite struct AXStepsTests {
+    private let a = CGRect(x: 0, y: 0, width: 100, height: 100)
+
+    @Test func onlyWhatChangedIsWritten() {
+        #expect(AXFrameWriter.steps(FrameWrite(id: 1, pid: 1, frame: a.offsetBy(dx: 5, dy: 0)), previous: a)
+                == .init(size: false, position: true))
+        #expect(AXFrameWriter.steps(FrameWrite(id: 1, pid: 1, frame: CGRect(x: 0, y: 0, width: 90, height: 100)), previous: a)
+                == .init(size: true, position: false))
+        #expect(AXFrameWriter.steps(FrameWrite(id: 1, pid: 1, frame: a), previous: nil) == .init(size: true, position: true))
+    }
+
+    @Test func resizeWritesTheSizeAlsoWhenItDidNotChange() {
+        let moved = FrameWrite(id: 1, pid: 1, frame: a.offsetBy(dx: 5, dy: 0), resize: true)
+        #expect(AXFrameWriter.steps(moved, previous: a) == .init(size: true, position: true))
+        #expect(AXFrameWriter.steps(moved, previous: a).sizeAgain)
+        #expect(AXFrameWriter.steps(FrameWrite(id: 1, pid: 1, frame: a, resize: true), previous: a)
+                == .init(size: true, position: false))
     }
 }

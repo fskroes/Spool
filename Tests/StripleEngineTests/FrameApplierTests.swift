@@ -16,6 +16,7 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     private var settled: [pid_t] = []
     private var gates: [WindowID: Gate] = [:]
     private var outcomes: [WindowID: [Bool]] = [:]
+    private var resizeLog: [(id: WindowID, resize: Bool)] = []
 
     /// The results of the next writes of one window, in order; after them, `failing` decides.
     func outcomes(_ id: WindowID, _ list: [Bool]) { lock.withLock { outcomes[id] = list } }
@@ -52,6 +53,7 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
         if wait > 0 { Thread.sleep(forTimeInterval: wait) }
         return lock.withLock {
             log.append((w.pid, w.id, w.frame, previous))
+            resizeLog.append((w.id, w.resize))
             if var list = outcomes[w.id], !list.isEmpty {
                 let ok = list.removeFirst()
                 outcomes[w.id] = list
@@ -63,6 +65,18 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
 
     var writes: [(pid: pid_t, id: WindowID, frame: CGRect, previous: CGRect?)] { lock.withLock { log } }
     var batchCount: Int { lock.withLock { batches.count } }
+    /// `FrameWrite.resize` of every write of one window, in order.
+    func resizes(_ id: WindowID) -> [Bool] { lock.withLock { resizeLog.filter { $0.id == id }.map(\.resize) } }
+}
+
+/// Writes at once; `settle` takes 40 ms, like Chrome turning AXEnhancedUserInterface on again.
+private final class SlowSettleWriter: FrameWriter, @unchecked Sendable {
+    let settleStarted = DispatchSemaphore(value: 0)
+    func write(_ w: FrameWrite, previous: CGRect?) -> Bool { true }
+    func settle(pid: pid_t) {
+        settleStarted.signal()
+        Thread.sleep(forTimeInterval: 0.04)
+    }
 }
 
 private final class Box<T>: @unchecked Sendable {
@@ -78,6 +92,14 @@ private final class Box<T>: @unchecked Sendable {
 private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, height: 100) }
 
 @Suite struct FrameApplierTests {
+    /// A batch can end before the `apply` call that waits for it starts: the clock at the start is then later
+    /// than at the end. A wrapped difference made the AX time huge and Striple's part 0 (critic round 1).
+    @Test func theAXDeltaDoesNotWrap() {
+        #expect(FrameApplier.axDelta(5_000, since: 2_000) == 3_000)
+        #expect(FrameApplier.axDelta(2_000, since: 5_000) == 0)
+        #expect(FrameApplier.axDelta(7, since: 7) == 0)
+    }
+
     @Test func appsAreWrittenInParallel() {
         // 6 apps, one window each. Every write is held until all 6 have started: with one queue for all apps,
         // the second write could not start while the first one is held.
@@ -104,6 +126,47 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(writer.writes.count == 1)
         #expect(applier.stats.skipped == 2)
         #expect(applier.lastWritten(1) == rect(0))
+    }
+
+    /// The last frame of an animation writes a held size again (`Engine.sizedAway`): it may equal the written frame.
+    @Test func aResizeWriteIsNotSkipped() {
+        let writer = FakeWriter()
+        let applier = FrameApplier(writer: writer)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0), resize: true)])
+        #expect(writer.frames(1) == [rect(0), rect(0)])
+        #expect(writer.resizes(1) == [false, true])
+        #expect(applier.stats.skipped == 0)
+    }
+
+    @Test func aResizeWriteEqualToTheOneInFlightIsWrittenAfterIt() {
+        let writer = FakeWriter()
+        let first = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500))])
+        #expect(first.started.wait(timeout: .now() + 2) == .success)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500), resize: true)])
+        first.release.signal()
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.frames(1) == [rect(500), rect(500)])
+        #expect(writer.resizes(1) == [false, true])
+    }
+
+    /// A newer frame replaces a waiting one. A `resize` of the waiting frame must not be lost with it: else the
+    /// window could keep a size that it refused.
+    @Test func aNewerFrameKeepsTheResizeOfTheWaitingOne() {
+        let writer = FakeWriter()
+        let first = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(first.started.wait(timeout: .now() + 2) == .success)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(500), resize: true)])
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(900))])
+        first.release.signal()
+        #expect(applier.settleAndWait(timeout: 2))
+        #expect(writer.frames(1) == [rect(0), rect(900)])
+        #expect(writer.resizes(1) == [false, true])
+        #expect(applier.stats.coalesced == 1)
     }
 
     /// The engine gives a command its latency start only on a tick that moved a window and queued a write. True for
@@ -797,6 +860,122 @@ private final class TimeBox: @unchecked Sendable {
     func get() -> Double?? { lock.withLock { value } }
 }
 
+private final class TimingBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: FrameApplier.FrameTiming??
+    func set(_ v: FrameApplier.FrameTiming?) { lock.withLock { value = .some(v) } }
+    func get() -> FrameApplier.FrameTiming?? { lock.withLock { value } }
+}
+
+private extension FrameApplier {
+    /// `applyTimed` and wait for its timing (2 s at most).
+    func timed(_ writes: [FrameWrite]) -> FrameTiming?? {
+        let done = DispatchSemaphore(value: 0)
+        let box = TimingBox()
+        applyTimed(writes) { box.set($0); done.signal() }
+        return done.wait(timeout: .now() + 2) == .success ? box.get() : nil
+    }
+}
+
+/// Striple's own part of a frame write: the wall time minus the AX time of the slowest app. The fake writes
+/// sleep, so the AX time is known from below; the checks compare the parts with each other, not with a clock.
+@Suite struct FrameTimingTests {
+    @Test func theOwnPartIsTheWallTimeWithoutTheAXCalls() throws {
+        let applier = FrameApplier(writer: FakeWriter(delay: 0.02))
+        let t = try #require(applier.timed([FrameWrite(id: 1, pid: 10, frame: rect(1))]) ?? nil)
+        #expect(t.axMs >= 20, "the 20 ms write is AX time")
+        #expect(t.wallMs >= t.axMs)
+        #expect(t.ownMs == t.wallMs - t.axMs)
+        #expect(t.ownMs < 10, "the queue hops and locks take far less than the write")
+    }
+
+    /// A write queued behind a slow `settle` of the same app waits for it: that wait is AX time, not Striple's
+    /// (critic round 2).
+    @Test func aSettleBeforeTheWriteIsAXTime() throws {
+        let writer = SlowSettleWriter()
+        let applier = FrameApplier(writer: writer)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        applier.settle()
+        #expect(writer.settleStarted.wait(timeout: .now() + 2) == .success)
+        let t = try #require(applier.timed([FrameWrite(id: 1, pid: 10, frame: rect(1))]) ?? nil)
+        #expect(t.axMs >= 30, "the 40 ms settle the write waited for")
+        #expect(t.ownMs < 10)
+    }
+
+    /// Apps write in parallel: the AX part is the slowest app, not the sum.
+    @Test func parallelAppsCountTheSlowestApp() throws {
+        let writer = FakeWriter()
+        writer.delays = [1: 0.04, 2: 0.02]
+        let applier = FrameApplier(writer: writer)
+        let t = try #require(applier.timed([FrameWrite(id: 1, pid: 10, frame: rect(1)),
+                                            FrameWrite(id: 2, pid: 11, frame: rect(2))]) ?? nil)
+        #expect(t.axMs >= 40)
+        #expect(t.axMs < 55, "not the 60 ms sum of both apps")
+        #expect(t.wallMs >= t.axMs)
+    }
+
+    /// The batches of one app add up: a call that waits for the batch in flight and then its own counts both.
+    /// The part of the batch in flight that ran before the call is not part of the call.
+    @Test func aBatchInFlightCountsOnlyFromTheCall() throws {
+        let writer = FakeWriter()
+        let gate = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(1))])
+        #expect(gate.started.wait(timeout: .now() + 2) == .success)
+        Thread.sleep(forTimeInterval: 0.05) // AX time before the call
+        let done = DispatchSemaphore(value: 0)
+        let box = TimingBox()
+        writer.delays = [1: 0.02]
+        applier.applyTimed([FrameWrite(id: 1, pid: 10, frame: rect(2))]) { box.set($0); done.signal() }
+        Thread.sleep(forTimeInterval: 0.03) // AX time of the batch in flight, during the call
+        gate.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        let t = try #require(box.get() ?? nil)
+        // The held write after the call: 30 ms at the gate, then its 20 ms sleep. Then this call's 20 ms write.
+        #expect(t.axMs >= 70)
+        #expect(t.axMs <= t.wallMs + 0.5, "the 50 ms before the call are not counted")
+        #expect(t.ownMs < 10)
+        #expect(writer.frames(1) == [rect(1), rect(2)])
+    }
+
+    @Test func aDroppedFrameHasNoTiming() {
+        let writer = FakeWriter()
+        let hung = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(hung.started.wait(timeout: .now() + 2) == .success)
+        let done = DispatchSemaphore(value: 0)
+        let box = TimingBox()
+        applier.applyTimed([FrameWrite(id: 1, pid: 10, frame: rect(1))]) { box.set($0); done.signal() }
+        applier.forgetApp(10)
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(box.get() == .some(nil))
+        hung.release.signal()
+    }
+
+    @Test func aCallWithNothingToWriteHasNoTiming() {
+        let applier = FrameApplier(writer: FakeWriter())
+        let w = FrameWrite(id: 1, pid: 10, frame: rect(0))
+        applier.applyAndWait([w])
+        #expect(applier.timed([w]) == .some(nil))
+    }
+
+    /// `apply` reports the same wall time that `applyTimed` measures.
+    @Test func applyReportsTheWallTime() {
+        let applier = FrameApplier(writer: FakeWriter(delay: 0.01))
+        let done = DispatchSemaphore(value: 0)
+        let time = TimeBox()
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(3))]) { time.set($0); done.signal() }
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect((time.get() ?? nil).map { $0 >= 10 } == true)
+    }
+
+    @Test func theOwnPartIsNeverNegative() {
+        #expect(FrameApplier.FrameTiming(wallMs: 2, axMs: 2.5).ownMs == 0)
+        #expect(FrameApplier.FrameTiming(wallMs: 2.5, axMs: 2).ownMs == 0.5)
+    }
+}
+
 /// The performance budget from docs/SPEC.md. It measures wall-clock time, so it runs only with `make bench`
 /// (STRIPLE_BENCH=1), not as a gate test. `appsAreWrittenInParallel` checks the parallel writes without a clock.
 ///
@@ -839,5 +1018,22 @@ struct FrameApplierBenchmarkTests {
         print(String(format: "Frame write, 6 apps x 2 ms AX latency, 100 rounds: p50 %.2f ms, p95 %.2f ms; applier overhead p95 %.2f ms; one after the other p50 %.2f ms; load average %.1f",
                      p(50, wall), p(95, wall), p(95, overhead), p(50, serial), load[0]))
         #expect(p(95, overhead) < 2, "applier overhead p95 \(p(95, overhead)) ms: over the 4 ms budget minus the 2 ms AX write")
+    }
+
+    /// The live budget frame-own-p95 (docs/SPEC.md): Striple's own part of a frame write, as `striple stats`
+    /// reports it (`FrameTiming.ownMs`), p95 < 1 ms. Same load as above.
+    @Test func theOwnPartIsUnder1ms() throws {
+        let applier = FrameApplier(writer: FakeWriter(delay: 0.002))
+        let ids = (1...6).map { WindowID($0) }
+        _ = applier.timed(ids.map { FrameWrite(id: $0, pid: pid_t($0), frame: rect(-1)) }) // warm up the queues
+        var own: [Double] = []
+        for round in 0..<100 {
+            let t = try #require(applier.timed(ids.map { FrameWrite(id: $0, pid: pid_t($0), frame: rect(CGFloat(round * 10 + Int($0)))) }) ?? nil)
+            own.append(t.ownMs)
+        }
+        let sorted = own.sorted()
+        let p50 = sorted[49], p95 = sorted[94]
+        print(String(format: "Striple's part of a frame write, 6 apps x 2 ms AX latency, 100 rounds: p50 %.3f ms, p95 %.3f ms", p50, p95))
+        #expect(p95 < 1, "Striple's part p95 \(p95) ms, want < 1 ms")
     }
 }

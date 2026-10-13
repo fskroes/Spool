@@ -24,9 +24,26 @@ extension Engine {
         if Self.targetsChange(animators[key], to: result.frames) { targetChanges &+= 1 }
         var anim = animators[key] ?? FrameAnimator(response: config.animation.response, enabled: config.animation.enabled)
         let now = CACurrentMediaTime()
-        anim.setTargets(result.frames, at: now, animate: animate, velocityX: velocityX)
+        let start = Self.animationStart(now: now, velocityX: velocityX, settled: { anim.isSettled(at: $0) })
+        anim.setTargets(result.frames, at: start, animate: animate, velocityX: velocityX)
         animators[key] = anim
         kick(now)
+    }
+
+    /// How far back an animation from rest starts: one frame at 60 Hz. So the kick tick (dt = this lead) already
+    /// moves the windows, and a command's first frame is written in the key handler, not on the next display
+    /// refresh. The display link then continues from there; a spring from rest only moves forward.
+    nonisolated static let firstFrameLead = 1.0 / 60
+
+    /// The start time of the springs that `relayout` sets. From rest, `now - firstFrameLead`. During an animation,
+    /// `now`: the springs continue from where they are, so nothing jumps. After a swipe (`velocityX`), `now`: the
+    /// release speed applies from the moment of the release.
+    /// "At rest" is checked at the early start time, not at `now`: an animation that settled less than one lead ago
+    /// is not settled at the early start, so the retarget would read its held size and position from before the last
+    /// frame on screen (a shrink would flash back to its old width). Such a strip starts at `now`.
+    nonisolated static func animationStart(now: Double, velocityX: Double?, settled: (Double) -> Bool) -> Double {
+        let early = now - firstFrameLead
+        return velocityX == nil && settled(early) ? early : now
     }
 
     func relayoutAll(animate: Bool) {
@@ -35,6 +52,7 @@ extension Engine {
     }
 
     /// Writes the first frame now (lowest latency for a command) and lets the display link do the rest.
+    /// From rest the springs start `firstFrameLead` in the past, so this frame already moves the windows.
     /// While the link runs, it alone writes, so frames never pile up faster than the display refreshes.
     func kick(_ now: Double) {
         guard let ticker else { return }
@@ -47,23 +65,30 @@ extension Engine {
         var writes: [FrameWrite] = []
         var placed: [(WindowID, Layout.Placement)] = []
         var settled = true
-        for (key, anim) in animators where isActive(key) {
-            guard let d = display(key.display) else { continue }
-            for (id, f) in anim.frames(at: t) {
+        for key in animators.keys where isActive(key) {
+            guard let d = display(key.display), let frames = animators[key]?.writeFrames(at: t),
+                  let anim = animators[key] else { continue }
+            for (id, f) in frames {
                 guard let w = windows[id], w.state == .tiled, drag?.id != id else { continue }
                 let p = Layout.physical(f, display: d.geometry, settings: config.layout)
+                if let target = anim.target(id),
+                   Self.sizedAway(previous: placements[id]?.frame, write: p.frame,
+                                  final: Layout.physical(target, display: d.geometry, settings: config.layout).frame) {
+                    resizeAtEnd.insert(id)
+                }
                 placed.append((id, p))
                 writes.append(FrameWrite(id: id, pid: w.info.pid, frame: p.frame))
             }
             if !anim.isSettled(at: t) { settled = false }
         }
         let (moved, ends) = Self.tickStep(placed, placements: &placements, settled: settled, swiping: swipe != nil)
+        if ends { Self.resizeMarked(&writes, marks: &resizeAtEnd, exists: { windows[$0] != nil }) }
         if !writes.isEmpty {
             // The completion gets a time only when a write was queued, so it may hold the start before `ticked`.
             let taken = commandClock.tickStart(moved: moved, settles: ends)
-            let queued = applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore,
-                                                                           commandStart: taken?.start,
-                                                                           settleAtWrite: taken?.settleAtWrite == true))
+            let queued = applier.applyTimed(writes, completion: Self.recordTick(recorder, metrics: metricsStore,
+                                                                                commandStart: taken?.start,
+                                                                                settleAtWrite: taken?.settleAtWrite == true))
             commandClock.ticked(taken, queued: queued)
         }
         updateOverlays()

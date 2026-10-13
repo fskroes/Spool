@@ -60,9 +60,10 @@ import Testing
         let r = StatsRecorder()
         Engine.recordTick(r, commandStart: 0)(nil)
         #expect(r.snapshot().batches == 0)
-        Engine.recordTick(r, commandStart: nil)(3)
+        Engine.recordTick(r, commandStart: nil)(.init(wallMs: 3, axMs: 2.25))
         #expect(r.snapshot().batches == 1)
         #expect(r.snapshot().frameP50 == 3)
+        #expect(r.snapshot().ownP50 == 0.75)
     }
 
     @Test func percentilesUseTheNewestWrites() {

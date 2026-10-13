@@ -850,6 +850,8 @@ public enum StripleCLI {
             ("Coalesced writes", "\(s.coalescedWrites)"),
             ("AX errors", "\(s.axErrors)"),
             ("Frame write", "p50 \(ms(s.frameWriteP50)), p95 \(ms(s.frameWriteP95))"),
+        ] + (s.frameOwnP50.flatMap { p50 in s.frameOwnP95.map { p95 in
+            [("Striple's part", "p50 \(ms(p50)), p95 \(ms(p95)) (frame write without the AX calls)")] } } ?? []) + [
             ("Command latency", "p50 \(ms(s.commandLatencyP50)), p95 \(ms(s.commandLatencyP95))"),
             ("Restarts", "\(s.restarts)"),
         ]

@@ -121,6 +121,10 @@ public struct EngineStats: Codable, Equatable, Sendable {
     public var axErrors: Int
     public var frameWriteP50: Double
     public var frameWriteP95: Double
+    /// Striple's own part of a frame write: the wall time minus the AX time of the slowest app. Nil from an app
+    /// that does not report it.
+    public var frameOwnP50: Double?
+    public var frameOwnP95: Double?
     public var commandLatencyP50: Double
     public var commandLatencyP95: Double
     public var restarts: Int
@@ -128,7 +132,8 @@ public struct EngineStats: Codable, Equatable, Sendable {
     public var slowestApps: [AppWriteStats]?
 
     public init(uptimeSeconds: Double = 0, framesWritten: Int = 0, windowWrites: Int = 0, skippedWrites: Int = 0, coalescedWrites: Int = 0,
-                axErrors: Int = 0, frameWriteP50: Double = 0, frameWriteP95: Double = 0, commandLatencyP50: Double = 0,
+                axErrors: Int = 0, frameWriteP50: Double = 0, frameWriteP95: Double = 0, frameOwnP50: Double? = nil,
+                frameOwnP95: Double? = nil, commandLatencyP50: Double = 0,
                 commandLatencyP95: Double = 0, restarts: Int = 0, slowestApps: [AppWriteStats]? = nil) {
         self.uptimeSeconds = uptimeSeconds
         self.framesWritten = framesWritten
@@ -138,6 +143,8 @@ public struct EngineStats: Codable, Equatable, Sendable {
         self.axErrors = axErrors
         self.frameWriteP50 = frameWriteP50
         self.frameWriteP95 = frameWriteP95
+        self.frameOwnP50 = frameOwnP50
+        self.frameOwnP95 = frameOwnP95
         self.commandLatencyP50 = commandLatencyP50
         self.commandLatencyP95 = commandLatencyP95
         self.restarts = restarts

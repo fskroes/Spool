@@ -39,6 +39,10 @@ final class TestWindows: NSObject, NSApplicationDelegate {
     private var seq = 0
     private var commandsDone = 0
     private var timer: Timer?
+    /// Encodes and writes the report off the main thread. The main thread answers Striple's AX calls; a file
+    /// write there (open, fsync, rename) would delay them and add the test app's own time to Striple's numbers.
+    /// Serial, so the reports land in `seq` order.
+    private let reportQueue = DispatchQueue(label: "striple-e2e-windows.report", qos: .utility)
 
     init(options: Options) { self.options = options }
 
@@ -96,6 +100,7 @@ final class TestWindows: NSObject, NSApplicationDelegate {
             case .close(let title): close(title: title)
             case .quit:
                 writeReport()
+                reportQueue.sync {}
                 NSApp.terminate(nil)
             case nil: FileHandle.standardError.write(Data("unknown command: \(line)\n".utf8))
             }
@@ -111,8 +116,11 @@ final class TestWindows: NSObject, NSApplicationDelegate {
         }
         let report = WindowReport(pid: getpid(), seq: seq, commandsDone: commandsDone, windows: list,
                                   active: NSApp.isActive, key: NSApp.keyWindow?.windowNumber)
-        guard let data = try? JSONEncoder().encode(report) else { return }
-        try? data.write(to: URL(fileURLWithPath: options.report), options: .atomic)
+        let path = options.report
+        reportQueue.async {
+            guard let data = try? JSONEncoder().encode(report) else { return }
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
     }
 }
 

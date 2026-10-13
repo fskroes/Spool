@@ -195,6 +195,24 @@ extension Engine {
         return (moved, settled && !swiping)
     }
 
+    /// True when a tick writes a new size while the window is not at its final position yet. The size is held
+    /// during the animation (`FrameAnimator.writeFrame`), so the frames after it only move the window. But the app
+    /// or macOS can refuse a part of a size at a position (a window may not reach past the display edge there):
+    /// the window would keep the smaller size. So the last frame of the animation writes that size again.
+    nonisolated static func sizedAway(previous: CGRect?, write: CGRect, final: CGRect) -> Bool {
+        previous?.size != write.size && write.origin != final.origin
+    }
+
+    /// The last tick of an animation: the writes of marked windows (`sizedAway`) get `resize`, and lose their mark.
+    /// A window without a write now (dragged, or on a strip that is not on screen) keeps its mark for the end of a
+    /// later animation, unless it is gone.
+    nonisolated static func resizeMarked(_ writes: inout [FrameWrite], marks: inout Set<WindowID>,
+                                         exists: (WindowID) -> Bool) {
+        guard !marks.isEmpty else { return }
+        for i in writes.indices where marks.remove(writes[i].id) != nil { writes[i].resize = true }
+        marks = marks.filter(exists)
+    }
+
     /// True when `frames` are not the targets the strip's animator has now: the layout pass moves a window.
     nonisolated static func targetsChange(_ anim: FrameAnimator?, to frames: [WindowID: CGRect]) -> Bool {
         guard let anim, anim.windowIDs.count == frames.count else { return true }

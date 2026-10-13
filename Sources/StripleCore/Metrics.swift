@@ -210,7 +210,8 @@ public struct AppMetrics: Codable, Equatable, Sendable {
 
 /// Everything measured on one local day. Saved as `<directory>/<day>.json`.
 public struct DayMetrics: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    /// 2: `frameOwn`.
+    public static let schemaVersion = 2
 
     public var schema = DayMetrics.schemaVersion
     /// Local calendar day, `YYYY-MM-DD`.
@@ -225,6 +226,8 @@ public struct DayMetrics: Codable, Equatable, Sendable {
     // Speed (ms)
     /// One frame write: all windows of one layout tick.
     public var frameWrite = Histogram()
+    /// Striple's own part of a frame write: the wall time minus the AX time of the slowest app.
+    public var frameOwn = Histogram()
     /// From the start of a command until its first frame is written.
     public var commandLatency = Histogram()
     /// From the start of a command until its animation ends.
@@ -259,6 +262,7 @@ public struct DayMetrics: Codable, Equatable, Sendable {
         appVersions = Set(appVersions).union(other.appVersions).sorted()
         activeSeconds = activeSeconds.saturatingAdd(other.activeSeconds)
         frameWrite.merge(other.frameWrite)
+        frameOwn.merge(other.frameOwn)
         commandLatency.merge(other.commandLatency)
         commandSettle.merge(other.commandSettle)
         tickInterval.merge(other.tickInterval)
@@ -292,6 +296,7 @@ public struct DayMetrics: Codable, Equatable, Sendable {
         appVersions = Set(c.value(.appVersions, [String]())).sorted()
         activeSeconds = Self.amount(c.value(.activeSeconds, 0.0))
         frameWrite = c.value(.frameWrite, Histogram())
+        frameOwn = c.value(.frameOwn, Histogram())
         commandLatency = c.value(.commandLatency, Histogram())
         commandSettle = c.value(.commandSettle, Histogram())
         tickInterval = c.value(.tickInterval, Histogram())
@@ -544,8 +549,12 @@ struct MetricsAccumulator {
         }
     }
 
-    mutating func recordFrameWrite(ms: Double, now: Date) -> Bool {
-        change(now: now) { $0.frameWrite.insert(ms) }
+    mutating func recordFrameWrite(ms: Double, ownMs: Double? = nil, now: Date) -> Bool {
+        change(now: now) { day in
+            let wall = day.frameWrite.insert(ms)
+            let own = ownMs.map { day.frameOwn.insert($0) } ?? false
+            return wall || own
+        }
     }
 
     mutating func recordCommandLatency(ms: Double, now: Date) -> Bool {
@@ -823,8 +832,9 @@ public final class MetricsStore: @unchecked Sendable {
         update { $0.recordAXWrite(bundleID: bundleID, ms: ms, failed: failed, now: $1) }
     }
 
-    public func recordFrameWrite(ms: Double) {
-        update { $0.recordFrameWrite(ms: ms, now: $1) }
+    /// `ownMs`: Striple's own part of `ms`, nil when it is not known.
+    public func recordFrameWrite(ms: Double, ownMs: Double? = nil) {
+        update { $0.recordFrameWrite(ms: ms, ownMs: ownMs, now: $1) }
     }
 
     public func recordCommandLatency(ms: Double) {
@@ -1130,10 +1140,11 @@ public struct MetricsBudget: Codable, Equatable, Sendable {
         self.comparison = comparison
     }
 
-    /// frame-write-p95 <= 8 ms, command-latency-p95 <= 16.7 ms, command-settle-p95 <= 400 ms,
+    /// frame-write-p95 <= 8 ms, frame-own-p95 <= 1 ms, command-latency-p95 <= 16.7 ms, command-settle-p95 <= 400 ms,
     /// slow-tick-ratio <= 1 %, cpu-while-active <= 1 %, unclean-exits <= 0.
     public static let live: [MetricsBudget] = [
         MetricsBudget(name: "frame-write-p95", limit: 8, unit: "ms"),
+        MetricsBudget(name: "frame-own-p95", limit: 1, unit: "ms"),
         MetricsBudget(name: "command-latency-p95", limit: 16.7, unit: "ms"),
         MetricsBudget(name: "command-settle-p95", limit: 400, unit: "ms"),
         MetricsBudget(name: "slow-tick-ratio", limit: 1, unit: "%"),
@@ -1241,6 +1252,7 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         func p95(_ h: Histogram) -> Double? { h.count > 0 ? h.percentile(95) : nil }
         switch name {
         case "frame-write-p95": return p95(t.frameWrite)
+        case "frame-own-p95": return p95(t.frameOwn)
         case "command-latency-p95": return p95(t.commandLatency)
         case "command-settle-p95": return p95(t.commandSettle)
         case "slow-tick-ratio": return t.ticks > 0 ? Double(t.slowTicks) / Double(t.ticks) * 100 : nil
@@ -1277,7 +1289,8 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         out.append("Speed (ms)")
         var ax = Histogram()
         for app in total.apps.values { ax.merge(app.axWrite) }
-        let speed: [(String, Histogram)] = [("frame write", total.frameWrite), ("command latency", total.commandLatency),
+        let speed: [(String, Histogram)] = [("frame write", total.frameWrite), ("Striple's part", total.frameOwn),
+                                            ("command latency", total.commandLatency),
                                             ("command settle", total.commandSettle), ("tick interval", total.tickInterval),
                                             ("AX write (all apps)", ax)]
         out += F.table([["", "count", "p50", "p95", "p99", "max"]] + speed.map { name, h in

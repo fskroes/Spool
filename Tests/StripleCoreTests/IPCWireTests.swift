@@ -334,6 +334,27 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
             """)
     }
 
+    /// Striple's own part of a frame write gets its row when the app reports it.
+    @Test func statsShowStriplesPart() {
+        let stats = EngineStats(frameWriteP50: 1.2, frameWriteP95: 3.456, frameOwnP50: 0.08, frameOwnP95: 0.315)
+        #expect(StripleCLI.format(stats: stats).contains("""
+            Frame write:      p50 1.20 ms, p95 3.46 ms
+            Striple's part:   p50 0.08 ms, p95 0.32 ms (frame write without the AX calls)
+            Command latency:  p50 0.00 ms, p95 0.00 ms
+            """))
+    }
+
+    /// The stats of an older Striple have no own part: they still decode, without the row.
+    @Test func olderStatsDecodeWithoutTheOwnPart() throws {
+        var json = try #require(String(data: JSONEncoder().encode(EngineStats(frameWriteP95: 2)), encoding: .utf8))
+        #expect(!json.contains("frameOwn"))
+        json = json.replacingOccurrences(of: "\"frameWriteP95\":2", with: "\"frameWriteP95\":2.5")
+        let decoded = try JSONDecoder().decode(EngineStats.self, from: Data(json.utf8))
+        #expect(decoded.frameWriteP95 == 2.5)
+        #expect(decoded.frameOwnP95 == nil)
+        #expect(!StripleCLI.format(stats: decoded).contains("Striple's part"))
+    }
+
     @Test func statsListTheSlowestApps() {
         let stats = EngineStats(restarts: 0, slowestApps: [
             AppWriteStats(bundleID: "com.microsoft.teams2", pid: 4173, writes: 340, axP50: 12, axP95: 40.5, latencyP95: 80),

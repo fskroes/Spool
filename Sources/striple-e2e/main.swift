@@ -12,10 +12,12 @@ import StripleE2EKit
 func usage() -> Never {
     print("""
     usage: striple-e2e [--app <Striple.app>] [--out <dir>] [--bundle-dir <dir>] [--windows-binary <path>]
+                       [--animations on|off]
       --app             default: dist/Striple.app
       --out             report folder, default: /tmp/striple/e2e/<timestamp>
       --bundle-dir      where the test app bundle is made, default: .build/e2e
       --windows-binary  the striple-e2e-windows binary, default: next to this binary
+      --animations      on (default) or off: the test Striple's animations, and the budget of scenario h
     """)
     exit(2)
 }
@@ -30,7 +32,7 @@ func parseConfig() -> RunConfig {
     var values: [String: String] = [:]
     while !args.isEmpty {
         let a = args.removeFirst()
-        guard ["--app", "--out", "--bundle-dir", "--windows-binary"].contains(a), !args.isEmpty else { usage() }
+        guard ["--app", "--out", "--bundle-dir", "--windows-binary", "--animations"].contains(a), !args.isEmpty else { usage() }
         values[a] = args.removeFirst()
     }
     let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -44,10 +46,15 @@ func parseConfig() -> RunConfig {
         return f.string(from: Date())
     }()
     let me = URL(fileURLWithPath: CommandLine.arguments[0], relativeTo: cwd).resolvingSymlinksInPath()
-    return RunConfig(app: path("--app", cwd.appendingPathComponent("dist/Striple.app")),
-                     windowsBinary: path("--windows-binary", me.deletingLastPathComponent().appendingPathComponent(E2EIDs.windowsExecutable)),
-                     bundleDir: path("--bundle-dir", cwd.appendingPathComponent(".build/e2e")),
-                     outDir: path("--out", URL(fileURLWithPath: "/tmp/striple/e2e/\(stamp)")))
+    var config = RunConfig(app: path("--app", cwd.appendingPathComponent("dist/Striple.app")),
+                           windowsBinary: path("--windows-binary", me.deletingLastPathComponent().appendingPathComponent(E2EIDs.windowsExecutable)),
+                           bundleDir: path("--bundle-dir", cwd.appendingPathComponent(".build/e2e")),
+                           outDir: path("--out", URL(fileURLWithPath: "/tmp/striple/e2e/\(stamp)")))
+    if let value = values["--animations"] {
+        guard let animations = PerformanceBudget.Animations(argument: value) else { usage() }
+        config.animations = animations
+    }
+    return config
 }
 
 /// A run that crashed (a trap, SIGKILL) leaves its record: its test Striple can still run, and its STRIPLE_HOME
@@ -253,7 +260,8 @@ if !exitGate.claim(.report) {
     while true { pause() }
 }
 let reportURL = config.outDir.appendingPathComponent("report.md")
-let markdown = Report.markdown(title: "Striple E2E \(config.outDir.lastPathComponent)", rows: scenarios.rows, notes: notes)
+let markdown = Report.markdown(title: "Striple E2E \(config.outDir.lastPathComponent), animations \(config.animations.rawValue)",
+                               rows: scenarios.rows, notes: notes)
 try? Data(markdown.utf8).write(to: reportURL)
 print("\n" + markdown)
 print("Report: \(reportURL.path)")

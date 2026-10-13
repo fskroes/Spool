@@ -390,10 +390,54 @@ enum MetricsFixtures {
     }
 
     @Test func aNewerSchemaThrows() {
-        let json = #"{"schema": 2, "day": "2026-10-13"}"#
-        #expect(throws: MetricsError.newerSchema(2)) {
+        let json = #"{"schema": 3, "day": "2026-10-13"}"#
+        #expect(throws: MetricsError.newerSchema(3)) {
             try JSONDecoder().decode(DayMetrics.self, from: Data(json.utf8))
         }
+    }
+
+    /// Schema 2 added `frameOwn`. A schema 1 file has none: it loads with an empty one, and the rest stays.
+    @Test func aSchema1FileLoadsWithoutFrameOwn() throws {
+        var old = DayMetrics(day: "2026-10-13")
+        old.frameWrite.add(1.1)
+        old.frameWrite.add(1.3)
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        object["schema"] = 1
+        object.removeValue(forKey: "frameOwn")
+        let d = try JSONDecoder().decode(DayMetrics.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(DayMetrics.schemaVersion == 2)
+        #expect(d.schema == 2)
+        #expect(d.frameWrite.count == 2)
+        #expect(d.frameOwn.count == 0)
+    }
+
+    @Test func frameOwnRoundTripsAndMerges() throws {
+        var a = DayMetrics(day: "2026-10-13")
+        a.frameOwn.add(0.3)
+        a.frameOwn.add(0.7)
+        let back = try JSONDecoder().decode(DayMetrics.self, from: JSONEncoder().encode(a))
+        #expect(back.frameOwn == a.frameOwn)
+        var b = DayMetrics(day: "2026-10-13")
+        b.frameOwn.add(1.2)
+        a.merge(b)
+        #expect(a.frameOwn.count == 3)
+        #expect(a.frameOwn.max == 1.2)
+    }
+
+    /// A frame write with its own part fills both histograms; without one, only the frame write.
+    @Test func recordFrameWriteFillsFrameOwn() {
+        let t = MetricsFixtures.date(2026, 10, 13)
+        let cal = MetricsFixtures.calendar()
+        var a = MetricsAccumulator(DayEntry(DayMetrics(day: MetricsStore.dayKey(t, calendar: cal)), includesDisk: true),
+                                   appVersion: "1.0", calendar: cal, now: t)
+        _ = a.recordFrameWrite(ms: 3, ownMs: 0.4, now: t)
+        _ = a.recordFrameWrite(ms: 2, now: t)
+        #expect(a.current.frameWrite.count == 2)
+        #expect(a.current.frameOwn.count == 1)
+        #expect(a.current.frameOwn.sum == 0.4)
+        // A NaN own part is ignored, the wall time is still recorded and marks the day changed.
+        #expect(a.recordFrameWrite(ms: 1, ownMs: .nan, now: t) || a.needsFlush)
+        #expect(a.current.frameOwn.count == 1)
     }
 
     @Test func anOlderSchemaLoadsAsTheCurrentOne() throws {

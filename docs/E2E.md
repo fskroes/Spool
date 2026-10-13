@@ -26,6 +26,7 @@ make e2e E2E_ARGS="--out /tmp/striple/e2e/mine"
 | `--out <dir>` | `/tmp/striple/e2e/<yyyyMMdd-HHmmss>` | The report folder. |
 | `--bundle-dir <dir>` | `.build/e2e` | Where the runner makes the test app bundle. |
 | `--windows-binary <path>` | next to `striple-e2e` | The `striple-e2e-windows` binary. |
+| `--animations on\|off` | `on` | `off` sets `animation.enabled` to false in the test config: every command is one frame write of the final frames. Scenario h uses the budget of the mode. |
 
 You can also start the runner directly after a build:
 
@@ -121,7 +122,7 @@ Every strip check of a to f also checks:
 | d. Widths | `focus-window` on the focused column, then `cycle-width` twice, `toggle-full-width` twice, and `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. The order, the focused column and the focus do not change: the runner does not give the focus back. |
 | e. Close and open | Needs 3 or more columns. The test app closes the window of column 2: the other columns close the hole and keep their order. The runner gives the focus to column 1. The test app opens one more window: it becomes column 2, directly to the right of the focused column, and not at the end ([SPEC.md](SPEC.md)). The other columns keep their order. |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), settle p95 ≥ 2 s, or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 20 settles (a 1, b 5, c 4, d 5, e 3, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 20 samples is the second slowest one. |
+| h. Performance | `striple stats --json`: frame write p50/p95, Striple's part of a frame write (the wall time without the AX calls), command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), Striple's part p95 ≥ 1 ms or not reported, command latency p95 ≥ 16.7 ms, settle p95 ≥ 2 s (`--animations off`: ≥ 1 s), or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 20 settles (a 1, b 5, c 4, d 5, e 3, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 20 samples is the second slowest one. |
 | g. Quit | SIGTERM to Striple. Before it, at least one test window must be off screen (parked or over an edge), else the quit has nothing to restore and the scenario fails. Striple exits with status 0. The test app shows the same windows as before the SIGTERM, as many as the runner expects, and each is fully on a display. |
 | Safety: other apps | See below. |
 | Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. SKIP when the runner read no state (`ManagedCheck.verdict`). |
@@ -203,6 +204,19 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   still checked. With a display on one side only, Striple parks every hidden column on the free side, so the
   check of the parked side order is skipped then.
 - The test app takes the focus during the run.
-- Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that: the
-  two live runs on 2026-10-12 (after the round 6 fixes) measured a frame write p95 of 4.81 and 4.72 ms and a settle p95 of 946 and 850 ms. A heavy load on the Mac can still make it fail. Run
-  again when other work used the CPU.
+- Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that. The
+  passing live runs on 2026-10-13 (held sizes, first frame in the key handler) measured:
+
+  | Mode | Runs | Frame write p95 | Striple's part p95 | Command latency p95 | Settle p95 |
+  |---|---|---|---|---|---|
+  | `--animations on` | 9 | 0.80 to 1.14 ms | 0.05 to 0.11 ms | 2.24 to 12.32 ms | 775 to 914 ms |
+  | `--animations off` | 7 | 2.38 to 10.05 ms | 0.04 to 0.20 ms | 3.04 to 10.08 ms | 467 to 572 ms |
+
+  The highest values (1.14, 12.32, 10.05 and 10.08 ms) are from the two runs directly after `make test`, at a
+  load average of 7.5. With animations on, the frame write p95 was below 1 ms in the other runs, except one at a
+  load average of 9.8 (1.01 ms).
+
+  Before these changes (2026-10-12): frame write p95 4.64 ms and command latency p95 22.91 ms with animations on.
+  With animations off every frame resizes the windows, and one AX size write costs the test app about 1.5 ms,
+  so a frame write stays above 1 ms there. A heavy load on the Mac can still make a run fail. Run again when
+  other work used the CPU, or when another app took the focus (scenario b names the frontmost app).

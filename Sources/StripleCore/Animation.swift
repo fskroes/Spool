@@ -56,7 +56,34 @@ public struct Spring: Equatable, Sendable {
 public struct FrameAnimator: Sendable {
     struct Entry: Sendable {
         var x, y, w, h: Spring
+        /// The width and height on screen while `w` and `h` animate (`writeFrame`). Set at each retarget.
+        var heldW, heldH: Double
+        /// The width and height that `writeFrame` gave last: the size the window has, or gets from the write that
+        /// waits in the applier (a newer write replaces a waiting one, so the last one given is the one that lands).
+        var lastW, lastH: Double
+
+        init(x: Spring, y: Spring, w: Spring, h: Spring) {
+            self.x = x; self.y = y; self.w = w; self.h = h
+            heldW = w.target; heldH = h.target
+            lastW = w.target; lastH = h.target
+        }
+
         var target: CGRect { CGRect(x: x.target, y: y.target, width: w.target, height: h.target) }
+
+        /// The width and height that `writeFrame` gives at `t`: the target of a settled axis, else the held size.
+        /// An axis that gave its target keeps it until the next retarget: a spring that was retargeted while it
+        /// moved can leave the settle band again for a few frames, and the window must not go back to the held size.
+        func shownSize(at t: Double) -> (w: Double, h: Double) {
+            (w.isSettled(at: t) || lastW == w.target ? w.target : heldW,
+             h.isSettled(at: t) || lastH == h.target ? h.target : heldH)
+        }
+
+        /// After a retarget: hold the larger of the size last given to the window and the new target. Not the value
+        /// of the spring, and not a size that a retarget before this one held but no frame gave: the window does not
+        /// have that size, and writing it would be one more resize.
+        mutating func hold() {
+            heldW = max(lastW, w.target); heldH = max(lastH, h.target)
+        }
     }
 
     private var entries: [WindowID: Entry] = [:]
@@ -82,6 +109,7 @@ public struct FrameAnimator: Sendable {
                 e[keyPath: path].retarget(e[keyPath: path].target, at: t)
                 e[keyPath: path].omega = omega
             }
+            e.hold()
             entries[id] = e
         }
     }
@@ -99,11 +127,13 @@ public struct FrameAnimator: Sendable {
                     e.y.retarget(Double(r.minY), at: t)
                     e.w.retarget(Double(r.width), at: t)
                     e.h.retarget(Double(r.height), at: t)
+                    e.hold()
                     entries[id] = e
                 }
             } else if var e = entries[id] {
                 e.x.snap(Double(r.minX), at: t); e.y.snap(Double(r.minY), at: t)
                 e.w.snap(Double(r.width), at: t); e.h.snap(Double(r.height), at: t)
+                e.heldW = Double(r.width); e.heldH = Double(r.height)
                 entries[id] = e
             } else {
                 entries[id] = Entry(x: Spring(value: Double(r.minX), response: response),
@@ -124,6 +154,8 @@ public struct FrameAnimator: Sendable {
         e.w.snap(Double(r.width), at: t); e.h.snap(Double(r.height), at: t)
         e.x.retarget(Double(target.minX), at: t); e.y.retarget(Double(target.minY), at: t)
         e.w.retarget(Double(target.width), at: t); e.h.retarget(Double(target.height), at: t)
+        e.lastW = Double(r.width); e.lastH = Double(r.height)
+        e.hold()
         entries[id] = e
     }
 
@@ -137,6 +169,36 @@ public struct FrameAnimator: Sendable {
         var out: [WindowID: CGRect] = [:]
         out.reserveCapacity(entries.count)
         for id in entries.keys { out[id] = frame(id, at: t) }
+        return out
+    }
+
+    /// The frame to write to the window at `t`. It records the size it gives as the size on screen, so call it
+    /// for the frames that are written (`Engine.tick`); use `frame(_:at:)` to only look.
+    /// The origin follows the spring, the size does not: every size write makes the app lay out its window again,
+    /// which costs it several times a move (in the E2E test app, p95 6 ms against 1.5 ms per frame). So while a
+    /// size animates, the window keeps the larger of the size last given to it before the last retarget and its
+    /// target size: a growing window gets its new size on the first frame, a shrinking one keeps its size until
+    /// that size settles. Meanwhile it can cover a part of its neighbor. When the size settles, the window has the
+    /// target size and keeps it until the next retarget. A retarget during the animation (a scroll, a new speed,
+    /// two commands within one frame) does not give the window a size between the two.
+    public mutating func writeFrame(_ id: WindowID, at t: Double) -> CGRect? {
+        guard let e = entries[id] else { return nil }
+        let out: CGRect
+        if isSettled(e, t) {
+            out = e.target
+        } else {
+            let size = e.shownSize(at: t)
+            out = CGRect(x: e.x.value(at: t), y: e.y.value(at: t), width: size.w, height: size.h)
+        }
+        entries[id]!.lastW = Double(out.width); entries[id]!.lastH = Double(out.height)
+        return out
+    }
+
+    /// `writeFrame` of every window.
+    public mutating func writeFrames(at t: Double) -> [WindowID: CGRect] {
+        var out: [WindowID: CGRect] = [:]
+        out.reserveCapacity(entries.count)
+        for id in entries.keys { out[id] = writeFrame(id, at: t) }
         return out
     }
 

@@ -881,34 +881,73 @@ import Testing
 }
 
 @Suite struct PerformanceBudgetTests {
+    typealias Stats = PerformanceBudget.Stats
+    let budget = PerformanceBudget.animated
+
+    func stats(write: Double = 4.75, own: Double? = 0.3, latency: Double = 5, axErrors: Int = 0, frames: Int = 699) -> Stats {
+        Stats(frameWriteP95: write, frameOwnP95: own, commandLatencyP95: latency, axErrors: axErrors, framesWritten: frames)
+    }
+
     @Test func aRunInTheBudgetPasses() {
-        #expect(PerformanceBudget.check(frameWriteP95: 5.76, settleP95: 420, axErrors: 0).isEmpty)
-        // No settle samples (every scenario failed before it settled): only the frame writes count.
-        #expect(PerformanceBudget.check(frameWriteP95: 11.68, settleP95: nil, axErrors: 0).isEmpty)
+        #expect(budget.check(stats(write: 5.76), settleP95: 420).isEmpty)
+        // No settle samples (every scenario failed before it settled): the other limits still count.
+        #expect(budget.check(stats(write: 11.68), settleP95: nil).isEmpty)
     }
 
     @Test func eachLimitFailsOnItsOwn() {
-        #expect(PerformanceBudget.check(frameWriteP95: 16, settleP95: 100, axErrors: 0) == ["frame write p95 16.00 ms, want < 16 ms"])
-        #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 2000, axErrors: 0) == ["settle p95 2000 ms, want < 2000 ms"])
-        #expect(PerformanceBudget.check(frameWriteP95: 1, settleP95: 100, axErrors: 2) == ["AX errors 2, want 0"])
-        #expect(PerformanceBudget.check(frameWriteP95: 30, settleP95: 2500, axErrors: 1).count == 3)
+        #expect(budget.check(stats(write: 16), settleP95: 100) == ["frame write p95 16.00 ms, want < 16 ms"])
+        #expect(budget.check(stats(own: 1), settleP95: 100) == ["Striple's part of a frame write p95 1.00 ms, want < 1 ms"])
+        #expect(budget.check(stats(latency: 16.7), settleP95: 100) == ["command latency p95 16.70 ms, want < 16.7 ms"])
+        #expect(budget.check(stats(), settleP95: 2000) == ["settle p95 2000 ms, want < 2000 ms"])
+        #expect(budget.check(stats(axErrors: 2), settleP95: 100) == ["AX errors 2, want 0"])
+        #expect(budget.check(stats(write: 30, own: 2, latency: 40, axErrors: 1), settleP95: 2500).count == 5)
+    }
+
+    /// Just under every limit passes: the limits are strict, not off by one.
+    @Test func justUnderEveryLimitPasses() {
+        for b in [PerformanceBudget.animated, .instant] {
+            let s = stats(write: b.frameWriteP95Ms - 0.01, own: b.frameOwnP95Ms - 0.01, latency: b.commandLatencyP95Ms - 0.01)
+            #expect(b.check(s, settleP95: b.settleP95Ms - 1).isEmpty)
+        }
+    }
+
+    /// A Striple that does not report its own part cannot pass: the run tests the build next to it.
+    @Test func aMissingOwnPartFails() {
+        #expect(budget.check(stats(own: nil), settleP95: 100) == ["Striple did not report its part of a frame write"])
     }
 
     @Test func nothingMeasuredIsASkip() {
         // Tiling failed: no frames, no settles. Zeros must not pass.
-        let none = PerformanceBudget.verdict(frameWriteP95: 0, settleP95: nil, axErrors: 0, framesWritten: 0)
+        let none = budget.verdict(stats(write: 0, own: nil, latency: 0, frames: 0), settleP95: nil)
         #expect(none.result == .skip)
         #expect(none.failures == ["nothing to measure: Striple wrote no frames, no settle was timed"])
-        #expect(PerformanceBudget.verdict(frameWriteP95: 0, settleP95: 300, axErrors: 0, framesWritten: 0).result == .skip)
-        #expect(PerformanceBudget.verdict(frameWriteP95: 4, settleP95: nil, axErrors: 0, framesWritten: 50).result == .skip)
+        #expect(budget.verdict(stats(write: 0, frames: 0), settleP95: 300).result == .skip)
+        #expect(budget.verdict(stats(write: 4, frames: 50), settleP95: nil).result == .skip)
     }
 
     @Test func theVerdictPassesInTheBudgetAndFailsOnATimeout() {
-        #expect(PerformanceBudget.verdict(frameWriteP95: 4.75, settleP95: 980, axErrors: 0, framesWritten: 699).result == .pass)
-        let slow = PerformanceBudget.verdict(frameWriteP95: 4.75, settleP95: 980, axErrors: 0, framesWritten: 699, settleTimeouts: 1)
+        #expect(budget.verdict(stats(), settleP95: 980).result == .pass)
+        let slow = budget.verdict(stats(), settleP95: 980, settleTimeouts: 1)
         #expect(slow.result == .fail)
         #expect(slow.failures == ["1 settle(s) reached their timeout"])
-        #expect(PerformanceBudget.verdict(frameWriteP95: 20, settleP95: 980, axErrors: 0, framesWritten: 699).result == .fail)
+        #expect(budget.verdict(stats(write: 20), settleP95: 980).result == .fail)
+    }
+
+    /// The limits that docs/E2E.md and docs/SPEC.md give for each mode.
+    @Test func theLimitsOfEachMode() {
+        #expect(PerformanceBudget.budget(.on) == .animated)
+        #expect(PerformanceBudget.budget(.off) == .instant)
+        let on = PerformanceBudget.animated
+        #expect([on.frameWriteP95Ms, on.frameOwnP95Ms, on.commandLatencyP95Ms, on.settleP95Ms] == [16, 1, 16.7, 2000])
+        let off = PerformanceBudget.instant
+        #expect([off.frameWriteP95Ms, off.frameOwnP95Ms, off.commandLatencyP95Ms, off.settleP95Ms] == [16, 1, 16.7, 1000])
+    }
+
+    @Test func theAnimationsArgument() {
+        #expect(PerformanceBudget.Animations(argument: "on") == .on)
+        #expect(PerformanceBudget.Animations(argument: "OFF") == .off)
+        #expect(PerformanceBudget.Animations(argument: "no") == nil)
+        #expect(PerformanceBudget.Animations(argument: "") == nil)
     }
 }
 

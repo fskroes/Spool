@@ -32,8 +32,22 @@ test in `Tests/`.
 - Window moves use a critically damped spring. The spring is analytic, so the
   result does not depend on the frame rate.
 - Frames are driven by the display refresh (display link). No timer runs when nothing moves.
-- A shortcut changes the layout model synchronously in the key handler. The first
-  frame is written on the next display refresh.
+- A shortcut changes the layout model synchronously in the key handler. When no animation runs (the display
+  link is stopped), the key handler also writes the first frame (`Engine.kick`). From rest, the springs start one
+  frame (1/60 s) in the past (`Engine.animationStart`), so that frame already moves the windows. "From rest" means
+  settled at that earlier start time, so an animation that settled less than 1/60 s ago does not read its old held
+  size. The display link writes the frames after it. During an animation the display link writes the next frame. During an animation or
+  after a swipe, the springs start at the current time, so nothing jumps.
+- The origin follows the spring on every frame. The size does not (`FrameAnimator.writeFrame`): a size write
+  makes the app lay out its window again, which costs several times a move. While a size animates, the window
+  keeps the larger of the size last written to it before the last retarget and its target size: a growing window
+  gets its new size on the first frame, a shrinking one when its size settles (often before its position). When
+  the window got its target size, it keeps it until the next retarget. Meanwhile it can cover a part of its
+  neighbor. A retarget during the animation (a scroll, a new speed, two commands within one frame) gives no size
+  between the two.
+- The app or macOS can refuse a part of a size at a position (a window may not reach past a display edge there).
+  So a window that got a new size away from its final position gets that size again on the last frame of the
+  animation (`Engine.sizedAway`, `FrameWrite.resize`).
 
 ### F3 Stacks
 - A column can hold several windows stacked vertically.
@@ -175,7 +189,8 @@ test in `Tests/`.
 | Layout compute, 50 columns | < 50 µs | `LayoutBenchmarkTests` |
 | Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial. The test gates the applier's own part: wall time minus the slowest write, p95 < 2 ms. The fake write sleeps, and a sleep runs over its time on a busy Mac. | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints the wall p50 and p95, the applier p95, the serial time and the load average |
 | Idle | no display link and no timer when nothing moves | `AnimatorTests` |
-| Live frame cost | p50 and p95 reported | `striple stats` |
+| Striple's part of a frame write, same load | p95 < 1 ms: the wall time minus the AX time of the slowest app (`FrameTiming.ownMs`) | `FrameApplierBenchmarkTests.theOwnPartIsUnder1ms` (`make bench`) |
+| Live frame cost | p50 and p95 reported, and Striple's part of it | `striple stats` |
 
 ## Live budget
 
@@ -185,6 +200,7 @@ The table must match `MetricsBudget.live` in `Sources/StripleCore/Metrics.swift`
 | Name | Limit | Unit | What it is |
 |---|---|---|---|
 | frame-write-p95 | 8 | ms | p95 of one frame write (all windows of one frame) |
+| frame-own-p95 | 1 | ms | p95 of Striple's part of one frame write: the wall time without the AX calls |
 | command-latency-p95 | 16.7 | ms | p95 from a command to its first frame |
 | command-settle-p95 | 400 | ms | p95 from a command to the end of its animation |
 | slow-tick-ratio | 1 | % | frames later than 1.5 times the display period, in percent of all frames |

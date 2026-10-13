@@ -133,6 +133,7 @@ Skipped writes:   12
 Coalesced writes: 40
 AX errors:        1
 Frame write:      p50 1.20 ms, p95 3.46 ms
+Striple's part:   p50 0.08 ms, p95 0.11 ms (frame write without the AX calls)
 Command latency:  p50 4.00 ms, p95 9.50 ms
 Restarts:         2
 Slowest apps (AX write per window):
@@ -143,6 +144,9 @@ Slowest apps (AX write per window):
 - **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
   replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
   slowest app in the tick.
+- **Striple's part**: the frame write time without the AX calls of the slowest app in the tick: Striple's own
+  code. The AX calls wait for the app and WindowServer. The live budget `frame-own-p95` is 1 ms. A Striple
+  that does not report it shows no line.
 - **Command latency**: the time from a command until its first frame that moves a window is on the windows. A command that moves
   no window (for example `focus-left` at the first column), a command during a swipe, and a swipe give no sample.
 - **Slowest apps**: the 5 apps with the highest p95 AX time for one window write, from the newest 128

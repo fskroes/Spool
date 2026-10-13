@@ -9,11 +9,14 @@ public struct FrameWrite: Equatable, Sendable {
     public var id: WindowID
     public var pid: pid_t
     public var frame: CGRect
+    /// Write the size also when it did not change: the window may not have the size that was written last.
+    public var resize: Bool
 
-    public init(id: WindowID, pid: pid_t, frame: CGRect) {
+    public init(id: WindowID, pid: pid_t, frame: CGRect, resize: Bool = false) {
         self.id = id
         self.pid = pid
         self.frame = frame
+        self.resize = resize
     }
 }
 
@@ -39,7 +42,7 @@ public extension FrameWriter {
 ///
 /// - Apps answer AX calls one at a time, but different apps answer in parallel. So each app gets its own
 ///   serial queue and a tick costs the slowest app, not the sum of all apps.
-/// - A frame equal to the last written frame is skipped.
+/// - A frame equal to the last written frame is skipped, unless the write has `resize`.
 /// - When an app is still busy with the previous tick, the new frames wait and replace each other:
 ///   only the newest frame is written. A slow app never builds a queue of old frames.
 public final class FrameApplier: @unchecked Sendable {
@@ -51,6 +54,23 @@ public final class FrameApplier: @unchecked Sendable {
     }
 
     /// One window write, for the timing stats.
+    /// The time of one `apply` call that wrote a frame.
+    public struct FrameTiming: Equatable, Sendable {
+        /// From the call until every frame of it was written: what `apply(_:completion:)` reports.
+        public var wallMs: Double
+        /// The largest time one app spent in AX calls (`beginBatch`, writes, `endBatch`) during the call.
+        /// Apps write in parallel, so the wall time can not be shorter than this.
+        public var axMs: Double
+        /// `wallMs - axMs`: Striple's own part of the wall time (queue hops, locks, bookkeeping). It does not
+        /// depend on how fast the apps answer.
+        public var ownMs: Double { max(wallMs - axMs, 0) }
+
+        public init(wallMs: Double, axMs: Double) {
+            self.wallMs = wallMs
+            self.axMs = axMs
+        }
+    }
+
     public struct WriteTiming: Equatable, Sendable {
         public var pid: pid_t
         /// The time of the AX calls for this window.
@@ -66,10 +86,11 @@ public final class FrameApplier: @unchecked Sendable {
         var queuedAt: UInt64
     }
 
+    /// `run` gets true when the frames were dropped, and the app's AX clock (`AppState.axNanos`) at that time.
     private struct Waiter {
         let upTo: UInt64
         var dropped = false
-        let run: @Sendable (Bool) -> Void
+        let run: @Sendable (Bool, UInt64) -> Void
     }
 
     /// A frame being written. `again` is set when a later `apply` wanted the same frame while it was in flight:
@@ -103,6 +124,14 @@ public final class FrameApplier: @unchecked Sendable {
         var failedBatches = 0
         /// Set by `reset` while a batch runs: the state goes away when the app is idle. A new `apply` clears it.
         var retired = false
+        /// The AX clock: the total time of all finished batches of this app, from `beginBatch` to the end of
+        /// `endBatch`, and of its `settle` calls. `batchStart` is the start of the batch or settle that runs now. Only the clock's change during an
+        /// `apply` call is used, so its start value does not matter.
+        var axNanos: UInt64 = 0
+        var batchStart: UInt64?
+
+        /// The AX clock at `now`, with the part of the running batch that is done by then.
+        func axClock(at now: UInt64) -> UInt64 { axNanos + (batchStart.map { now > $0 ? now - $0 : 0 } ?? 0) }
     }
 
     private let writer: FrameWriter
@@ -156,7 +185,7 @@ public final class FrameApplier: @unchecked Sendable {
 
     public func forgetApp(_ pid: pid_t) {
         let waiters = lock.withLock { apps.removeValue(forKey: pid)?.waiters ?? [] }
-        for w in waiters { w.run(true) }
+        for w in waiters { w.run(true, 0) }
     }
 
     /// Apps whose last `threshold` batches all failed: their AX elements or observer are probably dead.
@@ -169,11 +198,22 @@ public final class FrameApplier: @unchecked Sendable {
     /// Tells every app (or only `pids`) that the animation is over, after its last write. Returns at once.
     public func settle(pids: Set<pid_t>? = nil, completion: (@Sendable () -> Void)? = nil) {
         let group = DispatchGroup()
-        let queues = lock.withLock { apps.filter { pids?.contains($0.key) ?? true }.map { ($0.key, $0.value.queue) } }
-        for (pid, queue) in queues {
+        let queues = lock.withLock {
+            apps.filter { pids?.contains($0.key) ?? true }.map { ($0.key, $0.value.queue, $0.value.generation) }
+        }
+        for (pid, queue, generation) in queues {
             group.enter()
-            queue.async { [writer] in
+            queue.async { [self] in
+                // The settle call is AX time too: a batch queued behind it waits for it (Chrome can take tens of
+                // ms to turn AXEnhancedUserInterface on again). It runs on the app's queue, so no batch runs now.
+                lock.withLock { if apps[pid]?.generation == generation { apps[pid]!.batchStart = DispatchTime.now().uptimeNanoseconds } }
                 writer.settle(pid: pid)
+                let end = DispatchTime.now().uptimeNanoseconds
+                lock.withLock {
+                    guard apps[pid]?.generation == generation, let begin = apps[pid]!.batchStart else { return }
+                    apps[pid]!.axNanos &+= end &- begin
+                    apps[pid]!.batchStart = nil
+                }
                 group.leave()
             }
         }
@@ -204,7 +244,7 @@ public final class FrameApplier: @unchecked Sendable {
                     apps[pid]!.retired = true
                     for i in apps[pid]!.waiters.indices { apps[pid]!.waiters[i].dropped = true }
                 } else {
-                    run += state.waiters.map { w -> @Sendable () -> Void in { w.run(true) } }
+                    run += state.waiters.map { w -> @Sendable () -> Void in { w.run(true, 0) } }
                     apps.removeValue(forKey: pid)
                 }
             }
@@ -221,7 +261,14 @@ public final class FrameApplier: @unchecked Sendable {
     /// Returns true when a frame of this call was queued or is in flight (this call waits for a window write).
     @discardableResult
     public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double?) -> Void)? = nil) -> Bool {
+        applyTimed(writes, completion: completion.map { c in { @Sendable timing in c(timing?.wallMs) } })
+    }
+
+    /// `apply`, with the AX part of the wall time. The timing is nil when `apply` would report nil.
+    @discardableResult
+    public func applyTimed(_ writes: [FrameWrite], completion: (@Sendable (FrameTiming?) -> Void)?) -> Bool {
         let dropped = Flag()
+        let ax = MaxBox()
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
         var toStart: [(pid_t, DispatchQueue, UInt64)] = []
@@ -231,7 +278,8 @@ public final class FrameApplier: @unchecked Sendable {
                 let pendingSame = apps[w.pid]?.pending[w.id]
                 // Compare with the newest frame the window will have: the one in flight, else the written one.
                 // A frame equal to an older written frame must still be written after the one in flight.
-                if pendingSame == nil, let f = inFlight[w.id], f.frame == w.frame, apps[w.pid]?.generation == f.generation {
+                if pendingSame == nil, !w.resize, let f = inFlight[w.id], f.frame == w.frame,
+                   apps[w.pid]?.generation == f.generation {
                     // Already being written: not written twice, but this call waits for it, and a failed write
                     // is queued again for this call (else the window could keep a wrong frame).
                     counters.skipped += 1
@@ -239,7 +287,7 @@ public final class FrameApplier: @unchecked Sendable {
                     queuedFor.insert(w.pid)
                     continue
                 }
-                if pendingSame == nil, inFlight[w.id] == nil, written[w.id] == w.frame {
+                if pendingSame == nil, !w.resize, inFlight[w.id] == nil, written[w.id] == w.frame {
                     counters.skipped += 1
                     continue
                 }
@@ -249,6 +297,9 @@ public final class FrameApplier: @unchecked Sendable {
                                            generation: nextGeneration)
                 }
                 apps[w.pid]!.retired = false
+                var w = w
+                // A newer frame replaces a waiting one, but not its `resize`.
+                if pendingSame?.write.resize == true { w.resize = true }
                 if apps[w.pid]!.pending.updateValue(Pending(write: w, queuedAt: start), forKey: w.id) == nil {
                     apps[w.pid]!.pendingOrder.append(w.id)
                 } else {
@@ -264,11 +315,13 @@ public final class FrameApplier: @unchecked Sendable {
             guard completion != nil else { return }
             // A frame in flight belongs to a batch taken at or before the current `queued`, so waiting for
             // `queued` covers it.
+            // The AX time of an app during this call is the change of its AX clock until the frames land.
             for pid in queuedFor {
                 guard let state = apps[pid], state.landed < state.queued else { continue }
+                let clockAtStart = state.axClock(at: start)
                 group.enter()
-                apps[pid]!.waiters.append(Waiter(upTo: state.queued) { wasDropped in
-                    if wasDropped { dropped.set() }
+                apps[pid]!.waiters.append(Waiter(upTo: state.queued) { wasDropped, clock in
+                    if wasDropped { dropped.set() } else { ax.max(Self.axDelta(clock, since: clockAtStart)) }
                     group.leave()
                 })
             }
@@ -282,9 +335,23 @@ public final class FrameApplier: @unchecked Sendable {
             return false
         }
         group.notify(queue: .global(qos: .userInteractive)) {
-            completion(dropped.isSet ? nil : Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            guard !dropped.isSet else { return completion(nil) }
+            completion(FrameTiming(wallMs: Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000,
+                                   axMs: Double(ax.value) / 1_000_000))
         }
         return true
+    }
+
+    /// The AX time of one app during an `apply` call. `start` is read before the lock and the end of a batch
+    /// before the lock of `drain`, so a batch can end before the call starts: then the clock at the start is
+    /// later than the clock at the end, and the app did no AX work for this call.
+    static func axDelta(_ end: UInt64, since start: UInt64) -> UInt64 { end > start ? end - start : 0 }
+
+    private final class MaxBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: UInt64 = 0
+        func max(_ v: UInt64) { lock.withLock { stored = Swift.max(stored, v) } }
+        var value: UInt64 { lock.withLock { stored } }
     }
 
     private final class Flag: @unchecked Sendable {
@@ -325,7 +392,8 @@ public final class FrameApplier: @unchecked Sendable {
                 guard var state = apps[pid], state.generation == generation, !state.pending.isEmpty else {
                     // Nothing left: everything queued is written or was dropped by `reset`.
                     if let state = apps[pid], state.generation == generation {
-                        idle = state.waiters.map { w -> @Sendable () -> Void in { w.run(w.dropped) } }
+                        let clock = state.axNanos
+                        idle = state.waiters.map { w -> @Sendable () -> Void in { w.run(w.dropped, clock) } }
                         if state.retired {
                             apps.removeValue(forKey: pid)
                         } else {
@@ -344,6 +412,7 @@ public final class FrameApplier: @unchecked Sendable {
                 }
                 state.pending.removeAll(keepingCapacity: true)
                 state.pendingOrder.removeAll(keepingCapacity: true)
+                state.batchStart = DispatchTime.now().uptimeNanoseconds
                 apps[pid] = state
                 return (items, state.queued, resets)
             }
@@ -364,6 +433,7 @@ public final class FrameApplier: @unchecked Sendable {
                                            latencyMs: Double(after - p.queuedAt) / 1_000_000, failed: !ok))
             }
             writer.endBatch(pid: pid)
+            let batchEnd = DispatchTime.now().uptimeNanoseconds
             let done: [@Sendable () -> Void] = lock.withLock {
                 for r in results {
                     counters.windowWrites += 1
@@ -382,11 +452,16 @@ public final class FrameApplier: @unchecked Sendable {
                     }
                 }
                 guard apps[pid]?.generation == generation else { return [] }
+                if let batchStart = apps[pid]!.batchStart {
+                    apps[pid]!.axNanos &+= batchEnd &- batchStart
+                    apps[pid]!.batchStart = nil
+                }
                 if let onWrite, resets == resetsAtTake { timings.forEach(onWrite) }
                 if results.contains(where: \.ok) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
                 apps[pid]!.landed = max(apps[pid]!.landed, upTo)
                 let landed = apps[pid]!.landed
-                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map { w -> @Sendable () -> Void in { w.run(w.dropped) } }
+                let clock = apps[pid]!.axNanos
+                let ready = apps[pid]!.waiters.filter { $0.upTo <= landed }.map { w -> @Sendable () -> Void in { w.run(w.dropped, clock) } }
                 apps[pid]!.waiters.removeAll { $0.upTo <= landed }
                 return ready
             }
@@ -436,14 +511,25 @@ final class AXFrameWriter: FrameWriter, @unchecked Sendable {
 
     func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
         guard let e = lock.withLock({ elements[w.id] }) else { return false }
-        let sizeChanged = previous.map { $0.size != w.frame.size } ?? true
-        let originChanged = previous.map { $0.origin != w.frame.origin } ?? true
+        let steps = Self.steps(w, previous: previous)
         var results: [AXError] = []
-        // Size, position, size: the first size keeps a large window from being pushed back by the display edge
-        // when it moves; the last one applies the size the app may have refused at the old position.
-        if sizeChanged { results.append(AX.setSize(e, w.frame.size)) }
-        if originChanged { results.append(AX.setPosition(e, w.frame.origin)) }
-        if sizeChanged && originChanged { AX.setSize(e, w.frame.size) }
+        if steps.size { results.append(AX.setSize(e, w.frame.size)) }
+        if steps.position { results.append(AX.setPosition(e, w.frame.origin)) }
+        if steps.sizeAgain { AX.setSize(e, w.frame.size) }
         return Policy.frameWriteWorked(results)
+    }
+
+    /// The AX calls of one write, in this order: size, position, size. The first size keeps a large window from
+    /// being pushed back by the display edge when it moves; the last one applies the size the app may have refused
+    /// at the old position. The size is written when it changed or the write has `resize`.
+    struct Steps: Equatable {
+        var size: Bool
+        var position: Bool
+        var sizeAgain: Bool { size && position }
+    }
+
+    static func steps(_ w: FrameWrite, previous: CGRect?) -> Steps {
+        Steps(size: w.resize || previous.map { $0.size != w.frame.size } ?? true,
+              position: previous.map { $0.origin != w.frame.origin } ?? true)
     }
 }

@@ -11,6 +11,8 @@ struct RunConfig {
     var bundleDir: URL
     var outDir: URL
     var windowCount = 3
+    /// `--animations`: the test Striple's `animation.enabled`, and the budget of scenario h.
+    var animations = PerformanceBudget.Animations.on
 }
 
 enum E2EError: Error, CustomStringConvertible {
@@ -162,6 +164,7 @@ final class Harness {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         var c = Config()
         c.behavior.onboardingDone = true
+        c.animation.enabled = config.animations == .on
         try c.encoded().write(to: home.appendingPathComponent("config.json"))
         var env = ProcessInfo.processInfo.environment
         env["STRIPLE_HOME"] = home.path

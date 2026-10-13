@@ -55,6 +55,7 @@ the day of the new time, also to an earlier day. Striple adds them to the file o
 |---|---|---|
 | Time | Seconds the engine ran (managed windows) | `activeSeconds` |
 | Speed | Frame write: all window writes of one frame | `frameWrite` |
+| | Striple's part of a frame write: the frame write time without the AX calls of the slowest app. The AX calls wait for the app and WindowServer; this part is Striple's own code | `frameOwn` |
 | | Command latency: from a command to its first frame that moves a window. A command that moves no window (for example focus-left at the first column) or that comes during a swipe gives no sample | `commandLatency` |
 | | Command settle: from a command to the end of its animation. Only a command that moved a window has one. When the animation ends with the first frame (animations off), the settle is the time until that frame is on the windows, the same as the latency. A swipe that stops the animation removes the sample | `commandSettle` |
 | | Time between two frames of one animation, and the frames later than 1.5 times the display period | `tickInterval`, `ticks`, `slowTicks` |
@@ -95,11 +96,12 @@ One JSON object per day, with sorted keys. In short:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "day": "2026-10-14",
   "appVersions": ["1.4.0"],
   "activeSeconds": 25210.5,
   "frameWrite": { "counts": [0, 3, 120], "count": 4211, "sum": 5120.2, "max": 31.0 },
+  "frameOwn": { "counts": [3900, 300, 11], "count": 4211, "sum": 420.5, "max": 2.1 },
   "commandLatency": { "counts": [0, 0, 14], "count": 512, "sum": 2900.1, "max": 22.4 },
   "commandSettle": { "counts": [0, 0, 2], "count": 498, "sum": 140000.0, "max": 610.0 },
   "tickInterval": { "counts": [0, 0, 0], "count": 30000, "sum": 501000.0, "max": 70.1 },
@@ -118,6 +120,9 @@ One JSON object per day, with sorted keys. In short:
 A histogram (`frameWrite` and the others) has `counts` per bucket, the `count` of samples, their `sum` and the
 `max`, all in ms. The bucket bounds are fixed (`Histogram.bounds` in `Sources/StripleCore/Metrics.swift`), so days add
 up. The example shortens `counts`.
+
+`schema` 2 added `frameOwn`. Striple reads a schema 1 file, without `frameOwn`. An older Striple does not change a
+schema 2 file: it writes `YYYY-MM-DD.local.json`.
 
 ## Read the report
 

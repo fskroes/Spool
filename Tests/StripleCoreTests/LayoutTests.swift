@@ -354,3 +354,213 @@ func layoutSettings(_ mode: CenterMode = .onOverflow) -> LayoutSettings {
         #endif
     }
 }
+
+/// The frame Striple writes while a size animates: the origin follows the spring, the size holds.
+@Suite struct WriteFrameTests {
+    let small = CGRect(x: 0, y: 0, width: 100, height: 80)
+    let big = CGRect(x: 400, y: 20, width: 300, height: 200)
+
+    func animating(from a: CGRect, to b: CGRect) -> FrameAnimator {
+        var anim = FrameAnimator()
+        anim.setTargets([1: a], at: 0, animate: true)
+        anim.setTargets([1: b], at: 1, animate: true)
+        return anim
+    }
+
+    /// Times from the retarget until just before the animation settles.
+    func moving(_ anim: FrameAnimator) -> [Double] {
+        stride(from: 1.0, to: 3, by: 1.0 / 120).filter { !anim.isSettled(at: $0) }
+    }
+
+    @Test func aGrowingWindowGetsItsSizeOnTheFirstFrame() {
+        var anim = animating(from: small, to: big)
+        let w = anim.writeFrame(1, at: 1 + 1.0 / 60)!
+        #expect(w.size == big.size)
+        #expect(anim.frame(1, at: 1 + 1.0 / 60)!.width < big.width, "the drawn spring is still growing")
+    }
+
+    /// Each axis is held until its own spring settles. The size can settle before the origin: from then on the
+    /// window has its target size.
+    @Test func aShrinkingWindowKeepsItsSizeUntilItSettles() {
+        var anim = animating(from: big, to: small)
+        let times = moving(anim)
+        #expect(times.count > 10)
+        let frames = times.map { anim.writeFrame(1, at: $0)! }
+        for axis in [\CGRect.width, \CGRect.height] {
+            let values = frames.map { $0[keyPath: axis] }
+            let held = values.prefix { $0 == big[keyPath: axis] }
+            #expect(held.count > times.count / 2, "most of the animation keeps the old size")
+            #expect(values.dropFirst(held.count).allSatisfy { $0 == small[keyPath: axis] }, "then the target, nothing between")
+        }
+        let end = times.last! + 1.0 / 120
+        #expect(anim.writeFrame(1, at: end) == small)
+    }
+
+    /// The point of the policy: between two retargets the app gets at most two sizes, the held one and the
+    /// target, so it lays out its window at most twice, not on every frame.
+    @Test func theWrittenSizeDoesNotChangeBetweenRetargets() {
+        for (a, b) in [(small, big), (big, small)] {
+            var anim = animating(from: a, to: b)
+            let widths = moving(anim).map { anim.writeFrame(1, at: $0)!.width }
+            let changes = zip(widths, widths.dropFirst()).filter { $0 != $1 }.count
+            #expect(changes <= 1)
+            #expect(Set(widths).isSubset(of: [a.width, b.width]))
+        }
+    }
+
+    @Test func theOriginStillAnimates() {
+        var anim = animating(from: small, to: big)
+        for t in moving(anim) {
+            let drawn = anim.frame(1, at: t)!
+            let written = anim.writeFrame(1, at: t)!
+            #expect(written.origin == drawn.origin)
+        }
+        #expect(Set(moving(anim).map { anim.writeFrame(1, at: $0)!.minX }).count > 10)
+    }
+
+    /// A retarget during a shrink holds the size the window has at that moment, not the old start size.
+    /// A retarget during a shrink (here: the strip scrolls, only x changes) keeps the size on screen. The spring
+    /// is between the two sizes, but the window is not: writing the spring value would be one more resize
+    /// (critic round 2).
+    @Test func aRetargetKeepsTheSizeOnScreen() {
+        var anim = animating(from: big, to: small)
+        #expect(anim.frame(1, at: 1.05)!.width < big.width, "the spring is between the two sizes")
+        #expect(anim.writeFrame(1, at: 1.05)!.size == big.size)
+        let scrolled = small.offsetBy(dx: 50, dy: 0)
+        anim.setTargets([1: scrolled], at: 1.05, animate: true)
+        #expect(anim.writeFrame(1, at: 1.06)!.size == big.size)
+        let frames = moving(anim).filter { $0 > 1.06 }.map { anim.writeFrame(1, at: $0)! }
+        for axis in [\CGRect.width, \CGRect.height] {
+            let values = Set(frames.map { $0[keyPath: axis] })
+            #expect(values.isSubset(of: [big[keyPath: axis], small[keyPath: axis]]), "no size between the two: \(values)")
+        }
+        #expect(anim.writeFrame(1, at: 9) == scrolled)
+    }
+
+    /// A retarget to a size between the size on screen and the old target holds the size on screen.
+    @Test func aRetargetToALargerTargetDuringAShrinkHoldsTheSizeOnScreen() {
+        var anim = animating(from: big, to: small)
+        let between = CGRect(x: 0, y: 0, width: 200, height: 150)
+        anim.setTargets([1: between], at: 1.05, animate: true)
+        #expect(anim.writeFrame(1, at: 1.06)!.size == big.size)
+        var grow = animating(from: small, to: CGRect(x: 0, y: 0, width: 200, height: 150))
+        grow.setTargets([1: big], at: 1.05, animate: true)
+        #expect(grow.writeFrame(1, at: 1.06)!.size == big.size, "a growing window gets the new, larger target")
+    }
+
+    /// A new speed (`setResponse`, a config reload) retargets every spring: the size on screen stays.
+    @Test func aNewSpeedKeepsTheSizeOnScreen() {
+        var anim = animating(from: big, to: small)
+        anim.setResponse(0.4, at: 1.05)
+        #expect(anim.writeFrame(1, at: 1.06)!.size == big.size)
+    }
+
+    /// `setCurrent` starts from the frame on screen: that size is held.
+    @Test func setCurrentHoldsTheFrameOnScreen() {
+        var anim = animating(from: big, to: small)
+        anim.setCurrent(1, frame: CGRect(x: 10, y: 10, width: 250, height: 180), at: 1.05)
+        #expect(anim.writeFrame(1, at: 1.06)!.size == CGSize(width: 250, height: 180))
+    }
+
+    /// Width and height are separate: a window that gets wider and lower writes the larger value of each.
+    @Test func eachAxisHoldsItsLargerValue() {
+        let wideLow = CGRect(x: 0, y: 0, width: 300, height: 80)
+        var anim = animating(from: CGRect(x: 0, y: 0, width: 100, height: 200), to: wideLow)
+        let w = anim.writeFrame(1, at: 1.05)!
+        #expect(w.width == 300)
+        #expect(w.height == 200)
+    }
+
+    @Test func aSettledWindowWritesItsTarget() {
+        var anim = animating(from: small, to: big)
+        #expect(anim.writeFrame(1, at: 5) == big)
+        #expect(anim.writeFrame(2, at: 5) == nil)
+        var still = FrameAnimator()
+        still.setTargets([1: small], at: 0, animate: true)
+        #expect(still.writeFrame(1, at: 0) == small)
+    }
+
+    /// With animations off every frame is the target at once.
+    @Test func disabledAnimationsWriteTheTarget() {
+        var anim = FrameAnimator(enabled: false)
+        anim.setTargets([1: small], at: 0, animate: true)
+        anim.setTargets([1: big], at: 1, animate: true)
+        #expect(anim.writeFrame(1, at: 1) == big)
+    }
+
+    /// Critic round 4, issue 1: a spring that was retargeted while it moved can enter the settle band and leave
+    /// it again. The width it gave (the target) must stay: before the fix the window went 400, 800, 400.
+    /// Frames at 60 Hz as `Engine.tick` writes them; a shrink 800 -> 300 from rest (started now, or one frame
+    /// early as `Engine.animationStart` does), then 400 after `gap`. The case needs an exact gap (53.5 ms with the
+    /// early start, 70.25 ms without), so the gaps go in 0.25 ms steps.
+    @Test func aSizeThatReachedItsTargetKeepsIt() {
+        let tick = 1.0 / 60
+        var bandExits = 0
+        for lead in [0, tick] {
+            for gapUs in stride(from: 20000, to: 350000, by: 250) {
+                let gap = Double(gapUs) / 1_000_000
+                var anim = FrameAnimator()
+                anim.setTargets([1: CGRect(x: 0, y: 0, width: 800, height: 600)], at: 0, animate: true)
+                _ = anim.writeFrame(1, at: 0)
+                var spring = Spring(value: 800, response: anim.response)
+                anim.setTargets([1: CGRect(x: 0, y: 0, width: 300, height: 600)], at: 10 - lead, animate: true)
+                spring.retarget(300, at: 10 - lead)
+                var k = 0
+                while 10 + Double(k) * tick < 10 + gap { _ = anim.writeFrame(1, at: 10 + Double(k) * tick); k += 1 }
+                anim.setTargets([1: CGRect(x: 0, y: 0, width: 400, height: 600)], at: 10 + gap, animate: true)
+                spring.retarget(400, at: 10 + gap)
+                var given: [Double] = []
+                var wasSettled = false
+                while 10 + Double(k) * tick < 12 {
+                    let t = 10 + Double(k) * tick
+                    given.append(Double(anim.writeFrame(1, at: t)!.width))
+                    let settled = spring.isSettled(at: t)
+                    if wasSettled && !settled { bandExits += 1 }
+                    wasSettled = settled
+                    k += 1
+                }
+                let reached = given.firstIndex(of: 400) ?? given.count
+                #expect(given.dropFirst(reached).allSatisfy { $0 == 400 }, "gap \(gapUs) us: \(given)")
+                #expect(given.allSatisfy { [800, 300, 400].contains($0) })
+                #expect(given.last == 400)
+            }
+        }
+        #expect(bandExits > 0, "the case happens: the width spring leaves the settle band after it entered it")
+    }
+
+    /// Critic round 4, issue 2: two commands within one frame (no write between them). The second one holds the
+    /// size that was written (800), not the target of the first one (1000), which no frame gave.
+    @Test func twoRetargetsWithinOneFrameHoldTheSizeOnScreen() {
+        var anim = FrameAnimator()
+        anim.setTargets([1: CGRect(x: 0, y: 0, width: 800, height: 600)], at: 0, animate: true)
+        anim.setTargets([1: CGRect(x: 200, y: 0, width: 800, height: 600)], at: 1, animate: true)
+        #expect(anim.writeFrame(1, at: 1.01)!.width == 800)
+        anim.setTargets([1: CGRect(x: 200, y: 0, width: 1000, height: 600)], at: 1.02, animate: true)
+        anim.setTargets([1: CGRect(x: 200, y: 0, width: 600, height: 600)], at: 1.026, animate: true)
+        let widths = stride(from: 1.03, to: 3, by: 1.0 / 60).map { anim.writeFrame(1, at: $0)!.width }
+        #expect(Set(widths) == [800, 600], "\(Set(widths))")
+    }
+
+    /// The variant: the width settled, but no frame was written after that (a missed tick), so the window still has
+    /// the held size. A retarget then holds that size, not the target that the model reached.
+    @Test func aRetargetAfterAMissedSettleFrameHoldsTheSizeOnScreen() {
+        var anim = animating(from: big, to: small)
+        #expect(anim.writeFrame(1, at: 1.05)!.width == big.width)
+        let between = CGRect(x: 0, y: 0, width: 200, height: 150)
+        anim.setTargets([1: between], at: 4, animate: true)
+        let widths = stride(from: 4.0, to: 6, by: 1.0 / 60).map { anim.writeFrame(1, at: $0)!.width }
+        #expect(Set(widths).isSubset(of: [big.width, between.width]), "\(Set(widths))")
+        #expect(widths.first == big.width)
+        #expect(widths.last == between.width)
+    }
+
+    @Test func writeFramesHasEveryWindow() {
+        var anim = FrameAnimator()
+        anim.setTargets([1: small, 2: big], at: 0, animate: true)
+        anim.setTargets([1: big, 2: small], at: 1, animate: true)
+        let all = anim.writeFrames(at: 1.05)
+        #expect(all.count == 2)
+        #expect(all[1] == anim.writeFrame(1, at: 1.05))
+        #expect(all[2] == anim.writeFrame(2, at: 1.05))
+    }
+}

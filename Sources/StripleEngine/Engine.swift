@@ -92,6 +92,8 @@ public final class Engine: ObservableObject {
     var layouts: [StripKey: LayoutResult] = [:]
     /// Where each tiled window is on screen now (after parking), for overlays and focus-follows-mouse.
     var placements: [WindowID: Layout.Placement] = [:]
+    /// Windows that got a new size away from their final position during this animation (see `sizedAway`).
+    var resizeAtEnd: Set<WindowID> = []
     var displays: [EngineDisplay] = []
     var activeSpaces: [String: UInt64] = [:]
     /// The config the engine runs with. `configStore.config` changes after the publisher fires, so keep our own copy.
@@ -309,18 +311,19 @@ public final class Engine: ObservableObject {
         recorder.forgetAllApps()
     }
 
-    /// The completion of a tick's frame writes: records the frame-write time and the command latency, but not when
-    /// the applier dropped a frame (the app quit or the engine stopped): then no frame was written.
-    /// `metrics` gets the same two numbers. `settleAtWrite`: the animation ended on the tick of this write, so the
-    /// window is in place when the write lands, and the command settle is the latency.
+    /// The completion of a tick's frame writes: records the frame-write time, Striple's own part of it and the
+    /// command latency, but not when the applier dropped a frame (the app quit or the engine stopped): then no
+    /// frame was written. `metrics` gets the same numbers. `settleAtWrite`: the animation ended on the tick of
+    /// this write, so the window is in place when the write lands, and the command settle is the latency.
     nonisolated static func recordTick(_ recorder: StatsRecorder, metrics: MetricsStore? = nil,
                                        commandStart: Double?, settleAtWrite: Bool = false,
-                                       now: @escaping @Sendable () -> Double = CACurrentMediaTime) -> @Sendable (Double?) -> Void {
-        { ms in
-            guard let ms else { return }
-            recorder.record(frameMs: ms, commandStart: commandStart)
+                                       now: @escaping @Sendable () -> Double = CACurrentMediaTime)
+        -> @Sendable (FrameApplier.FrameTiming?) -> Void {
+        { timing in
+            guard let timing else { return }
+            recorder.record(frameMs: timing.wallMs, ownMs: timing.ownMs, commandStart: commandStart)
             guard let metrics else { return }
-            metrics.recordFrameWrite(ms: ms)
+            metrics.recordFrameWrite(ms: timing.wallMs, ownMs: timing.ownMs)
             guard let commandStart else { return }
             let latency = (now() - commandStart) * 1000
             metrics.recordCommandLatency(ms: latency)
@@ -523,7 +526,8 @@ public final class Engine: ObservableObject {
         let r = recorder.snapshot()
         return EngineStats(uptimeSeconds: status == .running ? CACurrentMediaTime() - startedAt : 0, framesWritten: r.batches,
                            windowWrites: c.windowWrites, skippedWrites: c.skipped, coalescedWrites: c.coalesced, axErrors: c.errors,
-                           frameWriteP50: r.frameP50, frameWriteP95: r.frameP95, commandLatencyP50: r.commandP50,
+                           frameWriteP50: r.frameP50, frameWriteP95: r.frameP95, frameOwnP50: r.ownP50, frameOwnP95: r.ownP95,
+                           commandLatencyP50: r.commandP50,
                            commandLatencyP95: r.commandP95, restarts: restarts,
                            slowestApps: StatsRecorder.slowest(r.apps, bundleIDs: Dictionary(
                                windows.values.map { ($0.info.pid, $0.info.bundleID) }, uniquingKeysWith: { a, _ in a })))
@@ -560,13 +564,16 @@ public final class Engine: ObservableObject {
 final class StatsRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var frame = SampleWindow()
+    private var own = SampleWindow()
     private var command = SampleWindow()
     private var batches = 0
 
-    func record(frameMs: Double, commandStart: Double?) {
+    /// `ownMs`: Striple's own part of `frameMs` (`FrameApplier.FrameTiming.ownMs`).
+    func record(frameMs: Double, ownMs: Double, commandStart: Double?) {
         let now = CACurrentMediaTime()
         lock.withLock {
             frame.add(frameMs)
+            own.add(ownMs)
             batches += 1
             if let commandStart { command.add((now - commandStart) * 1000) }
         }
@@ -602,7 +609,11 @@ final class StatsRecorder: @unchecked Sendable {
         .prefix(limit).map { $0 }
     }
 
-    func snapshot() -> (batches: Int, frameP50: Double, frameP95: Double, commandP50: Double, commandP95: Double, apps: [pid_t: App]) {
-        lock.withLock { (batches, frame.percentile(50), frame.percentile(95), command.percentile(50), command.percentile(95), apps) }
+    func snapshot() -> (batches: Int, frameP50: Double, frameP95: Double, ownP50: Double, ownP95: Double, commandP50: Double,
+                        commandP95: Double, apps: [pid_t: App]) {
+        lock.withLock {
+            (batches, frame.percentile(50), frame.percentile(95), own.percentile(50), own.percentile(95),
+             command.percentile(50), command.percentile(95), apps)
+        }
     }
 }

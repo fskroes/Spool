@@ -330,15 +330,20 @@ final class Scenarios {
         }
         let cli = Percentiles(h.cliCommandMs)
         let settle = Percentiles(h.settleMs)
-        let details = String(format: "frame write p50 %.2f ms, p95 %.2f ms; command latency p50 %.2f ms, p95 %.2f ms; "
+        let own = s.frameOwnP50.flatMap { p50 in s.frameOwnP95.map { String(format: "p50 %.2f ms, p95 %.2f ms", p50, $0) } }
+        let details = String(format: "animations %@; frame write p50 %.2f ms, p95 %.2f ms; Striple's part %@; "
+                             + "command latency p50 %.2f ms, p95 %.2f ms; "
                              + "%d frames, %d window writes, %d skipped, %d coalesced; AX errors %d; "
                              + "CLI round trip p50 %.0f ms, p95 %.0f ms; settle p50 %.0f ms, p95 %.0f ms",
-                             s.frameWriteP50, s.frameWriteP95, s.commandLatencyP50, s.commandLatencyP95, s.framesWritten,
+                             h.config.animations.rawValue, s.frameWriteP50, s.frameWriteP95, own ?? "not reported",
+                             s.commandLatencyP50, s.commandLatencyP95, s.framesWritten,
                              s.windowWrites, s.skippedWrites, s.coalescedWrites, s.axErrors, cli.p50, cli.p95, settle.p50, settle.p95)
         h.log("stats: \(details)")
-        let v = PerformanceBudget.verdict(frameWriteP95: s.frameWriteP95, settleP95: h.settleMs.isEmpty ? nil : settle.p95,
-                                          axErrors: s.axErrors, framesWritten: s.framesWritten,
-                                          settleTimeouts: h.settleTimeouts)
+        let stats = PerformanceBudget.Stats(frameWriteP95: s.frameWriteP95, frameOwnP95: s.frameOwnP95,
+                                            commandLatencyP95: s.commandLatencyP95, axErrors: s.axErrors,
+                                            framesWritten: s.framesWritten)
+        let v = PerformanceBudget.budget(h.config.animations).verdict(stats, settleP95: h.settleMs.isEmpty ? nil : settle.p95,
+                                                                     settleTimeouts: h.settleTimeouts)
         add(.init(scenario: "h. Performance (striple stats)", result: v.result,
                   details: (v.failures.isEmpty ? "" : v.failures.joined(separator: "; ") + ". ") + details
                       + "; \(h.settleMs.count) settles, \(h.settleTimeouts) at the timeout"))

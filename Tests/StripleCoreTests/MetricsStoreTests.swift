@@ -653,7 +653,7 @@ import Testing
         defer { F.remove(dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("2026-10-12.json")
-        let newer = Data(#"{"schema": 2, "day": "2026-10-12"}"#.utf8)
+        let newer = Data(#"{"schema": 3, "day": "2026-10-12"}"#.utf8)
         try newer.write(to: file)
         let clock = F.Clock(F.date(2026, 10, 13, 9))
         let store = F.store(dir, clock: clock)
@@ -694,7 +694,7 @@ import Testing
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("2026-10-13.json")
         let sidecar = dir.appendingPathComponent("2026-10-13.local.json")
-        let newer = Data(#"{"schema": 2, "day": "2026-10-13", "newField": [1, 2, 3]}"#.utf8)
+        let newer = Data(#"{"schema": 3, "day": "2026-10-13", "newField": [1, 2, 3]}"#.utf8)
         try newer.write(to: file)
         let clock = F.Clock(F.date(2026, 10, 13, 12))
         let store = F.store(dir, clock: clock)
@@ -706,7 +706,7 @@ import Testing
         #expect(try Data(contentsOf: file) == newer)
         #expect(!store.hasUnsavedChanges)
         let saved = try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: sidecar))
-        #expect(saved.schema == 1 && saved.events["swipe"] == 1)
+        #expect(saved.schema == DayMetrics.schemaVersion && saved.events["swipe"] == 1)
         // Saved, so the next flush (the engine flushes every 60 s) does not ask again.
         try store.flush()
         #expect(calls.value == 1)
