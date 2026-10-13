@@ -532,8 +532,8 @@ import Testing
         let dir = url.deletingLastPathComponent()
         let store = ConfigStore(fileURL: url, watch: false)
         store.update { $0.layout.innerGap = 11 }
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path) // quiet-lane: folder
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) } // quiet-lane: folder
 
         store.update { $0.behavior.focusFollowsMouse = true }
         #expect(store.hasProblem)

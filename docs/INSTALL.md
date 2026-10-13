@@ -19,6 +19,7 @@ make dmg
 ```
 
 - `make test` runs the tests, except `SigningScriptTests`. `make test-signing` runs those (see the README).
+- On a managed Mac, use `make test-quiet` in place of `make test`. It runs only the suites that start no process and make no executable file. `scripts/quiet-tests.sh --list` shows which files are in the lane and why the others are not.
 - `make app` builds and signs `dist/Striple.app`.
 - `make dmg` is optional. It makes `dist/Striple-<version>.dmg`.
 

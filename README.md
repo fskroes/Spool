@@ -134,6 +134,7 @@ make e2e
 |---|---|
 | `make build` | Debug build. |
 | `make test` | All unit tests (core, engine, IPC, E2E kit), except `SigningScriptTests`. |
+| `make test-quiet` | The quiet lane for a managed Mac: only the suites that start no process and make no executable file (`scripts/quiet-tests.sh`). A test file that starts a process or sets an execute bit is out of the lane. `scripts/quiet-tests.sh --list` shows the selection. |
 | `make test-signing` | `SigningScriptTests` only. They run `make-signing-cert.sh` against fake tools with neutral names (`STRIPLE_SECURITY`, `STRIPLE_CODESIGN`), never a file named `security`. On a managed Mac the endpoint security tool can still report the keychain-like arguments. The suite runs only with `STRIPLE_SIGNING_TESTS=1`, so a plain `swift test` skips it too. |
 | `make bench` | The frame-write and layout benchmarks in release mode. |
 | `make app` | Makes `dist/Striple.app` (universal, signed). |

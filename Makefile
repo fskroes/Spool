@@ -3,7 +3,7 @@
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
 
-.PHONY: build test test-signing bench release app icon dmg install uninstall run clean e2e publish publish-dry publish-finish
+.PHONY: build test test-quiet test-signing bench release app icon dmg install uninstall run clean e2e publish publish-dry publish-finish
 
 build:
 	swift build
@@ -14,6 +14,10 @@ build:
 test:
 	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
 
+# Only the suites that start no process and make no executable file (scripts/quiet-tests.sh). Use this lane
+# on a managed Mac. `scripts/quiet-tests.sh --list` shows which files are in and why the others are out.
+test-quiet:
+	scripts/quiet-tests.sh
 # Only on a Mac where keychain-like test activity is allowed.
 test-signing:
 	STRIPLE_SIGNING_TESTS=1 swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
