@@ -153,12 +153,14 @@ test in `Tests/`.
   one JSON file per local day in `~/Library/Application Support/Striple/metrics/`, kept 90 days.
 - No window titles, no key presses, no typed text. Apps are named by bundle ID. The note of a mark is the only user text.
 - Speed: frame write, command latency (to the first frame), command settle (to the end of the animation) and the
-  time between frames while an animation runs. Cost: CPU time, wakeups and memory of the process, from
-  `getrusage` and `proc_pid_rusage` at each save. Problems: unclean exits, observer repairs, a lost permission,
-  the focus fallback, config errors, refused shortcuts, apps that do not answer. Use: commands per source, columns
-  per strip, swipes. Friction per app: corrections, drags, resizes, float changes, early resizes, focus bounces.
+  time between frames while an animation runs. Only a command that moves a window gives latency and settle; a
+  swipe is not a command. Cost: CPU time and idle wakeups of the process while the engine runs, and its peak
+  memory, from `getrusage` and `proc_pid_rusage` at each save and at each engine start and stop. Problems: unclean
+  exits, observer repairs, a lost permission, the focus fallback, config errors, refused shortcuts, apps that do
+  not answer. Use: commands per source, columns per strip (when the number changes), swipes. Friction per app:
+  corrections, drags that Striple puts back, resizes, float changes, early resizes, focus bounces.
 - No repeating timer: the numbers are saved once 60 s after the first change, when `striple report` asks,
-  and at quit.
+  and at quit. After a failed save, the next try waits 2 min, then 4 min, and so on up to 1 h, until a save works.
   Recording does no I/O.
 - `striple report [--days <n>] [--json]` reads the files (also when Striple does not run) and checks the live budget.
 - `striple mark [<note>]`, `⌃⌥⇧M`, the menu bar menu and `striple://mark` save a mark: the state without titles,

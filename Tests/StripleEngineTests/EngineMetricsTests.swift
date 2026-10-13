@@ -87,3 +87,334 @@ import Testing
         #expect(recorder.snapshot().batches == 2)
     }
 }
+
+/// D1, D8: latency and settle come only from a command that wrote a frame.
+@Suite struct CommandClockTests {
+    @Test func aCommandThatWroteNoFrameHasNoLatency() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10)
+        // focus-left at the first column: nothing to write, no animation runs.
+        clock.performEnded(tickerRunning: false)
+        // Minutes later a new window opens: its frames are not the command's.
+        let latency = clock.framesWritten()
+        let settle = clock.settled(at: 200)
+        #expect(latency == nil)
+        #expect(settle == nil)
+    }
+
+    @Test func theFirstFrameTakesTheStartOnce() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10)
+        // The synchronous kick wrote the first frame inside perform.
+        let first = clock.framesWritten()
+        clock.performEnded(tickerRunning: true)
+        let second = clock.framesWritten()
+        let settle = clock.settled(at: 10.25)
+        let later = clock.settled(at: 11)
+        #expect(first == 10)
+        #expect(second == nil)
+        #expect(settle == 250)
+        #expect(later == nil, "a later animation does not inherit the settle")
+    }
+
+    @Test func whileAnAnimationRunsTheNextTickTakesTheStart() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10)
+        clock.performEnded(tickerRunning: true)
+        let latency = clock.framesWritten()
+        #expect(latency == 10)
+    }
+
+    @Test func aSwipeEndsTheSettleOfTheCommandBeforeIt() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10)
+        _ = clock.framesWritten()
+        clock.swipeBegan()
+        // The swipe's own animation (no command): no latency and no settle sample.
+        let latency = clock.framesWritten()
+        let settle = clock.settled(at: 30)
+        #expect(latency == nil)
+        #expect(settle == nil)
+    }
+
+    @Test func aNewCommandReplacesTheSettleStart() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10)
+        _ = clock.framesWritten()
+        clock.commandStarted(at: 12)
+        _ = clock.framesWritten()
+        let settle = clock.settled(at: 12.5)
+        #expect(settle == 500)
+    }
+}
+
+/// D2: one flush after the first change, nothing while clean, a growing wait after a failed write.
+@Suite struct MetricsFlushPlanTests {
+    @Test func delays() {
+        let minutes = (0...8).map { MetricsFlushPlan.delay(failures: $0) / 60 }
+        #expect(minutes == [1, 2, 4, 8, 16, 32, 60, 60, 60])
+        #expect(MetricsFlushPlan.delay(failures: .max) == 3600)
+    }
+
+    @Test func oneFlushPerChange() {
+        var plan = MetricsFlushPlan()
+        let a = plan.changed()
+        let b = plan.changed()
+        plan.fired()
+        plan.writeStarted()
+        let end = plan.writeEnded(error: nil)
+        let c = plan.changed()
+        #expect(a == 60)
+        #expect(b == nil)
+        #expect(end.log == false && end.schedule == nil)
+        #expect(c == 60)
+    }
+
+    @Test func aFailureWaitsLongerAndLogsEachErrorOnce() {
+        var plan = MetricsFlushPlan()
+        var ends: [(log: Bool, schedule: TimeInterval?)] = []
+        _ = plan.changed()
+        plan.fired()
+        plan.writeStarted()
+        // The store kept the data and called back during the write.
+        let during = plan.changed()
+        ends.append(plan.writeEnded(error: "disk full"))
+        for error in ["disk full", "no permission"] {
+            plan.fired()
+            plan.writeStarted()
+            _ = plan.changed()
+            ends.append(plan.writeEnded(error: error))
+        }
+        plan.fired()
+        plan.writeStarted()
+        ends.append(plan.writeEnded(error: nil))
+        let after = plan.changed()
+        #expect(during == nil)
+        #expect(ends.map(\.log) == [true, false, true, false])
+        #expect(ends.map(\.schedule) == [120, 240, 480, nil])
+        #expect(plan.failures == 0)
+        #expect(after == 60)
+    }
+
+    @Test func aSyncFailureSchedulesWhenTheCallbackComes() {
+        var plan = MetricsFlushPlan()
+        plan.writeStarted()
+        let end = plan.writeEnded(error: "x")
+        let next = plan.changed()
+        #expect(end.log == true && end.schedule == nil)
+        #expect(next == 120)
+    }
+}
+
+/// D2, D9: the flusher with a fake timer, inline queues and a real store in a temp folder.
+@Suite @MainActor struct MetricsFlusherTests {
+    final class Timers {
+        var pending: [@MainActor () -> Void] = []
+        var delays: [TimeInterval] = []
+        @MainActor func fire() {
+            let all = pending
+            pending = []
+            for body in all { body() }
+        }
+    }
+
+    final class LogBox { var lines: [String] = [] }
+
+    struct Rig {
+        let store: MetricsStore
+        let flusher: MetricsFlusher
+        let timers: Timers
+        let logs: LogBox
+    }
+
+    static func rig(_ dir: URL) -> Rig {
+        let store = MetricsStore(directory: dir, appVersion: "test")
+        let timers = Timers()
+        let logs = LogBox()
+        let flusher = MetricsFlusher(store: store,
+                                     schedule: { delay, body in timers.delays.append(delay); timers.pending.append(body) },
+                                     background: { $0() },
+                                     toMain: { body in MainActor.assumeIsolated { body() } },
+                                     log: { logs.lines.append($0) })
+        flusher.connect()
+        return Rig(store: store, flusher: flusher, timers: timers, logs: logs)
+    }
+
+    static func folder() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("striple-metrics-test-\(UUID().uuidString)")
+    }
+
+    static func dayFiles(_ dir: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".json") }
+    }
+
+    @Test func oneFlushAfterTheFirstChangeAndNoneWhileClean() {
+        let dir = Self.folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = Self.rig(dir)
+        #expect(r.timers.delays.isEmpty)
+        r.store.record(command: .focusLeft, source: .hotkey)
+        r.store.record(command: .focusRight, source: .cli)
+        #expect(r.timers.delays == [60])
+        r.timers.fire()
+        #expect(Self.dayFiles(dir).count == 1)
+        #expect(!r.store.hasUnsavedChanges)
+        // Clean: the timer does not come back.
+        #expect(r.timers.pending.isEmpty)
+        r.flusher.flush(sync: false)
+        #expect(r.timers.delays == [60])
+        r.store.record(command: .focusLeft, source: .hotkey)
+        #expect(r.timers.delays == [60, 60])
+    }
+
+    @Test func aFailedWriteWaitsLongerAndLogsOnce() throws {
+        let dir = Self.folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // A plain file where the folder must be: every write fails.
+        try Data().write(to: dir)
+        let r = Self.rig(dir)
+        r.store.record(command: .focusLeft, source: .hotkey)
+        r.timers.fire()
+        r.timers.fire()
+        r.timers.fire()
+        #expect(r.timers.delays == [60, 120, 240, 480])
+        #expect(r.logs.lines.count == 1)
+        #expect(r.logs.lines.first?.contains("could not save the day file, next try in 120 s") == true)
+        try FileManager.default.removeItem(at: dir)
+        r.timers.fire()
+        #expect(Self.dayFiles(dir).count == 1)
+        #expect(r.timers.pending.isEmpty)
+        #expect(r.logs.lines.last == "metrics: saved the day file again")
+        r.store.record(command: .focusLeft, source: .hotkey)
+        #expect(r.timers.delays.last == 60)
+    }
+
+    @Test func theErrorTextIsStable() {
+        let a = NSError(domain: NSCocoaErrorDomain, code: 516, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 17)])
+        let b = NSError(domain: NSCocoaErrorDomain, code: 516, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 17)])
+        #expect(MetricsFlusher.describe(a) == MetricsFlusher.describe(b))
+        #expect(MetricsFlusher.describe(a).hasPrefix("NSCocoaErrorDomain 516: "))
+        #expect(!MetricsFlusher.describe(a).contains("0x"))
+    }
+
+    @Test func offRecordsAndWritesNothing() {
+        let dir = Self.folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = Self.rig(dir)
+        r.store.isEnabled = false
+        var before = 0
+        r.flusher.beforeWrite = { before += 1 }
+        r.store.record(command: .focusLeft, source: .hotkey)
+        r.store.record(.swipe)
+        r.flusher.flush(sync: true, force: true)
+        #expect(r.timers.delays.isEmpty)
+        #expect(before == 0)
+        #expect(Self.dayFiles(dir).isEmpty)
+        #expect(r.store.snapshot().commands.isEmpty)
+    }
+
+    @Test func aForcedFlushRecordsTheRunningCostAlsoWhenClean() {
+        let dir = Self.folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = Self.rig(dir)
+        var before = 0
+        r.flusher.beforeWrite = { before += 1; r.store.recordActive(seconds: 5) }
+        r.flusher.flush(sync: true)
+        #expect(before == 0, "a normal flush of a clean store does nothing")
+        r.flusher.flush(sync: true, force: true)
+        #expect(before == 1)
+        #expect(Self.dayFiles(dir).count == 1)
+        #expect(!r.store.hasUnsavedChanges)
+    }
+}
+
+/// D10: CPU time and wakeups only while the engine runs.
+@Suite struct CostMeterTests {
+    static func sample(_ cpu: Double, _ wakeups: UInt64, _ peak: Double = 50) -> CostSample {
+        CostSample(cpuSeconds: cpu, wakeups: wakeups, peakMB: peak)
+    }
+
+    @Test func countsOnlyTheRunningParts() throws {
+        var meter = CostMeter()
+        meter.started(Self.sample(1, 10))
+        meter.stopped(Self.sample(3, 30))
+        // Stopped from cpu 3 to cpu 10: not counted.
+        let first = meter.take(Self.sample(10, 100, 60))
+        meter.started(Self.sample(10, 100))
+        let second = meter.take(Self.sample(11, 105))
+        let third = meter.take(Self.sample(11.5, 106))
+        let none = meter.take(nil)
+        let a = try #require(first)
+        let b = try #require(second)
+        let c = try #require(third)
+        #expect(a.cpuSeconds == 2)
+        #expect(a.wakeups == 20)
+        #expect(a.peakMB == 60)
+        #expect(b.cpuSeconds == 1)
+        #expect(b.wakeups == 5)
+        #expect(c.cpuSeconds == 0.5)
+        #expect(c.wakeups == 1)
+        #expect(none == nil)
+    }
+
+    @Test func aSecondStartKeepsTheRunningPart() throws {
+        var meter = CostMeter()
+        meter.started(Self.sample(1, 10))
+        meter.started(Self.sample(4, 40))
+        let taken = meter.take(Self.sample(5, 50))
+        let a = try #require(taken)
+        #expect(a.cpuSeconds == 4)
+        #expect(a.wakeups == 40)
+    }
+
+    @Test func neverStartedCountsNothing() throws {
+        var meter = CostMeter()
+        let taken = meter.take(Self.sample(10, 100))
+        let a = try #require(taken)
+        #expect(a.cpuSeconds == 0)
+        #expect(a.wakeups == 0)
+    }
+}
+
+/// D5, D6, D7 and the record points of `perform`.
+@Suite struct MetricsDecisionTests {
+    @Test func columnsOnlyWhenTheCountChanges() {
+        var counts = ColumnCounts<String>()
+        var seen: [Bool] = []
+        seen.append(counts.changed("a", to: 3))
+        seen.append(counts.changed("a", to: 3))
+        seen.append(counts.changed("b", to: 3))
+        seen.append(counts.changed("a", to: 4))
+        counts.forget("a")
+        seen.append(counts.changed("a", to: 4))
+        counts.reset()
+        seen.append(counts.changed("b", to: 3))
+        #expect(seen == [true, false, true, true, true, true])
+    }
+
+    @Test func dragFriction() {
+        #expect(Engine.dragFriction(resize: true, dragToReorder: true, drop: nil) == .userResize)
+        #expect(Engine.dragFriction(resize: true, dragToReorder: false, drop: nil) == .userResize)
+        #expect(Engine.dragFriction(resize: false, dragToReorder: false, drop: nil) == .userDrag)
+        #expect(Engine.dragFriction(resize: false, dragToReorder: true, drop: .putBack) == .userDrag)
+        #expect(Engine.dragFriction(resize: false, dragToReorder: true, drop: .reorder) == nil)
+        #expect(Engine.dragFriction(resize: false, dragToReorder: true, drop: .otherDisplay) == nil)
+    }
+
+    @Test func displayPeriod() {
+        // ProMotion at 120 Hz: the time to the next frame, not the nominal 60 Hz duration.
+        #expect(abs(Ticker.periodMs(timestamp: 1, targetTimestamp: 1 + 1.0 / 120, duration: 1.0 / 60) - 1000.0 / 120) < 1e-9)
+        #expect(abs(Ticker.periodMs(timestamp: 1, targetTimestamp: 1, duration: 1.0 / 60) - 1000.0 / 60) < 1e-9)
+        #expect(abs(Ticker.periodMs(timestamp: 1, targetTimestamp: .nan, duration: 0) - 1000.0 / 60) < 1e-9)
+        #expect(Ticker.periodMs(timeValue: 1, timeScale: 120, indefinite: false) == 1000.0 / 120)
+        #expect(Ticker.periodMs(timeValue: 1, timeScale: 120, indefinite: true) == 1000.0 / 60)
+        #expect(Ticker.periodMs(timeValue: 0, timeScale: 0, indefinite: false) == 1000.0 / 60)
+    }
+
+    @Test func commandsRecordedWhenStopped() {
+        let always: Set<Command> = [.start, .stop, .toggleEngine, .restart, .mark]
+        for command in Command.bindable + [.focusWindow(7)] {
+            #expect(Engine.recordsWhenStopped(command) == always.contains(command), "\(command.name)")
+        }
+    }
+}

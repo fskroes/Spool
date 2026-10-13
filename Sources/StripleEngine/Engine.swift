@@ -100,7 +100,8 @@ public final class Engine: ObservableObject {
     var restarts = 0
     var swipe: SwipeState?
     var drag: DragState?
-    var pendingCommandStart: Double?
+    /// Command start for the latency (first frame) and the settle time (end of its animation).
+    var commandClock = CommandClock()
     var focusedID: WindowID?
     var floatingBorderFrame: CGRect?
     var suppressScrollFor: WindowID?
@@ -143,13 +144,14 @@ public final class Engine: ObservableObject {
     var makeMetricsStore: (() -> MetricsStore)?
     /// The AX queues record per-app write times through this box.
     let metricsSink = MetricsSink()
-    var metricsFlushScheduled = false
-    /// Process counters at the last flush.
-    var costBaseline: CostSample?
+    /// Writes the day file. Nil while metrics are off.
+    var metricsFlusher: MetricsFlusher?
+    /// CPU time and wakeups of the running engine, not counted yet.
+    var costMeter = CostMeter()
     /// Since when the running time is not recorded yet. Nil while the engine does not run.
     var activeSince: Double?
-    /// Start of the command whose animation runs now, for the settle time.
-    var settleStart: Double?
+    /// So `columnsPerStrip` gets a sample only when the count of a strip changes.
+    var columnCounts = ColumnCounts<StripKey>()
 
     public init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -333,7 +335,8 @@ public final class Engine: ObservableObject {
         placements.removeAll()
         Self.resetWriteState(applier: applier, recorder: recorder)
         metricsSink.forgetAllApps()
-        settleStart = nil
+        commandClock.reset()
+        columnCounts.reset()
         swipe = nil
         drag = nil
         focusedID = nil
@@ -409,10 +412,7 @@ public final class Engine: ObservableObject {
     /// Runs a command from a shortcut, the CLI, a URL, the menu or a tab click. `source` is for the metrics.
     /// `note` is the user's note of a `mark`.
     public func perform(_ command: Command, source: CommandSource, note: String = "") {
-        switch command {
-        case .start, .stop, .toggleEngine, .restart, .mark: metricsStore?.record(command: command, source: source)
-        default: break
-        }
+        if Self.recordsWhenStopped(command) { metricsStore?.record(command: command, source: source) }
         switch command {
         case .start: start(); return
         case .stop: stop(); return
@@ -424,13 +424,14 @@ public final class Engine: ObservableObject {
         guard status == .running else { return }
         metricsStore?.record(command: command, source: source)
         noteFriction(before: command)
-        pendingCommandStart = CACurrentMediaTime()
+        commandClock.commandStarted(at: CACurrentMediaTime())
         switch command {
         case .toggleFloat: toggleFloat()
         case .sendToNextDisplay: sendToNextDisplay()
         case .focusWindow(let id): focusFromCommand(id)
         default: runStripCommand(command)
         }
+        commandClock.performEnded(tickerRunning: ticker?.isRunning == true)
     }
 
     private func runStripCommand(_ command: Command) {
@@ -465,7 +466,7 @@ public final class Engine: ObservableObject {
             case .state: return IPCResponse(ok: true, state: currentState())
             case .stats: return IPCResponse(ok: true, stats: currentStats())
             case .flushMetrics:
-                flushMetrics(sync: true)
+                metricsFlusher?.flush(sync: true, force: true)
                 return IPCResponse(ok: true)
             }
         }

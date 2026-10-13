@@ -27,11 +27,9 @@ final class MetricsSink: @unchecked Sendable {
 }
 
 /// Local metrics (F24, docs/METRICS.md). The store is nil until `enableMetrics`. All record calls are cheap
-/// and do no I/O; files are written by one flush 60 s after the first change, by `striple report`, and at quit.
+/// and do no I/O. `MetricsFlusher` writes the files: once 60 s after the first change, for `striple report`,
+/// and at quit; after a failed write it waits longer each time (MetricsFlushPlan).
 extension Engine {
-    /// Seconds from the first unsaved change to the flush.
-    static let metricsFlushDelay: TimeInterval = 60
-
     /// Call once at launch. `make` creates the store when metrics are on now, or when the user turns them on later.
     public func enableMetrics(_ make: @escaping () -> MetricsStore) {
         makeMetricsStore = make
@@ -45,7 +43,7 @@ extension Engine {
     /// Call at quit, after `stop()`: the last flush, then the clean-exit marker.
     public func finishMetrics() {
         guard let store = metricsStore, store.isEnabled else { return }
-        flushMetrics(sync: true, final: true)
+        metricsFlusher?.flush(sync: true, force: true)
         store.markCleanExit()
     }
 
@@ -54,12 +52,14 @@ extension Engine {
         if config.metrics.enabled {
             startMetrics()
         } else if let store = metricsStore, store.isEnabled {
-            flushMetrics(sync: true, final: true)
+            metricsFlusher?.flush(sync: true, force: true)
             store.markCleanExit()
             store.isEnabled = false
+            metricsFlusher?.disconnect()
+            metricsFlusher = nil
             metricsSink.set(nil)
             activeSince = nil
-            costBaseline = nil
+            costMeter = CostMeter()
             log.log("metrics: off")
         }
     }
@@ -68,29 +68,34 @@ extension Engine {
         if metricsStore?.isEnabled == true { return }
         guard let store = metricsStore ?? makeMetricsStore?() else { return }
         configStore.onLoadError = { [weak self] in self?.metricsStore?.record(.configError) }
-        store.isEnabled = true
-        store.onFirstChange = { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.scheduleMetricsFlush() } }
-        }
         metricsStore = store
+        let flusher = MetricsFlusher(store: store, log: { [weak self] in self?.log.log($0) })
+        flusher.beforeWrite = { [weak self] in self?.recordRunningCost() }
+        metricsFlusher = flusher
+        store.isEnabled = true
+        flusher.connect()
         metricsSink.set(store)
         for w in windows.values { metricsSink.setBundle(w.info.bundleID, for: w.info.pid) }
-        costBaseline = CostSample.current()
-        activeSince = status == .running ? CACurrentMediaTime() : nil
+        if status == .running {
+            costMeter.started(CostSample.current())
+            activeSince = CACurrentMediaTime()
+        }
         store.markRunning()
         log.log("metrics: on, files in \(store.directory.path)")
     }
 
     func metricsEngineStarted() {
-        guard let store = metricsStore else { return }
+        guard let store = metricsStore, store.isEnabled else { return }
         store.record(.engineStart)
-        if store.isEnabled { activeSince = CACurrentMediaTime() }
+        costMeter.started(CostSample.current())
+        activeSince = CACurrentMediaTime()
     }
 
     /// Called by every tear-down (stop, restart, permission lost).
     func metricsEngineStopped() {
         accrueActiveTime()
         activeSince = nil
+        if metricsStore?.isEnabled == true { costMeter.stopped(CostSample.current()) }
     }
 
     /// Records the running time since the last call.
@@ -101,39 +106,11 @@ extension Engine {
         activeSince = status == .running ? now : nil
     }
 
-    private func recordCost() {
-        guard let store = metricsStore, let now = CostSample.current() else { return }
-        if let base = costBaseline {
-            let d = now.delta(since: base)
-            store.recordCost(cpuSeconds: d.cpuSeconds, wakeups: d.wakeups, rssMB: d.rssMB)
-        }
-        costBaseline = now
-    }
-
-    /// One flush, `metricsFlushDelay` after the first change since the last flush. No repeating timer.
-    func scheduleMetricsFlush() {
-        guard !metricsFlushScheduled, metricsStore?.isEnabled == true else { return }
-        metricsFlushScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.metricsFlushDelay) { [weak self] in
-            MainActor.assumeIsolated {
-                self?.metricsFlushScheduled = false
-                self?.flushMetrics(sync: false)
-            }
-        }
-    }
-
-    /// Records the running time and the process cost since the last flush, then writes the day file.
-    /// Without unsaved changes it does nothing, so an idle app does not wake up to write (SPEC idle rule):
-    /// the time and cost then go into the next flush. `final` (quit, metrics off) always writes them.
-    /// `sync` writes before it returns (quit, `striple report`); else the write runs off the main thread.
-    func flushMetrics(sync: Bool, final: Bool = false) {
-        guard let store = metricsStore, store.isEnabled, final || store.hasUnsavedChanges else { return }
+    /// Before each write: the running time, and the CPU time and wakeups of the running engine since the last write.
+    private func recordRunningCost() {
         accrueActiveTime()
-        recordCost()
-        let write: @Sendable () -> Void = {
-            do { try store.flush() } catch { EngineLog.shared.log("metrics: could not save the day file: \(error)") }
-        }
-        if sync { write() } else { DispatchQueue.global(qos: .utility).async(execute: write) }
+        guard let store = metricsStore, let cost = costMeter.take(CostSample.current()) else { return }
+        store.recordCost(cpuSeconds: cost.cpuSeconds, wakeups: cost.wakeups, rssMB: cost.peakMB)
     }
 
     // MARK: Friction

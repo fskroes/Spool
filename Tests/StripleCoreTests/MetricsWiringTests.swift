@@ -256,29 +256,29 @@ import Testing
 
 @Suite struct CostSampleTests {
     @Test func deltas() {
-        let a = CostSample(cpuSeconds: 1.5, wakeups: 100, rssMB: 40)
-        let b = CostSample(cpuSeconds: 2.0, wakeups: 160, rssMB: 42.5)
+        let a = CostSample(cpuSeconds: 1.5, wakeups: 100, peakMB: 40)
+        let b = CostSample(cpuSeconds: 2.0, wakeups: 160, peakMB: 42.5)
         let d = b.delta(since: a)
         #expect(d.cpuSeconds == 0.5)
         #expect(d.wakeups == 60)
-        #expect(d.rssMB == 42.5)
+        #expect(d.peakMB == 42.5)
     }
 
     @Test func aCounterThatGoesBackGivesZero() {
-        let a = CostSample(cpuSeconds: 5, wakeups: 500, rssMB: 40)
-        let b = CostSample(cpuSeconds: 4, wakeups: 10, rssMB: 30)
+        let a = CostSample(cpuSeconds: 5, wakeups: 500, peakMB: 40)
+        let b = CostSample(cpuSeconds: 4, wakeups: 10, peakMB: 30)
         let d = b.delta(since: a)
         #expect(d.cpuSeconds == 0)
         #expect(d.wakeups == 0)
-        #expect(d.rssMB == 30)
+        #expect(d.peakMB == 30)
     }
 
     @Test func badNumbersGiveZero() {
-        let d = CostSample(cpuSeconds: .nan, wakeups: 1, rssMB: .infinity).delta(since: CostSample(cpuSeconds: 1, wakeups: 0, rssMB: 1))
+        let d = CostSample(cpuSeconds: .nan, wakeups: 1, peakMB: .infinity).delta(since: CostSample(cpuSeconds: 1, wakeups: 0, peakMB: 1))
         #expect(d.cpuSeconds == 0)
         #expect(d.wakeups == 1)
-        #expect(d.rssMB == 0)
-        #expect(CostSample(cpuSeconds: 0, wakeups: .max, rssMB: 0).delta(since: CostSample(cpuSeconds: 0, wakeups: 0, rssMB: 0)).wakeups == .max)
+        #expect(d.peakMB == 0)
+        #expect(CostSample(cpuSeconds: 0, wakeups: .max, peakMB: 0).delta(since: CostSample(cpuSeconds: 0, wakeups: 0, peakMB: 0)).wakeups == .max)
     }
 
     @Test func readsTheOwnCounters() throws {
@@ -288,9 +288,11 @@ import Testing
         #expect(x > 0)
         let second = try #require(CostSample.current())
         #expect(first.cpuSeconds > 0)
-        #expect(first.rssMB > 1)
+        #expect(first.peakMB > 1)
         #expect(second.cpuSeconds >= first.cpuSeconds)
         #expect(second.wakeups >= first.wakeups)
+        // A lifetime peak: it never goes down.
+        #expect(second.peakMB >= first.peakMB)
     }
 }
 

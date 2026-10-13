@@ -46,13 +46,14 @@ final class Ticker: NSObject {
     @available(macOS 14.0, *)
     @objc private func step(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
-        noteStep(now, periodMs: link.duration * 1000)
+        noteStep(now, periodMs: Self.periodMs(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp,
+                                              duration: link.duration))
         onTick(now)
     }
 
     private func noteStep(_ now: Double, periodMs: Double) {
         if let last = lastStep, let onInterval {
-            onInterval((now - last) * 1000, periodMs > 0 ? periodMs : 1000 / 60)
+            onInterval((now - last) * 1000, periodMs)
         }
         lastStep = now
     }
@@ -75,7 +76,9 @@ final class Ticker: NSObject {
                     ticker.cvPending.clear()
                     guard ticker.isRunning, let link = ticker.cvLink else { return }
                     let now = CACurrentMediaTime()
-                    ticker.noteStep(now, periodMs: CVDisplayLinkGetActualOutputVideoRefreshPeriod(link) * 1000)
+                    let p = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link)
+                    ticker.noteStep(now, periodMs: Ticker.periodMs(timeValue: p.timeValue, timeScale: p.timeScale,
+                                                                   indefinite: p.flags & Int32(CVTimeFlags.isIndefinite.rawValue) != 0))
                     ticker.onTick(now)
                 }
             }

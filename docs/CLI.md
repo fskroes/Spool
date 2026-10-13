@@ -143,6 +143,8 @@ Slowest apps (AX write per window):
 - **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
   replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
   slowest app in the tick.
+- **Command latency**: the time from a command until its first frame is on the windows. A command that moves
+  no window (for example `focus-left` at the first column) and a swipe give no sample.
 - **Slowest apps**: the 5 apps with the highest p95 AX time for one window write, from the newest 128
   writes of each app. **latency** is from the tick that queued the frame until it was written, so it
   includes the wait for the write before it. An app with a high AX time makes Striple feel slow; quit it or

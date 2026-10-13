@@ -10,9 +10,9 @@ turn it off.
 - No window titles, no key presses, no text that you type. A mark keeps the note that you give it, and nothing else
   that you typed.
 - Apps are named by their bundle ID only (for example `com.apple.Safari`).
-- Striple keeps 90 days. It deletes older day files by itself. When the clock of the Mac seems to be far ahead (the
-  newest day file before today is more than 2 days old), Striple deletes nothing, so a wrong clock cannot delete
-  real data.
+- Striple keeps 90 days. It deletes older day files by itself. It always keeps the newest 90 days that have a
+  file, so a clock that is far ahead cannot delete real data, and if you use Striple only on some days, you keep
+  your last 90 days of use.
 
 ## Turn it on or off
 
@@ -41,6 +41,11 @@ To delete the data, quit Striple and delete the folder `~/Library/Application Su
 Striple keeps the numbers in memory and writes the day file 60 s after the first change, when `striple report` asks
 for them, and when you quit. There is no repeating timer: when nothing happens, Striple writes nothing.
 
+If a write fails (for example, the disk is full), Striple keeps the numbers in memory and tries again later. The
+wait doubles after each failure: 2 min, 4 min, 8 min, and so on, up to 1 h. After a write that works, the wait is
+60 s again. This retry is the only write that repeats, and it stops when a write works. `engine.log` gets one line
+for each new error, and one line when a write works again.
+
 The day is the local day of the Mac clock. When the clock changes (a time zone, a manual change), the numbers go to
 the day of the new time, also to an earlier day. Striple adds them to the file of that day.
 
@@ -50,24 +55,34 @@ the day of the new time, also to an earlier day. Striple adds them to the file o
 |---|---|---|
 | Time | Seconds the engine ran (managed windows) | `activeSeconds` |
 | Speed | Frame write: all window writes of one frame | `frameWrite` |
-| | Command latency: from a command to its first frame | `commandLatency` |
-| | Command settle: from a command to the end of its animation | `commandSettle` |
+| | Command latency: from a command to its first frame. A command that moves no window (for example focus-left at the first column) gives no sample | `commandLatency` |
+| | Command settle: from a command to the end of its animation. A swipe that stops the animation removes the sample | `commandSettle` |
 | | Time between two frames of one animation, and the frames later than 1.5 times the display period | `tickInterval`, `ticks`, `slowTicks` |
-| Cost | CPU time of the Striple process (user and system), wakeups (interrupt and package idle), highest memory | `cpuSeconds`, `wakeups`, `peakRSSMB` |
+| Cost | CPU time of the Striple process (user and system) and its idle wakeups, only while the engine runs. The highest memory of the process since it started (physical footprint) | `cpuSeconds`, `wakeups`, `peakRSSMB` |
 | Use | Each command, with where it came from: `hotkey`, `cli`, `url`, `menu`, `tab` (a click on a tab bar) or `gesture` | `commands` |
-| | Columns on a strip after each layout change (`1` to `9`, `10+`) | `columnsPerStrip` |
+| | Columns on a strip, each time the number changes or a strip opens (`1` to `9`, `10+`) | `columnsPerStrip` |
 | Problems | Engine start, stop and restart, unclean exits, repaired app observers, a lost Accessibility permission, focus through the slow fallback, `config.json` errors, refused shortcuts, apps that do not answer, swipes, flings, marks | `events` |
 | Per app | Time of the AX calls of one window write, failed writes, friction | `apps` |
 
 Today no gesture runs a command: a swipe scrolls the strip and counts as the event `swipe` (and `fling` when the
-speed of your fingers picked the column). The source `gesture` is there for gesture commands.
+speed of your fingers picked the column). The source `gesture` is there for gesture commands. A swipe is not a
+command, so it gives no command latency and no command settle.
+
+Cost in detail:
+
+- `cpuSeconds` and `wakeups` count only the time while the engine runs. CPU time and wakeups while the engine is
+  stopped are not counted. So `cpu-while-active` is the CPU time of the running engine in percent of its running
+  time.
+- `wakeups` are the package idle wakeups of the process: the "Idle Wake Ups" column of Activity Monitor.
+- `peakRSSMB` is the highest physical footprint of the process since it started, in MB (the "Memory" column of
+  Activity Monitor shows the current footprint). The day file keeps the highest value of the day.
 
 Friction is a sign that Striple did something that you or an app did not want. Striple counts it per app:
 
 | Friction | When |
 |---|---|
 | `app.correction` | The app moved or resized a tiled window, and Striple put it back |
-| `user.drag` | You dragged a tiled window |
+| `user.drag` | You dragged a tiled window and Striple put it back (drag-to-reorder is off, or you dropped it outside a managed display). A reorder or a move to another display is not friction |
 | `user.resize` | You resized a tiled window with the mouse |
 | `float.tiled` | You used toggle-float on a tiled window. Maybe this app must float (an app rule) |
 | `unfloat.auto` | You used toggle-float on a window that a rule or the smart check floated. Maybe it must tile |
