@@ -94,6 +94,12 @@ enum MetricsFixtures {
         #expect(inside.max == 80)
     }
 
+    @Test func decodingAppMetricsSkipsOnlyTheBadFrictionEntry() throws {
+        let text = #"{"friction":{"user.drag":3,"user.resize":"bad","focus.bounce":null}}"#
+        let app = try JSONDecoder().decode(AppMetrics.self, from: Data(text.utf8))
+        #expect(app.friction == ["user.drag": 3])
+    }
+
     @Test func decodingAppMetricsDirectlyIsChecked() throws {
         let text = #"{"axErrors":-3,"friction":{"user.drag":-1,"user.resize":2},"axWrite":{"counts":[1]}}"#
         let app = try JSONDecoder().decode(AppMetrics.self, from: Data(text.utf8))
@@ -233,6 +239,28 @@ enum MetricsFixtures {
 }
 
 @Suite struct MetricsDayTests {
+    @Test func aBadDictionaryEntryIsSkippedAndTheOthersStay() throws {
+        let text = """
+        {"schema": 1, "day": "2026-10-13",
+         "events": {"swipe": 500, "x": "bad", "fling": -2},
+         "commands": {"wider": {"hotkey": 4, "menu": "bad"}, "narrower": 7, "focus-left": {"cli": 1}},
+         "columnsPerStrip": {"2": 9, "3": [1]},
+         "apps": {"com.example.a": {"axErrors": 2, "friction": {"user.drag": 1, "user.resize": {}}},
+                  "com.example.bad": 5, "com.example.b": {"axErrors": 1}}}
+        """
+        let d = try JSONDecoder().decode(DayMetrics.self, from: Data(text.utf8))
+        #expect(d.events == ["swipe": 500, "fling": 0])
+        #expect(d.commands == ["wider": ["hotkey": 4], "focus-left": ["cli": 1]])
+        #expect(d.columnsPerStrip == ["2": 9])
+        #expect(Set(d.apps.keys) == ["com.example.a", "com.example.b"])
+        #expect(d.apps["com.example.a"]?.axErrors == 2)
+        #expect(d.apps["com.example.a"]?.friction == ["user.drag": 1])
+        #expect(d.apps["com.example.b"]?.axErrors == 1)
+        // Not an object at all: the default.
+        let notObjects = try JSONDecoder().decode(DayMetrics.self, from: Data(#"{"day":"2026-10-13","events":[1],"apps":"x"}"#.utf8))
+        #expect(notObjects.events.isEmpty && notObjects.apps.isEmpty)
+    }
+
     static func sample(_ day: String) -> DayMetrics {
         var d = DayMetrics(day: day)
         d.appVersions = ["1.0"]

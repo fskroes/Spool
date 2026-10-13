@@ -198,7 +198,7 @@ public struct AppMetrics: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         axWrite = c.value(.axWrite, Histogram())
         axErrors = Swift.max(0, c.value(.axErrors, 0))
-        friction = DayMetrics.counts(c.value(.friction, [String: Int]()))
+        friction = DayMetrics.counts(c.value(.friction, LenientDictionary<Int>()).values)
     }
 
     public mutating func merge(_ other: AppMetrics) {
@@ -278,7 +278,10 @@ public struct DayMetrics: Codable, Equatable, Sendable {
     }
 
     /// Decodes leniently: a missing field gets its default, so a file from an older build still loads.
+    /// Dictionaries are read entry by entry: a bad entry is skipped, the other entries stay.
     /// A file with a newer `schema` than `schemaVersion` throws `MetricsError.newerSchema`.
+    /// A new top-level field needs a schema bump: an older build does not know the field, so it would drop it
+    /// when it writes the file again. With the bump the older build writes the sidecar instead.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let version = c.value(.schema, DayMetrics.schemaVersion)
@@ -297,10 +300,10 @@ public struct DayMetrics: Codable, Equatable, Sendable {
         cpuSeconds = Self.amount(c.value(.cpuSeconds, 0.0))
         wakeups = Swift.max(0, c.value(.wakeups, 0))
         peakRSSMB = Self.amount(c.value(.peakRSSMB, 0.0))
-        events = Self.counts(c.value(.events, [String: Int]()))
-        commands = c.value(.commands, [String: [String: Int]]()).mapValues(Self.counts)
-        columnsPerStrip = Self.counts(c.value(.columnsPerStrip, [String: Int]()))
-        apps = c.value(.apps, [String: AppMetrics]())
+        events = Self.counts(c.value(.events, LenientDictionary<Int>()).values)
+        commands = c.value(.commands, LenientDictionary<LenientDictionary<Int>>()).values.mapValues { Self.counts($0.values) }
+        columnsPerStrip = Self.counts(c.value(.columnsPerStrip, LenientDictionary<Int>()).values)
+        apps = c.value(.apps, LenientDictionary<AppMetrics>()).values
     }
 
     /// A finite, not negative amount, else 0.
@@ -308,6 +311,28 @@ public struct DayMetrics: Codable, Equatable, Sendable {
 
     /// Counts from a file: a negative count becomes 0.
     static func counts(_ values: [String: Int]) -> [String: Int] { values.mapValues { Swift.max(0, $0) } }
+}
+
+/// A JSON object read entry by entry: an entry whose value does not decode is skipped, so one bad entry does
+/// not lose the others. Something that is not an object throws.
+struct LenientDictionary<Value: Decodable>: Decodable {
+    private struct Key: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    var values: [String: Value] = [:]
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Key.self)
+        for key in c.allKeys {
+            if let value = try? c.decode(Value.self, forKey: key) { values[key.stringValue] = value }
+        }
+    }
 }
 
 extension Int {
@@ -681,7 +706,8 @@ public final class MetricsStore: @unchecked Sendable {
     private var enabled = true
     private var firstChange: (@Sendable () -> Void)?
     /// A callback was handed out for the unsaved changes now in memory, so the owner has a flush scheduled.
-    /// Cleared when a flush takes the changes, or finds the store disabled (then that flush was used up).
+    /// Cleared when a flush takes the changes or finds the store disabled (that flush was used up), and when
+    /// the store is turned off or the callback is set to nil (the owner may have dropped its flush).
     private var notified = false
     /// A flush is writing files now.
     private var writing = false
@@ -719,6 +745,8 @@ public final class MetricsStore: @unchecked Sendable {
             lock.lock()
             let resume = newValue && !enabled
             enabled = newValue
+            // Off: the owner may cancel its scheduled flush, so turning on again must ask for a new one.
+            if !newValue { notified = false }
             let callback = resume ? handOut() : nil
             lock.unlock()
             callback?()
@@ -729,7 +757,8 @@ public final class MetricsStore: @unchecked Sendable {
     /// Setting a callback while the store is enabled and has unsaved changes that no callback was called for yet
     /// calls it at once (on the setting thread, outside the lock): for example `markRunning()` can record
     /// `uncleanExit` before the owner sets it. One saved-to-unsaved step calls a callback once only, also when
-    /// the owner sets the callback again or sets it from inside the callback.
+    /// the owner sets the callback again or sets it from inside the callback. Setting nil (or turning the store
+    /// off) tells the store that no flush is scheduled: the next callback that is set is called for the changes.
     public var onFirstChange: (@Sendable () -> Void)? {
         get {
             lock.lock()
@@ -739,6 +768,7 @@ public final class MetricsStore: @unchecked Sendable {
         set {
             lock.lock()
             firstChange = newValue
+            if newValue == nil { notified = false }
             let callback = handOut()
             lock.unlock()
             callback?()
@@ -1116,7 +1146,7 @@ public struct MetricsBudget: Codable, Equatable, Sendable {
 public struct MetricsReport: Codable, Equatable, Sendable {
     public struct BudgetResult: Codable, Equatable, Sendable {
         public var budget: MetricsBudget
-        /// Nil when there is no data for it (for example no commands yet).
+        /// Nil when there is no data for it (for example no commands yet), or when it is not finite.
         public var value: Double?
         /// Nil when `value` is nil.
         public var pass: Bool?
@@ -1169,7 +1199,8 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         for day in days { total.merge(day) }
 
         let results = budgets.map { budget -> BudgetResult in
-            let value = days.isEmpty ? nil : budgetValue(budget.name, total)
+            // A non-finite value (for example a tiny activeSeconds) is no data: JSON cannot hold it.
+            let value = days.isEmpty ? nil : budgetValue(budget.name, total).flatMap { $0.isFinite ? $0 : nil }
             let pass = value.map { v -> Bool in
                 switch budget.comparison {
                 case .atMost: return v <= budget.limit
