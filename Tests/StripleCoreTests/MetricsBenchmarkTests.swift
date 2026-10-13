@@ -4,7 +4,7 @@ import Testing
 
 /// The cost of one record call. It measures wall-clock time, so it runs only with STRIPLE_BENCH=1, not as a gate test:
 /// STRIPLE_BENCH=1 swift test -c release -Xswiftc -enable-testing --filter 'StripleCoreTests\.MetricsBenchmarkTests/'
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["STRIPLE_BENCH"] != nil))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["STRIPLE_BENCH"] == "1"))
 struct MetricsBenchmarkTests {
     @Test func recordCallUnderOneMicrosecond() {
         let dir = MetricsFixtures.tempDirectory()
