@@ -8,31 +8,51 @@ import StripleCore
 /// Feeds command latency and settle (`striple stats` and the metrics). Only a command that moves a window gives
 /// a sample: a command that changes nothing, a command during a swipe, and a swipe give none.
 struct CommandClock: Equatable {
-    /// Waits for the first tick that queues a window write.
+    /// Waits for the first tick that moves a window.
     private(set) var pending: Double?
-    /// Set when that tick queues; read when the animation settles.
+    /// Set when that tick queues its write; read when the animation settles.
     private(set) var settling: Double?
+    /// The start that waited before this command, back in `pending` when this command changes nothing.
+    private(set) var beforeCommand: Double?
+
+    /// What a tick gives its write: the command start for the latency, and whether the settle is recorded when
+    /// the write lands (the animation ends on this same tick, for example with animations off).
+    struct TickStart: Equatable {
+        let start: Double
+        let settleAtWrite: Bool
+    }
 
     /// A command starts. During a swipe the swipe's frames are not the command's: no sample.
     mutating func commandStarted(at t: Double, swiping: Bool) {
+        beforeCommand = pending
         guard !swiping else { return }
         pending = t
     }
 
     /// The end of `perform`. A command that changed no target frame (focus-left at the first column, a move at an
     /// edge, toggle-float without a window) has no latency, also while an animation runs: the start must not go to
-    /// a later or older animation. The settle of the command before it stays.
+    /// a later or older animation. The start of a command before it that still waits stays, and so does the
+    /// settle of the command before it.
     mutating func performEnded(changedTargets: Bool) {
-        if !changedTargets { pending = nil }
+        if !changedTargets { pending = beforeCommand }
+        beforeCommand = nil
     }
 
-    /// A tick: `queued` is true when it queued a window write (`FrameApplier.apply`). A tick that queued nothing
-    /// (the first one of a command at rest has dt = 0, so every frame equals the written one) leaves the start
-    /// waiting for the next tick.
-    mutating func ticked(queued: Bool) {
-        guard queued, let start = pending else { return }
+    /// Before a tick's write. `moved` is true when a frame of this tick differs from where Striple placed the window
+    /// before (`Engine.tickMoves`). A tick that moves nothing does not take the start: the first tick of a command
+    /// at rest has dt = 0, and a frame equal to one still in flight is the old frame, not the command's.
+    /// `settles` is true when the animation ends on this tick.
+    func tickStart(moved: Bool, settles: Bool) -> TickStart? {
+        guard moved, let start = pending else { return nil }
+        return TickStart(start: start, settleAtWrite: settles)
+    }
+
+    /// After the tick's write: `queued` is the result of `FrameApplier.apply`. When the settle comes with the
+    /// write, `settled(at:)` gives none for this command.
+    mutating func ticked(_ taken: TickStart?, queued: Bool) {
+        guard let taken, queued else { return }
         pending = nil
-        settling = start
+        settling = taken.settleAtWrite ? nil : taken.start
     }
 
     /// The animation settled at `t`: the settle time in ms of the command whose frames were queued, once.
@@ -164,6 +184,12 @@ struct ColumnCounts<Key: Hashable> {
 }
 
 extension Engine {
+    /// True when a frame of this tick differs from the frame Striple placed that window at before
+    /// (`placedBefore`, nil for a window not placed yet): the tick moves a window.
+    nonisolated static func tickMoves(_ writes: [FrameWrite], placedBefore: (WindowID) -> CGRect?) -> Bool {
+        writes.contains { placedBefore($0.id) != $0.frame }
+    }
+
     /// True when `frames` are not the targets the strip's animator has now: the layout pass moves a window.
     nonisolated static func targetsChange(_ anim: FrameAnimator?, to frames: [WindowID: CGRect]) -> Bool {
         guard let anim, anim.windowIDs.count == frames.count else { return true }

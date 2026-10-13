@@ -86,9 +86,36 @@ import Testing
         #expect(day.commandLatency.count == 1)
         #expect(recorder.snapshot().batches == 2)
     }
+
+    /// F3: a write on the tick that ends the animation records the settle with the latency value; a dropped
+    /// write records neither.
+    @Test func aSettleAtWriteIsTheLatency() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-metrics-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = MetricsStore(directory: dir, appVersion: "test")
+        let recorder = StatsRecorder()
+        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: true, now: { 10.0625 })(3)
+        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: true, now: { 10.0625 })(nil)
+        Engine.recordTick(recorder, metrics: store, commandStart: 10, settleAtWrite: false, now: { 10.0625 })(3)
+        let day = store.snapshot()
+        #expect(day.commandLatency.count == 2)
+        #expect(day.commandSettle.count == 1)
+        #expect(day.commandSettle.sum == 62.5)
+        #expect(day.commandSettle.max == 62.5)
+    }
 }
 
-/// D1, D8, E1 to E3: latency and settle come only from a command that moves a window.
+extension CommandClock {
+    /// One tick: the decision before the write, then the write's result.
+    @discardableResult
+    mutating func tick(moved: Bool = true, queued: Bool = true, settles: Bool = false) -> TickStart? {
+        let taken = tickStart(moved: moved, settles: settles)
+        ticked(taken, queued: queued)
+        return taken
+    }
+}
+
+/// D1, D8, E1 to E3, F1 to F3: latency and settle come only from a command that moves a window.
 @Suite struct CommandClockTests {
     @Test func aCommandThatChangedNothingHasNoLatency() {
         var clock = CommandClock()
@@ -96,7 +123,7 @@ import Testing
         // focus-left at the first column: no target changed.
         clock.performEnded(changedTargets: false)
         // Minutes later a new window opens: its frames are not the command's.
-        clock.ticked(queued: true)
+        clock.tick()
         let settle = clock.settled(at: 200)
         #expect(clock.pending == nil)
         #expect(settle == nil)
@@ -105,33 +132,83 @@ import Testing
     @Test func fromRestTheFirstLinkTickTakesTheStart() {
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
-        // The kick tick inside perform has dt = 0: every frame equals the written frame, nothing is queued.
-        clock.ticked(queued: false)
+        // The kick tick inside perform has dt = 0: every frame is where Striple placed the window.
+        clock.tick(moved: false)
         clock.performEnded(changedTargets: true)
         #expect(clock.pending == 10)
         #expect(clock.settling == nil)
-        // The first display link tick (dt > 0) queues the first write.
-        clock.ticked(queued: true)
+        // The first display link tick (dt > 0) moves the windows.
+        clock.tick()
         #expect(clock.pending == nil)
         #expect(clock.settling == 10)
-        clock.ticked(queued: true)
+        clock.tick()
         let settle = clock.settled(at: 10.25)
         let later = clock.settled(at: 11)
         #expect(settle == 250)
         #expect(later == nil, "a later animation does not inherit the settle")
     }
 
+    /// F1: a slow app still writes the last frame of the animation before. The kick tick gives the same frame:
+    /// `apply` waits for that write, but it is the old frame, not the command's.
+    @Test func aFrameEqualToTheOneInFlightDoesNotTakeTheStart() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10, swiping: false)
+        let kick = clock.tick(moved: false, queued: true)
+        clock.performEnded(changedTargets: true)
+        #expect(kick == nil)
+        #expect(clock.pending == 10)
+        let link = clock.tick(moved: true, queued: true)
+        #expect(link == CommandClock.TickStart(start: 10, settleAtWrite: false))
+        #expect(clock.settling == 10)
+    }
+
+    @Test func aMoveThatTheApplierDidNotQueueKeepsTheStart() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.tick(moved: true, queued: false)
+        #expect(clock.pending == 10)
+        #expect(clock.settling == nil)
+    }
+
+    /// F2: command B that changes nothing comes while the start of command A waits for its first link tick.
+    @Test func aNoOpCommandKeepsTheStartThatWaits() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10, swiping: false)
+        clock.tick(moved: false)
+        clock.performEnded(changedTargets: true)
+        clock.commandStarted(at: 10.25, swiping: false)
+        clock.performEnded(changedTargets: false)
+        #expect(clock.pending == 10)
+        clock.tick()
+        let settle = clock.settled(at: 10.5)
+        #expect(settle == 500)
+    }
+
+    /// F3: with animations off, the first tick writes the targets and the animation ends on the same tick.
+    @Test func aSettleOnTheTickOfTheFirstWriteComesWithTheWrite() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10, swiping: false)
+        let taken = clock.tick(moved: true, queued: true, settles: true)
+        clock.performEnded(changedTargets: true)
+        let settle = clock.settled(at: 10)
+        #expect(taken == CommandClock.TickStart(start: 10, settleAtWrite: true))
+        #expect(settle == nil, "the write's completion records it, not this ~0 ms value")
+        #expect(clock.pending == nil)
+        #expect(clock.settling == nil)
+    }
+
     @Test func anAnimationThatSettlesWithoutAWriteGivesNoSample() {
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
-        clock.ticked(queued: false)
+        clock.tick(moved: false)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: false)
+        clock.tick(moved: false)
         let settle = clock.settled(at: 10.1)
         #expect(settle == nil)
         #expect(clock.pending == nil)
         // The next animation (a new window, no command) does not take the old start.
-        clock.ticked(queued: true)
+        clock.tick()
         #expect(clock.settling == nil)
     }
 
@@ -139,11 +216,11 @@ import Testing
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: true)
+        clock.tick()
         // focus-left at the first column while the scroll animates.
         clock.commandStarted(at: 10.1, swiping: false)
         clock.performEnded(changedTargets: false)
-        clock.ticked(queued: true)
+        clock.tick()
         #expect(clock.pending == nil)
         let settle = clock.settled(at: 10.5)
         #expect(settle == 500)
@@ -153,10 +230,10 @@ import Testing
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: true)
+        clock.tick()
         clock.commandStarted(at: 12, swiping: false)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: true)
+        clock.tick()
         let settle = clock.settled(at: 12.5)
         #expect(settle == 500)
     }
@@ -166,7 +243,7 @@ import Testing
         clock.swipeBegan()
         clock.commandStarted(at: 10, swiping: true)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: true)
+        clock.tick()
         let settle = clock.settled(at: 12)
         #expect(clock.pending == nil)
         #expect(settle == nil)
@@ -176,13 +253,13 @@ import Testing
         var clock = CommandClock()
         clock.commandStarted(at: 10, swiping: false)
         clock.performEnded(changedTargets: true)
-        clock.ticked(queued: true)
+        clock.tick()
         clock.commandStarted(at: 11, swiping: false)
         clock.performEnded(changedTargets: true)
         clock.swipeBegan()
         #expect(clock.pending == nil)
         // The swipe's own animation (no command): no latency and no settle sample.
-        clock.ticked(queued: true)
+        clock.tick()
         let settle = clock.settled(at: 30)
         #expect(settle == nil)
     }
@@ -479,6 +556,17 @@ import Testing
         counts.reset()
         seen.append(counts.changed("b", to: 3))
         #expect(seen == [true, false, true, true, true, true])
+    }
+
+    @Test func tickMoves() {
+        let a = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let b = CGRect(x: 1, y: 0, width: 100, height: 100)
+        let placed: [WindowID: CGRect] = [1: a, 2: b]
+        let at = { (id: WindowID) in placed[id] }
+        #expect(!Engine.tickMoves([FrameWrite(id: 1, pid: 9, frame: a), FrameWrite(id: 2, pid: 9, frame: b)], placedBefore: at))
+        #expect(Engine.tickMoves([FrameWrite(id: 1, pid: 9, frame: a), FrameWrite(id: 2, pid: 9, frame: a)], placedBefore: at))
+        #expect(Engine.tickMoves([FrameWrite(id: 3, pid: 9, frame: a)], placedBefore: at), "a window not placed yet moves")
+        #expect(!Engine.tickMoves([], placedBefore: at))
     }
 
     @Test func targetsChange() {

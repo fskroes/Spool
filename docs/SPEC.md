@@ -152,7 +152,7 @@ test in `Tests/`.
 - Striple measures its own speed, cost, problems and use, and keeps the numbers on this Mac only:
   one JSON file per local day in `~/Library/Application Support/Striple/metrics/`, kept 90 days.
 - No window titles, no key presses, no typed text. Apps are named by bundle ID. The note of a mark is the only user text.
-- Speed: frame write, command latency (to the first frame), command settle (to the end of the animation) and the
+- Speed: frame write, command latency (to the first frame), command settle (to the end of the animation; with animations off, to the write of the frame) and the
   time between frames while an animation runs. Only a command that moves a window gives latency and settle; a
   swipe is not a command, and a command during a swipe gives no sample. Cost: CPU time and idle wakeups of the process while the engine runs, and its peak
   memory, from `getrusage` and `proc_pid_rusage` at each save and at each engine start and stop. Problems: unclean

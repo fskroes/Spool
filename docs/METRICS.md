@@ -55,8 +55,8 @@ the day of the new time, also to an earlier day. Striple adds them to the file o
 |---|---|---|
 | Time | Seconds the engine ran (managed windows) | `activeSeconds` |
 | Speed | Frame write: all window writes of one frame | `frameWrite` |
-| | Command latency: from a command to its first frame. A command that moves no window (for example focus-left at the first column) or that comes during a swipe gives no sample | `commandLatency` |
-| | Command settle: from a command to the end of its animation. Only a command that moved a window has one. A swipe that stops the animation removes the sample | `commandSettle` |
+| | Command latency: from a command to its first frame that moves a window. A command that moves no window (for example focus-left at the first column) or that comes during a swipe gives no sample | `commandLatency` |
+| | Command settle: from a command to the end of its animation. Only a command that moved a window has one. When the animation ends with the first frame (animations off), the settle is the time until that frame is on the windows, the same as the latency. A swipe that stops the animation removes the sample | `commandSettle` |
 | | Time between two frames of one animation, and the frames later than 1.5 times the display period | `tickInterval`, `ticks`, `slowTicks` |
 | Cost | CPU time of the Striple process (user and system) and its idle wakeups, only while the engine runs. The highest memory of the process since it started (physical footprint) | `cpuSeconds`, `wakeups`, `peakRSSMB` |
 | Use | Each command, with where it came from: `hotkey`, `cli`, `url`, `menu`, `tab` (a click on a tab bar) or `gesture` | `commands` |

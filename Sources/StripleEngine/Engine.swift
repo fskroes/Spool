@@ -311,15 +311,20 @@ public final class Engine: ObservableObject {
 
     /// The completion of a tick's frame writes: records the frame-write time and the command latency, but not when
     /// the applier dropped a frame (the app quit or the engine stopped): then no frame was written.
-    /// `metrics` gets the same two numbers.
+    /// `metrics` gets the same two numbers. `settleAtWrite`: the animation ended on the tick of this write, so the
+    /// window is in place when the write lands, and the command settle is the latency.
     nonisolated static func recordTick(_ recorder: StatsRecorder, metrics: MetricsStore? = nil,
-                                       commandStart: Double?) -> @Sendable (Double?) -> Void {
+                                       commandStart: Double?, settleAtWrite: Bool = false,
+                                       now: @escaping @Sendable () -> Double = CACurrentMediaTime) -> @Sendable (Double?) -> Void {
         { ms in
             guard let ms else { return }
             recorder.record(frameMs: ms, commandStart: commandStart)
             guard let metrics else { return }
             metrics.recordFrameWrite(ms: ms)
-            if let commandStart { metrics.recordCommandLatency(ms: (CACurrentMediaTime() - commandStart) * 1000) }
+            guard let commandStart else { return }
+            let latency = (now() - commandStart) * 1000
+            metrics.recordCommandLatency(ms: latency)
+            if settleAtWrite { metrics.recordCommandSettle(ms: latency) }
         }
     }
 

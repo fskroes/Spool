@@ -45,25 +45,31 @@ extension Engine {
     func tick(_ t: Double) {
         guard status == .running else { ticker?.stop(); return }
         var writes: [FrameWrite] = []
+        var placed: [(WindowID, Layout.Placement)] = []
         var settled = true
         for (key, anim) in animators where isActive(key) {
             guard let d = display(key.display) else { continue }
             for (id, f) in anim.frames(at: t) {
                 guard let w = windows[id], w.state == .tiled, drag?.id != id else { continue }
                 let p = Layout.physical(f, display: d.geometry, settings: config.layout)
-                placements[id] = p
+                placed.append((id, p))
                 writes.append(FrameWrite(id: id, pid: w.info.pid, frame: p.frame))
             }
             if !anim.isSettled(at: t) { settled = false }
         }
+        let ends = settled && swipe == nil
         if !writes.isEmpty {
+            let moved = Self.tickMoves(writes) { placements[$0]?.frame }
+            for (id, p) in placed { placements[id] = p }
             // The completion gets a time only when a write was queued, so it may hold the start before `ticked`.
+            let taken = commandClock.tickStart(moved: moved, settles: ends)
             let queued = applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore,
-                                                                           commandStart: commandClock.pending))
-            commandClock.ticked(queued: queued)
+                                                                           commandStart: taken?.start,
+                                                                           settleAtWrite: taken?.settleAtWrite == true))
+            commandClock.ticked(taken, queued: queued)
         }
         updateOverlays()
-        if settled && swipe == nil {
+        if ends {
             if let ms = commandClock.settled(at: t) { metricsStore?.recordCommandSettle(ms: ms) }
             ticker?.stop()
             applier.settle()

@@ -106,7 +106,8 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(applier.lastWritten(1) == rect(0))
     }
 
-    /// E1: the engine gives a command its latency start only on a tick that queued a write.
+    /// The engine gives a command its latency start only on a tick that moved a window and queued a write. True for
+    /// a frame equal to one in flight: the call waits for that write (the engine's `tickMoves` is false there).
     @Test func applyTellsWhetherItQueued() {
         let writer = FakeWriter()
         let applier = FrameApplier(writer: writer)
