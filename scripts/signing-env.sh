@@ -6,6 +6,10 @@ STRIPLE_SIGNING_NAME="Striple Local Signing"
 STRIPLE_SIGNING_KEYCHAIN="${STRIPLE_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/striple-signing.keychain-db}"
 STRIPLE_SIGNING_PASSWORD_ITEM="${STRIPLE_SIGNING_PASSWORD_ITEM:-Striple Local Signing keychain}"
 STRIPLE_LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+# The keychain tool, and the signing tool of make-signing-cert.sh. Tests set them to fakes with
+# neutral names: endpoint security reports a new file named `security` as a credential-dumping tool.
+STRIPLE_SECURITY="${STRIPLE_SECURITY:-security}"
+STRIPLE_CODESIGN="${STRIPLE_CODESIGN:-codesign}"
 
 # `security -i` reads its input in blocks of 4096 bytes: the rest of a longer line runs as a second
 # command. Lines stay below this limit.
@@ -25,7 +29,7 @@ striple_security_secret() {
         echo "striple: a security command must be shorter than $STRIPLE_SECURITY_LINE_MAX bytes" >&2
         return 2
     fi
-    printf '%s\n' "$1" | security -i
+    printf '%s\n' "$1" | "$STRIPLE_SECURITY" -i
 }
 
 # One argument for a `security -i` line: in double quotes, with \ and " escaped. `security -i` treats a
@@ -42,7 +46,7 @@ striple_security_quote() {
 }
 
 # The user keychain search list, one path per line, without quotes.
-striple_signing_search_list() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
+striple_signing_search_list() { "$STRIPLE_SECURITY" list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
 
 # The keychain path with symlinks resolved (/tmp is /private/tmp): `security` lists that form.
 striple_signing_keychain_resolved() {
@@ -63,7 +67,7 @@ striple_signing_add_to_search_list() {
     while IFS= read -r p; do [[ -n "$p" ]] && paths+=("$p"); done <<<"$list"
     # An empty list: keep the login keychain on it (and bash 3.2 cannot expand an empty array under set -u).
     [[ ${#paths[@]} -gt 0 ]] || paths=("$STRIPLE_LOGIN_KEYCHAIN")
-    security list-keychains -d user -s "${paths[@]}" "$STRIPLE_SIGNING_KEYCHAIN"
+    "$STRIPLE_SECURITY" list-keychains -d user -s "${paths[@]}" "$STRIPLE_SIGNING_KEYCHAIN"
 }
 
 striple_signing_remove_from_search_list() {
@@ -73,7 +77,7 @@ striple_signing_remove_from_search_list() {
     done <<<"$(striple_signing_search_list)"
     # An empty list would hide the login keychain from every app.
     [[ ${#paths[@]} -gt 0 ]] || paths=("$STRIPLE_LOGIN_KEYCHAIN")
-    security list-keychains -d user -s "${paths[@]}"
+    "$STRIPLE_SECURITY" list-keychains -d user -s "${paths[@]}"
 }
 
 # Prints the SHA-1 of the identity and leaves its keychain unlocked and on the search list.
@@ -81,12 +85,12 @@ striple_signing_remove_from_search_list() {
 striple_signing_identity() {
     [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]] || return 1
     local pass kc
-    pass=$(security find-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" -w 2>/dev/null) || return 1
+    pass=$("$STRIPLE_SECURITY" find-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" -w 2>/dev/null) || return 1
     [[ "$pass" =~ ^[0-9a-f]+$ ]] || return 1
     kc=$(striple_security_quote "$STRIPLE_SIGNING_KEYCHAIN") || return 1
     striple_security_secret "unlock-keychain -p $pass $kc" >/dev/null 2>&1 || return 1
     striple_signing_add_to_search_list || return 1
     # Not "-v": the certificate is self-signed and not trusted, which codesign does not need.
-    security find-identity -p codesigning "$STRIPLE_SIGNING_KEYCHAIN" 2>/dev/null \
+    "$STRIPLE_SECURITY" find-identity -p codesigning "$STRIPLE_SIGNING_KEYCHAIN" 2>/dev/null \
         | awk -v name="\"$STRIPLE_SIGNING_NAME\"" 'index($0, name) && $1 ~ /\)$/ { print $2; found=1; exit } END { exit !found }'
 }

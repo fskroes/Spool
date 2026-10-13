@@ -1,14 +1,19 @@
 import Foundation
 import Testing
 
-/// Runs scripts/make-signing-cert.sh with fake `security` and `codesign` tools first on PATH and a temporary
-/// keychain path, so the keychains of this Mac are never read or changed. The fakes log each call to `calls.log`:
-/// argv as is, a command read by `security -i` from stdin as `stdin: <command>`, and codesign as `codesign <args>`.
-/// The fake `security` keeps state in its folder: with `acceptMake`, a full make or import runs to the end.
+/// Runs scripts/make-signing-cert.sh with a fake keychain tool (`STRIPLE_SECURITY`), a fake signing tool
+/// (`STRIPLE_CODESIGN`) and a temporary keychain path, so the keychains of this Mac are never read or changed.
+/// The fakes log each call to `calls.log`: argv as is, a command read by `security -i` from stdin as
+/// `stdin: <command>`, and codesign as `codesign <args>`.
+/// The fake keychain tool keeps state in its folder: with `acceptMake`, a full make or import runs to the end.
 /// The pin in Packaging/updates.env is not read: `STRIPLE_UPDATES_ENV` is /dev/null (no pin) unless a test gives a file.
 ///
-/// Opt-in: the suite runs only with STRIPLE_SIGNING_TESTS=1 (`make test-signing`). On a managed Mac the endpoint
-/// security tool reports the fake `security` calls as keychain access, also from a plain `swift test`.
+/// The fakes and the keychain file have neutral names (`fake-keychain-tool`, `fake-sign-tool`, `fake-store.db`),
+/// never `security`, `codesign` or `*.keychain-db`: endpoint security reported a new file named `security` in a
+/// temporary folder as a credential-dumping tool (MITRE T1003.001).
+///
+/// Opt-in: the suite runs only with STRIPLE_SIGNING_TESTS=1 (`make test-signing`). The fakes still get keychain
+/// commands as arguments (for example `find-generic-password ... -w`), which endpoint rules can match.
 let signingTestsOptedIn = ProcessInfo.processInfo.environment["STRIPLE_SIGNING_TESTS"] == "1"
 
 @Suite(.serialized, .enabled(if: signingTestsOptedIn, "set STRIPLE_SIGNING_TESTS=1 (make test-signing)"))
@@ -20,7 +25,7 @@ struct SigningScriptTests {
 
     /// What the fake keychains have.
     struct Keychain {
-        var file: Bool             // striple-signing.keychain-db exists
+        var file: Bool             // the Striple keychain file (fake-store.db) exists
         var password: Bool         // the password item is in the login keychain
         var identity: Bool         // the identity is in the Striple keychain
         var listed = false         // the Striple keychain is on the search list
@@ -33,11 +38,23 @@ struct SigningScriptTests {
 
     struct Result { var output: String; var status: Int32; var calls: [String] }
 
+    static let keychainToolName = "fake-keychain-tool"
+    static let signToolName = "fake-sign-tool"
+    static let keychainName = "fake-store.db"
+
+    /// Writes an executable fake tool `name` into `dir`.
+    static func writeTool(_ text: String, in dir: URL, as name: String) throws -> URL {
+        let url = dir.appendingPathComponent(name)
+        try Data(text.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
     static func run(_ k: Keychain, _ args: [String], env extra: [String: String] = [:]) throws -> Result {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-sign-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let keychain = dir.appendingPathComponent("striple-signing.keychain-db")
+        let keychain = dir.appendingPathComponent(Self.keychainName)
         if k.file { try Data().write(to: keychain) }
         let log = dir.appendingPathComponent("calls.log")
         let name = "\"Striple Local Signing\""
@@ -85,18 +102,15 @@ struct SigningScriptTests {
         \(k.badDR ? "h=0000" : "")
         echo "designated => identifier \\"com.fskroes.Striple.probe\\" and certificate leaf = H\\"$h\\"" >&2
         """
-        let codesignTool = dir.appendingPathComponent("codesign")
-        try Data(codesign.utf8).write(to: codesignTool)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codesignTool.path)
-        let tool = dir.appendingPathComponent("security")
-        try Data(fake.utf8).write(to: tool)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let codesignTool = try Self.writeTool(codesign, in: dir, as: Self.signToolName)
+        let tool = try Self.writeTool(fake, in: dir, as: Self.keychainToolName)
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [script.path] + args
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = dir.path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["STRIPLE_SECURITY"] = tool.path
+        env["STRIPLE_CODESIGN"] = codesignTool.path
         env["STRIPLE_SIGNING_KEYCHAIN"] = keychain.path
         env["HOME"] = "/Users/x"
         env["STRIPLE_UPDATES_ENV"] = "/dev/null"
@@ -138,7 +152,7 @@ struct SigningScriptTests {
         #expect(r.status == 0)
         let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
         #expect(set?.contains("/Users/x/Library/Keychains/login.keychain-db") == true)
-        #expect(set?.hasSuffix("striple-signing.keychain-db") == true)
+        #expect(set?.hasSuffix(Self.keychainName) == true)
     }
 
     @Test func aKeychainWithoutItsPasswordMustBeRemovedFirst() throws {
@@ -182,7 +196,7 @@ struct SigningScriptTests {
         #expect(r.status == 0, "\(r.output)")
         let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
         #expect(set?.hasPrefix("list-keychains -d user -s /Users/x/Library/Keychains/login.keychain-db ") == true)
-        #expect(set?.hasSuffix("striple-signing.keychain-db") == true)
+        #expect(set?.hasSuffix(Self.keychainName) == true)
     }
 
     @Test func removeWithoutYesWarnsAndChangesNothing() throws {
@@ -202,7 +216,7 @@ struct SigningScriptTests {
     @Test func removeDeletesTheKeychainThePasswordAndTheListEntry() throws {
         let r = try Self.run(Keychain(file: true, password: true, identity: true, listed: true), ["--remove", "--yes"])
         #expect(r.status == 0)
-        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
+        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix(Self.keychainName) })
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password -s Striple Local Signing keychain") })
         let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
         #expect(set == "list-keychains -d user -s /Users/x/Library/Keychains/login.keychain-db")
@@ -217,7 +231,7 @@ struct SigningScriptTests {
         #expect(r.calls.isEmpty, "\(r.calls)")
     }
 
-    // The fake `security` refuses create-keychain, so the run fails at the first keychain step. The key must
+    // The fake keychain tool refuses create-keychain, so the run fails at the first keychain step. The key must
     // already be in the backup, and its passphrase in a file next to it. The passphrase is never printed.
     @Test func theBackupIsWrittenBeforeTheKeychainIsMade() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("striple-backup-\(UUID().uuidString)")
@@ -592,7 +606,7 @@ struct SigningScriptTests {
                              env: try Self.pinned(sha1.lowercased(), in: dir).merging(["STRIPLE_SIGNING_P12_PASSWORD": "secret"]) { $1 })
         #expect(r.status == 0, "\(r.output)")
         #expect(r.output.contains("is a backup of the pinned identity"))
-        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
+        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix(Self.keychainName) })
         #expect(try Self.run(k, ["--backup", p12.path]).output.contains("--backup is only for --remove"))
     }
 
@@ -603,18 +617,18 @@ struct SigningScriptTests {
         k.identityHash = "0123456789ABCDEF0123456789ABCDEF01234567"
         let r = try Self.run(k, ["--remove", "--yes"], env: try Self.pinned(Self.pin, in: dir))
         #expect(r.status == 0, "\(r.output)")
-        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix("striple-signing.keychain-db") })
+        #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix(Self.keychainName) })
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password ") })
     }
 
     // MARK: security -i lines
 
-    static func shell(_ script: String, path: String? = nil) throws -> (out: String, err: String, status: Int32) {
+    static func shell(_ script: String, env extra: [String: String] = [:]) throws -> (out: String, err: String, status: Int32) {
         let env = Self.script.deletingLastPathComponent().appendingPathComponent("signing-env.sh").path
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = ["-c", "source \"$0\"; " + script, env]
-        if let path { p.environment = ProcessInfo.processInfo.environment.merging(["PATH": path]) { $1 } }
+        if !extra.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(extra) { $1 } }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -638,18 +652,16 @@ struct SigningScriptTests {
         let dir = try Self.tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let log = dir.appendingPathComponent("calls.log")
-        let fake = "#!/bin/sh\ncat >> '\(log.path)'\n"
-        try Data(fake.utf8).write(to: dir.appendingPathComponent("security"))
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.appendingPathComponent("security").path)
-        let path = dir.path + ":/usr/bin:/bin"
+        let tool = try Self.writeTool("#!/bin/sh\ncat >> '\(log.path)'\n", in: dir, as: Self.keychainToolName)
+        let env = ["STRIPLE_SECURITY": tool.path]
         func lines() -> Int { ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").count }
 
-        #expect(try Self.shell(#"striple_security_secret "x$(printf 'y%.0s' $(seq 1 3998))""#, path: path).status == 0)
+        #expect(try Self.shell(#"striple_security_secret "x$(printf 'y%.0s' $(seq 1 3998))""#, env: env).status == 0)
         #expect(lines() == 1)
         for refused in [#""x$(printf 'y%.0s' $(seq 1 3999))""#,     // 4000 bytes
                         #""$(printf '\303\251%.0s' $(seq 1 2000))""#, // 2000 characters, 4000 bytes
                         #"$'a\nb'"#, #"$'a\rb'"#] {
-            let r = try Self.shell("striple_security_secret \(refused)", path: path)
+            let r = try Self.shell("striple_security_secret \(refused)", env: env)
             #expect(r.status == 2, "\(refused)")
             #expect(r.err.contains("striple: a security command must be"), "\(r.err)")
         }

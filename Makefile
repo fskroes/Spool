@@ -8,9 +8,9 @@ SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -X
 build:
 	swift build
 
-# SigningScriptTests run scripts/make-signing-cert.sh against a fake `security`. On a managed Mac the
-# endpoint security tool can report that as keychain access. The suite is opt-in (STRIPLE_SIGNING_TESTS=1),
-# so `make test` and a plain `swift test` do not run it.
+# SigningScriptTests run scripts/make-signing-cert.sh against a fake keychain tool (fake-keychain-tool, set
+# with STRIPLE_SECURITY). On a managed Mac the endpoint security tool can still report its keychain-like
+# arguments. The suite is opt-in (STRIPLE_SIGNING_TESTS=1), so `make test` and a plain `swift test` do not run it.
 test:
 	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
 

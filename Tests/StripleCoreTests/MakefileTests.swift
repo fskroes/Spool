@@ -20,7 +20,7 @@ import Testing
         return (p.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
-    // On a managed Mac the endpoint security tool reports the fake `security` calls of SigningScriptTests.
+    // On a managed Mac the endpoint security tool can report the keychain-like calls of SigningScriptTests.
     @Test func makeTestSkipsTheSigningTestsAndMakeTestSigningRunsOnlyThem() throws {
         func plan(_ target: String) throws -> String {
             let p = Process()

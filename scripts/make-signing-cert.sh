@@ -102,7 +102,7 @@ p12_has_key() {
 
 sha1_of_cert() { "$OPENSSL" x509 -in "$1" -noout -fingerprint -sha1 | sed -e 's/.*=//' -e 's/://g' | tr 'a-f' 'A-F'; }
 
-for tool in "$OPENSSL" security codesign; do
+for tool in "$OPENSSL" "$STRIPLE_SECURITY" "$STRIPLE_CODESIGN"; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 
@@ -165,10 +165,10 @@ Nothing was deleted."
     fi
     striple_signing_remove_from_search_list
     if [[ -f "$STRIPLE_SIGNING_KEYCHAIN" ]]; then
-        security delete-keychain "$STRIPLE_SIGNING_KEYCHAIN"
+        "$STRIPLE_SECURITY" delete-keychain "$STRIPLE_SIGNING_KEYCHAIN"
         say "Deleted $STRIPLE_SIGNING_KEYCHAIN"
     fi
-    security delete-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" >/dev/null 2>&1 \
+    "$STRIPLE_SECURITY" delete-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" >/dev/null 2>&1 \
         && say "Deleted the password item \"$STRIPLE_SIGNING_PASSWORD_ITEM\" from the login keychain"
     say "Done. The next 'make app' signs ad hoc."
     exit 0
@@ -185,9 +185,9 @@ chmod 700 "$WORK"
 # Signs a test file with HASH and checks that the designated requirement names that certificate.
 verify_identity() {
     cp /usr/bin/true "$WORK/probe"
-    codesign --force --sign "$1" --identifier com.fskroes.Striple.probe "$WORK/probe" 2>/dev/null \
+    "$STRIPLE_CODESIGN" --force --sign "$1" --identifier com.fskroes.Striple.probe "$WORK/probe" 2>/dev/null \
         || die "codesign could not sign with the identity $1"
-    [[ "$(codesign -d -r - "$WORK/probe" 2>&1)" == *"certificate leaf = H\"$(tr 'A-F' 'a-f' <<<"$1")\""* ]] \
+    [[ "$("$STRIPLE_CODESIGN" -d -r - "$WORK/probe" 2>&1)" == *"certificate leaf = H\"$(tr 'A-F' 'a-f' <<<"$1")\""* ]] \
         || die "the designated requirement does not name the certificate $1"
 }
 
@@ -305,7 +305,7 @@ Q_NOTE=$(striple_security_quote "Unlocks $STRIPLE_SIGNING_KEYCHAIN for Striple b
 Q_P12=$(striple_security_quote "$WORK/identity.p12")
 Q_P12_PASS=$(striple_security_quote "$P12_PASS")
 striple_security_secret "create-keychain -p $KC_PASS $KC"
-security set-keychain-settings "$STRIPLE_SIGNING_KEYCHAIN"
+"$STRIPLE_SECURITY" set-keychain-settings "$STRIPLE_SIGNING_KEYCHAIN"
 striple_security_secret "unlock-keychain -p $KC_PASS $KC"
 striple_security_secret "add-generic-password -U -s $Q_ITEM -a $Q_USER -w $KC_PASS -T /usr/bin/security -j $Q_NOTE"
 
