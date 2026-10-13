@@ -163,6 +163,31 @@ import Testing
         #expect(Set(budgetLines.map { $0.range(of: "limit")!.lowerBound.utf16Offset(in: $0) }).count == 1)
     }
 
+    @Test func emptySectionsSayNoneOnce() {
+        let text = MetricsReport.make(days: [DayMetrics(day: "2026-10-13")]).renderText()
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for heading in ["Commands: none", "Friction: none", "Slowest apps (AX write ms): none"] {
+            let i = lines.firstIndex(of: heading)
+            #expect(i != nil)
+            if let i { #expect(lines[i + 1] == "", "\(heading) is followed by \(lines[i + 1])") }
+        }
+    }
+
+    @Test func makeSortsTheDaysFirst() {
+        func day(_ key: String, _ ticks: Int) -> DayMetrics {
+            var d = DayMetrics(day: key)
+            d.ticks = ticks
+            return d
+        }
+        let sorted = [day("2026-10-12", 1), day("2026-10-13", 2), day("2026-10-14", 3)]
+        let shuffled = [sorted[2], sorted[0], sorted[1]]
+        let report = MetricsReport.make(days: shuffled)
+        #expect(report.firstDay == "2026-10-12")
+        #expect(report.lastDay == "2026-10-14")
+        #expect(report.total.day == "2026-10-14")
+        #expect(report == MetricsReport.make(days: sorted))
+    }
+
     @Test func renderTextWithoutDataSaysSo() {
         let text = MetricsReport.make(days: []).renderText()
         #expect(text.hasPrefix("Striple metrics: no data yet\n"))
@@ -246,6 +271,55 @@ import Testing
         #expect(MetricsMark.logTail(log, now: now, window: 0.5) == ["2026-10-13T09:59:59.999Z last before now"])
         #expect(MetricsMark.logTail("", now: now).isEmpty)
         #expect(MetricsMark.logTail("2026-10-13T11:59:59.000+02:00 local offset\r\nnext\r\n", now: now) == ["2026-10-13T11:59:59.000+02:00 local offset", "next"])
+    }
+
+    @Test func logTailReadsTimesWithoutFractionsAndEveryLineEnd() {
+        let now = ISO8601DateFormatter.fractional.date(from: "2026-10-13T10:00:00.000Z")!
+        let log = "2026-10-13T09:58:00Z too old\r\nold detail\n2026-10-13T09:59:10Z whole seconds\r\n  detail\r"
+            + "2026-10-13T09:59:20.500Z fraction\rmore\n"
+        #expect(MetricsMark.logTail(log, now: now) == [
+            "2026-10-13T09:59:10Z whole seconds",
+            "  detail",
+            "2026-10-13T09:59:20.500Z fraction",
+            "more",
+        ])
+    }
+
+    @Test func writeKeepsNaNAndInfinityAsText() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let marks = dir.appendingPathComponent("marks", isDirectory: true)
+        let stats = EngineStats(uptimeSeconds: .nan, frameWriteP95: .infinity, commandLatencyP50: -.infinity)
+        var day = DayMetrics(day: "2026-10-13")
+        day.cpuSeconds = .nan
+        let folder = try MetricsMark.write(note: "nan", state: state(), stats: stats, day: day, logLines: ["a"],
+                                           marksDirectory: marks, now: F.date(2026, 10, 13, 9), calendar: F.calendar())
+        let names = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path))
+        #expect(names == ["note.txt", "state.json", "stats.json", "day.json", "engine.log"])
+        let text = try String(contentsOf: folder.appendingPathComponent("stats.json"), encoding: .utf8)
+        #expect(text.contains(#""uptimeSeconds" : "nan""#))
+        #expect(text.contains(#""frameWriteP95" : "inf""#))
+        #expect(text.contains(#""commandLatencyP50" : "-inf""#))
+        // The day file reads back leniently: the text value becomes 0.
+        let saved = try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: folder.appendingPathComponent("day.json")))
+        #expect(saved.cpuSeconds == 0)
+    }
+
+    @Test func aFailedWriteRemovesOnlyItsNewFolder() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let fm = FileManager.default
+        let marks = dir.appendingPathComponent("marks", isDirectory: true)
+        let older = marks.appendingPathComponent("2026-10-13T09-00-00", isDirectory: true)
+        try fm.createDirectory(at: older, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: older.appendingPathComponent("note.txt"))
+        // The second file cannot be written: its folder does not exist.
+        let files: [(name: String, data: Data)] = [("note.txt", Data("x".utf8)), ("missing/engine.log", Data())]
+        #expect(throws: (any Error).self) {
+            _ = try MetricsMark.writeFolder(files, marksDirectory: marks, name: "2026-10-13T09-00-00")
+        }
+        #expect(try fm.contentsOfDirectory(atPath: marks.path) == ["2026-10-13T09-00-00"])
+        #expect(try String(contentsOf: older.appendingPathComponent("note.txt"), encoding: .utf8) == "keep")
     }
 
     @Test func writeSavesEveryFileInAUniqueFolder() throws {

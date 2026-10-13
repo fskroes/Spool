@@ -31,6 +31,18 @@ import Testing
         #expect(MetricsStore.dayKey(F.date(2026, 10, 13), calendar: arabic) == "2026-10-13")
     }
 
+    @Test func indexNamesComeFromTablesAndOtherNumbersStillWork() {
+        #expect(MetricsStore.focusIndexNames == (1...9).map { "focus-index-\($0)" })
+        #expect(MetricsStore.moveToIndexNames == (1...9).map { "move-to-index-\($0)" })
+        for n in 1...9 {
+            #expect(MetricsStore.metricName(for: .focusIndex(n)) == Command.focusIndex(n).name)
+            #expect(MetricsStore.metricName(for: .moveToIndex(n)) == Command.moveToIndex(n).name)
+        }
+        #expect(MetricsStore.metricName(for: .focusIndex(0)) == "focus-index-0")
+        #expect(MetricsStore.metricName(for: .focusIndex(12)) == "focus-index-12")
+        #expect(MetricsStore.metricName(for: .moveToIndex(-1)) == "move-to-index--1")
+    }
+
     // MARK: Thread safety and onFirstChange
 
     @Test func eightThreadsLoseNoCount() throws {
@@ -111,6 +123,69 @@ import Testing
         store.record(.swipe)
         #expect(seen.value == 1)
         #expect(store.snapshot().events["fling"] == 1)
+    }
+
+    @Test func settingTheCallbackWithUnsavedChangesCallsItAtOnce() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let clock = F.Clock(F.date(2026, 10, 13, 12))
+        F.store(dir, clock: clock).markRunning()
+        // The app calls markRunning() before the engine sets the callback.
+        let store = F.store(dir, clock: clock)
+        #expect(store.markRunning())
+        let calls = F.Counter()
+        // The callback reads the store: this would hang if the setter called it under the lock.
+        store.onFirstChange = { [unowned store] in
+            if store.hasUnsavedChanges { calls.increment() }
+        }
+        #expect(calls.value == 1)
+        store.record(.swipe)
+        #expect(calls.value == 1)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-13").events["unclean.exit"] == 1)
+        // Saved: setting it again does not call it.
+        store.onFirstChange = { calls.increment() }
+        #expect(calls.value == 1)
+        // Disabled: a flush is not useful, so it is not called.
+        store.record(.swipe)
+        #expect(calls.value == 2)
+        store.isEnabled = false
+        store.onFirstChange = { calls.increment() }
+        #expect(calls.value == 2)
+        store.onFirstChange = nil
+        store.isEnabled = true
+        #expect(calls.value == 2)
+    }
+
+    @Test func aStoreLoadsHugeCountsAndKeepsRecording() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let max = Int.max
+        let counts = (0...Histogram.bounds.count).map { $0 == 5 ? String(max) : "0" }.joined(separator: ", ")
+        let json = """
+        {"day": "2026-10-13", "ticks": \(max), "slowTicks": \(max), "wakeups": \(max), "events": {"swipe": \(max)},
+         "commands": {"wider": {"menu": \(max)}}, "columnsPerStrip": {"1": \(max)},
+         "frameWrite": {"counts": [\(counts)], "sum": 1, "max": 1},
+         "apps": {"com.example.a": {"axErrors": \(max), "friction": {"user.drag": \(max)}}}}
+        """
+        try Data(json.utf8).write(to: dir.appendingPathComponent("2026-10-13.json"))
+        let store = F.store(dir, clock: F.Clock(F.date(2026, 10, 13, 12)))
+        store.record(.swipe, count: 5)
+        store.record(command: .wider, source: .menu)
+        store.recordTick(intervalMs: 100, periodMs: 16.7)
+        store.recordColumns(1)
+        store.record(.userDrag, bundleID: "com.example.a")
+        store.recordAXWrite(bundleID: "com.example.a", ms: 1, failed: true)
+        store.recordCost(cpuSeconds: 0, wakeups: 5, rssMB: 0)
+        store.recordFrameWrite(ms: 1)
+        let d = store.snapshot()
+        #expect(d.events["swipe"] == max && d.commands["wider"]?["menu"] == max)
+        #expect(d.ticks == max && d.slowTicks == max && d.wakeups == max && d.columnsPerStrip["1"] == max)
+        #expect(d.apps["com.example.a"]?.axErrors == max && d.apps["com.example.a"]?.friction["user.drag"] == max)
+        #expect(d.frameWrite.count == max)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-13") == d)
     }
 
     @Test func recordsThatChangeNothingKeepTheStoreSaved() {
@@ -318,6 +393,22 @@ import Testing
         #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 8 * perThread)
     }
 
+    @Test func twoConcurrentFlushesWriteEveryCountOnce() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let store = F.store(dir, clock: F.Clock(F.date(2026, 10, 13, 12)))
+        let failures = F.Counter()
+        for _ in 0..<20 {
+            for _ in 0..<50 { store.record(.swipe) }
+            DispatchQueue.concurrentPerform(iterations: 2) { _ in
+                do { try store.flush() } catch { failures.increment() }
+            }
+            #expect(!store.hasUnsavedChanges)
+        }
+        #expect(failures.value == 0)
+        #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 1000)
+    }
+
     // MARK: Day rollover
 
     @Test func aRecordAfterLocalMidnightGoesToTheNewDayAndTheOldDayIsStillWritten() throws {
@@ -386,7 +477,7 @@ import Testing
         for day in 13...16 { #expect(try F.readDay(dir, "2026-10-\(day)").events["swipe"] == day) }
     }
 
-    @Test func theClockGoingBackDoesNotRestartAWrittenDay() throws {
+    @Test func theClockGoingBackOverMidnightAddsToTheWrittenDay() throws {
         let dir = F.tempDirectory()
         defer { F.remove(dir) }
         let clock = F.Clock(F.date(2026, 10, 13, 23, 59, 50))
@@ -397,9 +488,63 @@ import Testing
         try store.flush()
         clock.now = F.date(2026, 10, 13, 23, 59, 58)
         store.record(.swipe)
+        #expect(store.snapshot().day == "2026-10-13")
         try store.flush()
-        #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 1)
-        #expect(try F.readDay(dir, "2026-10-14").events["swipe"] == 2)
+        // The file of the 13th was written before: the new record is added to it, it does not replace it.
+        #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 2)
+        #expect(try F.readDay(dir, "2026-10-14").events["swipe"] == 1)
+        // The day in memory has the file data now, so a second flush counts nothing twice.
+        store.record(.swipe)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 3)
+    }
+
+    @Test func aClockAWeekAheadIsCorrectedWithoutARestart() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let clock = F.Clock(F.date(2026, 10, 13, 9))
+        let store = F.store(dir, clock: clock)
+        store.record(.swipe, count: 2)
+        try store.flush()
+        // The clock jumps a week ahead, then NTP sets it back to the real time.
+        clock.now = F.date(2026, 10, 20, 9)
+        store.record(.fling)
+        clock.now = F.date(2026, 10, 13, 9, 5)
+        store.record(.swipe)
+        #expect(store.snapshot().day == "2026-10-13")
+        // Until its first write, the restarted day has only the new record; the write adds the file.
+        #expect(store.snapshot().events["swipe"] == 1)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-13").events["swipe"] == 3)
+        #expect(store.snapshot().events["swipe"] == 3)
+        #expect(try F.readDay(dir, "2026-10-20").events["fling"] == 1)
+        // A forward jump to a day whose file this run never read adds to that file.
+        clock.now = F.date(2026, 10, 20, 10)
+        store.record(.fling)
+        #expect(store.snapshot().events["fling"] == 1)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-20").events["fling"] == 2)
+        #expect(store.snapshot().events["fling"] == 2)
+    }
+
+    @Test func aJumpToADayWithANewerSchemaFileUsesTheSidecar() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("2026-10-12.json")
+        let newer = Data(#"{"schema": 2, "day": "2026-10-12"}"#.utf8)
+        try newer.write(to: file)
+        let clock = F.Clock(F.date(2026, 10, 13, 9))
+        let store = F.store(dir, clock: clock)
+        clock.now = F.date(2026, 10, 12, 9)
+        store.record(.swipe)
+        try store.flush()
+        #expect(try Data(contentsOf: file) == newer)
+        let sidecar = dir.appendingPathComponent("2026-10-12.local.json")
+        #expect(try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: sidecar)).events["swipe"] == 1)
+        store.record(.swipe)
+        try store.flush()
+        #expect(try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: sidecar)).events["swipe"] == 2)
     }
 
     // MARK: Loading at init
@@ -422,28 +567,53 @@ import Testing
         #expect(day.appVersions == ["1.0", "1.1"])
     }
 
-    @Test func aNewerSchemaFileOfTodayIsNeverOverwritten() throws {
+    @Test func aNewerSchemaFileOfTodayIsNeverOverwrittenAndTheRecordsGoToTheSidecar() throws {
         let dir = F.tempDirectory()
         defer { F.remove(dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("2026-10-13.json")
+        let sidecar = dir.appendingPathComponent("2026-10-13.local.json")
         let newer = Data(#"{"schema": 2, "day": "2026-10-13", "newField": [1, 2, 3]}"#.utf8)
         try newer.write(to: file)
         let clock = F.Clock(F.date(2026, 10, 13, 12))
         let store = F.store(dir, clock: clock)
+        let calls = F.Counter()
+        store.onFirstChange = { calls.increment() }
         store.record(.swipe)
         #expect(store.snapshot().events["swipe"] == 1)
         try store.flush()
         #expect(try Data(contentsOf: file) == newer)
+        #expect(!store.hasUnsavedChanges)
+        let saved = try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: sidecar))
+        #expect(saved.schema == 1 && saved.events["swipe"] == 1)
+        // Saved, so the next flush (the engine flushes every 60 s) does not ask again.
+        try store.flush()
+        #expect(calls.value == 1)
+
+        // A restart continues the sidecar, and still never touches the newer file.
+        let again = F.store(dir, clock: clock)
+        #expect(again.snapshot().events["swipe"] == 1)
+        again.record(.swipe)
+        try again.flush()
+        #expect(try Data(contentsOf: file) == newer)
+        #expect(try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: sidecar)).events["swipe"] == 2)
+
+        // The report reads the sidecar and names the newer file as skipped.
+        let loaded = MetricsStore.load(directory: dir, days: 1, calendar: cal, now: clock.now)
+        #expect(loaded.days.map(\.day) == ["2026-10-13"])
+        #expect(loaded.days.first?.events["swipe"] == 2)
+        #expect(loaded.skipped == ["2026-10-13.json"])
+
         // The next day is saved as usual.
         clock.now = F.date(2026, 10, 14, 8)
-        store.record(.swipe)
-        try store.flush()
+        again.record(.swipe)
+        try again.flush()
         #expect(try Data(contentsOf: file) == newer)
         #expect(try F.readDay(dir, "2026-10-14").events["swipe"] == 1)
+        #expect(!F.exists(dir.appendingPathComponent("2026-10-14.local.json")))
     }
 
-    @Test func anUnreadableFileOfTodayIsNeverOverwritten() throws {
+    @Test func anUnreadableFileOfTodayIsNeverOverwrittenAndTheRecordsGoToTheSidecar() throws {
         let dir = F.tempDirectory()
         defer { F.remove(dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -452,7 +622,27 @@ import Testing
         let store = F.store(dir, clock: F.Clock(F.date(2026, 10, 13, 12)))
         store.record(.swipe)
         try store.flush()
+        #expect(!store.hasUnsavedChanges)
         #expect(try String(contentsOf: file, encoding: .utf8) == "not json")
+        let saved = try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: dir.appendingPathComponent("2026-10-13.local.json")))
+        #expect(saved.events["swipe"] == 1)
+    }
+
+    @Test func loadAddsTheSidecarToTheDayFile() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func write(_ name: String, _ json: String) throws { try Data(json.utf8).write(to: dir.appendingPathComponent(name)) }
+        try write("2026-10-12.json", #"{"ticks": 3, "appVersions": ["2.0"], "events": {"swipe": 1}}"#)
+        try write("2026-10-12.local.json", #"{"ticks": 4, "appVersions": ["1.0"], "events": {"swipe": 2}}"#)
+        try write("2026-10-13.local.json", #"{"ticks": 5}"#)
+        try write("2026-10-11.local.json", "{broken")
+        let r = MetricsStore.load(directory: dir, days: 7, calendar: cal, now: F.date(2026, 10, 13, 9))
+        #expect(r.days.map(\.day) == ["2026-10-12", "2026-10-13"])
+        #expect(r.days.map(\.ticks) == [7, 5])
+        #expect(r.days.first?.events["swipe"] == 3)
+        #expect(r.days.first?.appVersions == ["1.0", "2.0"])
+        #expect(r.skipped == ["2026-10-11.local.json"])
     }
 
     // MARK: Prune and load
@@ -479,11 +669,54 @@ import Testing
         #expect(F.exists(dir.appendingPathComponent("marks/\(key(400))T10-00-00")))
     }
 
+    @Test func pruneKeepsExactlyTheRetentionAndEveryDecoy() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let fm = FileManager.default
+        let today = F.date(2026, 10, 13, 12)
+        func key(_ back: Int) -> String { MetricsStore.dayKey(cal.date(byAdding: .day, value: -back, to: today)!, calendar: cal) }
+        try fm.createDirectory(at: dir.appendingPathComponent("marks"), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("marks/2020-01-01.json"))
+        let decoys = ["running", "notes.json", "2026-01-01.json.bak"]
+        let days = (0...6).map { "\(key($0)).json" } + ["\(key(1)).local.json", "\(key(5)).local.json"]
+        for name in decoys + days { try Data("{}".utf8).write(to: dir.appendingPathComponent(name)) }
+
+        F.store(dir, clock: F.Clock(today), retention: 3).prune()
+        let left = Set(try fm.contentsOfDirectory(atPath: dir.path))
+        let keptDays = ["\(key(0)).json", "\(key(1)).json", "\(key(2)).json", "\(key(1)).local.json"]
+        #expect(left == Set(decoys + keptDays + ["marks"]))
+        #expect(F.exists(dir.appendingPathComponent("marks/2020-01-01.json")))
+    }
+
+    @Test func pruneDeletesNothingWhenTheClockIsFarAhead() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let names = ["2026-10-10.json", "2026-10-11.json", "2026-10-12.json", "2026-10-13.json"]
+        for name in names { try Data("{}".utf8).write(to: dir.appendingPathComponent(name)) }
+        func left() throws -> Set<String> { Set(try FileManager.default.contentsOfDirectory(atPath: dir.path)) }
+
+        // The clock is months ahead: the flush writes the future day, but prune deletes nothing.
+        let ahead = F.Clock(F.date(2027, 6, 1, 9))
+        let store = F.store(dir, clock: ahead, retention: 3)
+        store.record(.swipe)
+        try store.flush()
+        store.prune()
+        #expect(try left() == Set(names + ["2027-06-01.json"]))
+        // Three days after the newest earlier file: still nothing.
+        F.store(dir, clock: F.Clock(F.date(2026, 10, 16, 9)), retention: 3).prune()
+        #expect(try left() == Set(names + ["2027-06-01.json"]))
+        // Two days after it: the clock is trusted and the old files go.
+        F.store(dir, clock: F.Clock(F.date(2026, 10, 15, 9)), retention: 3).prune()
+        #expect(try left() == ["2026-10-13.json", "2027-06-01.json"])
+    }
+
     @Test func flushPrunesAfterAWrite() throws {
         let dir = F.tempDirectory()
         defer { F.remove(dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: dir.appendingPathComponent("2026-10-01.json"))
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("2026-10-12.json"))
         let store = F.store(dir, clock: F.Clock(F.date(2026, 10, 13, 12)), retention: 3)
         try store.flush()
         #expect(F.exists(dir.appendingPathComponent("2026-10-01.json")))

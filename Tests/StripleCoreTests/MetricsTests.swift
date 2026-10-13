@@ -53,7 +53,7 @@ enum MetricsFixtures {
     }
 }
 
-@Suite struct HistogramTests {
+@Suite struct MetricsHistogramTests {
     @Test func emptyHistogramGivesZero() {
         let h = Histogram()
         #expect(h.counts.count == Histogram.bounds.count + 1)
@@ -134,6 +134,38 @@ enum MetricsFixtures {
         var empty = Histogram()
         empty.merge(Histogram())
         #expect(empty == Histogram())
+    }
+
+    @Test func countAboveIsZeroAtOrAboveMax() {
+        var h = Histogram()
+        h.add(0.3)
+        // 0.3 is in the bucket with bound 0.5, which is above 0.4, but no sample is above 0.4.
+        #expect(h.count(above: 0.4) == 0)
+        #expect(h.count(above: 0.3) == 0)
+        #expect(h.count(above: 0.25) == 1)
+        #expect(Histogram().count(above: 0) == 0)
+    }
+
+    @Test func hugeCountsSaturateInsteadOfTrapping() {
+        var counts = Array(repeating: 0, count: Histogram.bounds.count + 1)
+        counts[3] = Int.max
+        counts[10] = Int.max
+        var h = Histogram(checking: counts, sum: 1, max: 9)
+        #expect(h.count == Int.max)
+        h.merge(h)
+        h.add(1)
+        #expect(h.count == Int.max)
+        #expect(h.counts[3] == Int.max)
+        #expect(h.percentile(50) == 0.5)
+        #expect(h.percentile(100) <= 9)
+        #expect(h.count(above: 0.5) == Int.max)
+        var big = Histogram()
+        big.add(.greatestFiniteMagnitude)
+        big.merge(big)
+        #expect(big.sum.isFinite)
+        #expect(big.count == 2)
+        // A counts array of the wrong length gives an empty histogram.
+        #expect(Histogram(checking: [Int.max, 1, 2], sum: 5, max: 1) == Histogram())
     }
 
     @Test func meanAndCountAbove() {
@@ -236,6 +268,45 @@ enum MetricsFixtures {
         #expect(d.frameWrite.count == 3)
     }
 
+    @Test func aDamagedFileWithHugeCountsLoadsMergesAndReportsWithoutATrap() throws {
+        let max = Int.max
+        let counts = (0...Histogram.bounds.count).map { $0 == 4 ? String(max) : "0" }.joined(separator: ", ")
+        let json = """
+        {"day": "2026-10-13", "ticks": \(max), "slowTicks": \(max), "wakeups": \(max), "activeSeconds": 1e300,
+         "cpuSeconds": 1e300, "events": {"swipe": \(max), "unclean.exit": \(max), "fling": -5},
+         "commands": {"wider": {"menu": \(max), "cli": \(max), "url": -1}}, "columnsPerStrip": {"1": \(max), "2": -3},
+         "frameWrite": {"counts": [\(counts)], "sum": 1e308, "max": 3},
+         "commandLatency": {"counts": [1, 2, 3], "sum": 6, "max": 3},
+         "apps": {"com.example.a": {"axErrors": \(max), "friction": {"user.drag": \(max), "user.resize": -2},
+                                    "axWrite": {"counts": [\(counts)], "sum": 2, "max": 1}}}}
+        """
+        let day = try JSONDecoder().decode(DayMetrics.self, from: Data(json.utf8))
+        #expect(day.events == ["swipe": max, "unclean.exit": max, "fling": 0])
+        #expect(day.commands["wider"] == ["menu": max, "cli": max, "url": 0])
+        #expect(day.columnsPerStrip == ["1": max, "2": 0])
+        #expect(day.apps["com.example.a"]?.friction == ["user.drag": max, "user.resize": 0])
+        #expect(day.frameWrite.count == max)
+        #expect(day.commandLatency == Histogram())
+
+        var total = day
+        total.merge(day)
+        total.merge(day)
+        #expect(total.ticks == max && total.slowTicks == max && total.wakeups == max)
+        #expect(total.events["swipe"] == max)
+        #expect(total.commands["wider"]?["menu"] == max)
+        #expect(total.columnsPerStrip["1"] == max)
+        #expect(total.apps["com.example.a"]?.axErrors == max)
+        #expect(total.apps["com.example.a"]?.friction["user.drag"] == max)
+        #expect(total.frameWrite.count == max && total.frameWrite.sum.isFinite)
+        #expect(total.activeSeconds.isFinite && total.cpuSeconds.isFinite)
+
+        let report = MetricsReport.make(days: [day, day])
+        #expect(report.commands.first?.total == max)
+        #expect(report.budgets.first { $0.budget.name == "unclean-exits" }?.pass == false)
+        let text = report.renderText()
+        #expect(text.contains("unclean-exits") && text.contains("FAIL"))
+    }
+
     @Test func aNewerSchemaThrows() {
         let json = #"{"schema": 2, "day": "2026-10-13"}"#
         #expect(throws: MetricsError.newerSchema(2)) {
@@ -256,7 +327,8 @@ enum MetricsFixtures {
     let cal = F.calendar()
 
     func make(_ now: Date) -> MetricsAccumulator {
-        MetricsAccumulator(day: DayMetrics(day: MetricsStore.dayKey(now, calendar: cal)), appVersion: "1.0", calendar: cal, now: now)
+        MetricsAccumulator(DayEntry(DayMetrics(day: MetricsStore.dayKey(now, calendar: cal)), includesDisk: true),
+                           appVersion: "1.0", calendar: cal, now: now)
     }
 
     @Test func theFirstChangeReportsTheSavedToUnsavedStep() {
@@ -282,7 +354,7 @@ enum MetricsFixtures {
         #expect(a.current.appVersions == ["1.0"])
         let batch = a.takeFlushBatch(now: F.date(2026, 10, 16, 9))
         #expect(batch.map(\.day) == ["2026-10-13", "2026-10-14", "2026-10-16"])
-        #expect(batch.map { $0.events["swipe"] ?? 0 } == [1, 2, 0])
+        #expect(batch.map { $0.metrics.events["swipe"] ?? 0 } == [1, 2, 0])
         #expect(!a.needsFlush)
     }
 
@@ -294,13 +366,30 @@ enum MetricsFixtures {
         #expect(batch.map(\.day) == ["2026-10-14"])
     }
 
-    @Test func theDayNeverMovesBack() {
+    @Test func theDayFollowsTheClockBackAndForward() {
         var a = make(F.date(2026, 10, 14, 0, 0, 5))
         _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 14, 0, 0, 5))
+        // The clock goes back over midnight: records go to the older day, the newer day waits in pending.
         _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 13, 23, 59, 58))
+        #expect(a.current.day == "2026-10-13")
+        #expect(a.current.events["swipe"] == 1)
+        #expect(a.current.appVersions == ["1.0"])
+        #expect(!a.entry.includesDisk)
+        #expect(a.pending.map(\.day) == ["2026-10-14"])
+        // Forward again: the day in pending becomes current again, with its records.
+        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 14, 0, 1))
         #expect(a.current.day == "2026-10-14")
         #expect(a.current.events["swipe"] == 2)
-        #expect(a.pending.isEmpty)
+        #expect(a.entry.includesDisk)
+        #expect(a.pending.map(\.day) == ["2026-10-13"])
+        // A jump of a week forward, then back.
+        _ = a.record(.fling, count: 1, now: F.date(2026, 10, 21, 9))
+        _ = a.record(.fling, count: 1, now: F.date(2026, 10, 14, 9))
+        #expect(a.current.day == "2026-10-14")
+        #expect(a.pending.map(\.day) == ["2026-10-13", "2026-10-21"])
+        let batch = a.takeFlushBatch(now: F.date(2026, 10, 14, 9))
+        #expect(batch.map(\.day) == ["2026-10-13", "2026-10-14", "2026-10-21"])
+        #expect(batch.map(\.includesDisk) == [false, true, false])
     }
 
     @Test func aFailedWriteIsPutBackWithoutLosingNewerData() {
@@ -321,7 +410,7 @@ enum MetricsFixtures {
         let unsavedStep2 = a.restore(batch2)
         #expect(!unsavedStep2)
         #expect(a.pending.map(\.day) == ["2026-10-13"])
-        #expect(a.pending.first?.events["swipe"] == 2)
+        #expect(a.pending.first?.metrics.events["swipe"] == 2)
     }
 
     @Test func restoreAfterACleanBatchReportsTheUnsavedStep() {
@@ -333,16 +422,57 @@ enum MetricsFixtures {
         #expect(a.needsFlush)
     }
 
-    @Test func protectedDaysAreNeverInABatch() {
+    @Test func aSidecarDayIsStillInTheBatch() {
         let t = F.date(2026, 10, 13)
-        var a = MetricsAccumulator(day: DayMetrics(day: "2026-10-13"), appVersion: "1.0", calendar: cal,
-                                   protectedDays: ["2026-10-13"], now: t)
+        var a = MetricsAccumulator(DayEntry(DayMetrics(day: "2026-10-13"), includesDisk: true, sidecar: true),
+                                   appVersion: "1.0", calendar: cal, now: t)
         _ = a.record(.swipe, count: 1, now: t)
         let batch = a.takeFlushBatch(now: t)
-        #expect(batch.isEmpty)
+        #expect(batch.map(\.day) == ["2026-10-13"])
+        #expect(batch.first?.sidecar == true)
         #expect(!a.needsFlush)
-        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 14))
-        let next = a.takeFlushBatch(now: F.date(2026, 10, 14))
-        #expect(next.map(\.day) == ["2026-10-14"])
+    }
+
+    @Test func absorbAddsTheDiskDataOnceToTheDaysInMemory() {
+        var a = make(F.date(2026, 10, 13))
+        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 20))
+        let batch = a.takeFlushBatch(now: F.date(2026, 10, 20))
+        #expect(batch.map(\.includesDisk) == [false])
+        // A record arrives while the flush reads and writes the file.
+        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 20, 13))
+        var saved = DayMetrics(day: "2026-10-20")
+        saved.events = ["swipe": 5]
+        saved.appVersions = ["0.9"]
+        let disk = DiskDay(day: "2026-10-20", sidecar: true, metrics: saved)
+        a.absorb([(batch[0].serial, disk)])
+        a.absorb([(batch[0].serial, disk)])
+        #expect(a.current.events["swipe"] == 7)
+        #expect(a.current.appVersions == ["0.9", "1.0"])
+        #expect(a.entry.includesDisk && a.entry.sidecar)
+    }
+
+    @Test func aDayStartedAgainDuringAFlushGetsNoStaleDiskDataAndKeepsAFailedBatch() {
+        var a = make(F.date(2026, 10, 13, 10))
+        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 14, 10))
+        let batch = a.takeFlushBatch(now: F.date(2026, 10, 14, 10))
+        // During the write the clock leaves the 14th (clean, so dropped) and comes back: a new entry starts.
+        _ = a.record(.fling, count: 1, now: F.date(2026, 10, 15, 10))
+        _ = a.record(.swipe, count: 1, now: F.date(2026, 10, 14, 11))
+        #expect(a.entry.serial != batch[0].serial)
+        var saved = DayMetrics(day: "2026-10-14")
+        saved.events = ["swipe": 5]
+        let disk = DiskDay(day: "2026-10-14", sidecar: false, metrics: saved)
+        // The file read was from before the write. The new entry must read the file again, not get this copy.
+        a.absorb([(batch[0].serial, disk)])
+        #expect(a.current.events["swipe"] == 1)
+        #expect(!a.entry.includesDisk)
+        // The write failed: the batch (with the file data) is added to the new entry, so nothing is lost.
+        var unwritten = batch
+        unwritten[0].absorb(disk)
+        let step = a.restore(unwritten)
+        #expect(!step)
+        #expect(a.current.events["swipe"] == 7)
+        #expect(a.entry.includesDisk)
+        #expect(a.pending.map(\.day) == ["2026-10-15"])
     }
 }

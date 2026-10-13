@@ -8,6 +8,13 @@ import Foundation
 // - No window titles, no key presses, no text the user typed. App bundle IDs are allowed.
 // - Pure Foundation. No AppKit, no AX, no process start. The store writes plain JSON files only.
 // - Recording is cheap: one lock and a few integer or array updates. It never touches the disk.
+// - A damaged file never crashes the app: counters saturate at Int.max and decoding clamps bad values.
+//
+// Files in the metrics directory:
+// - `<day>.json`: one local day, written by `MetricsStore.flush()`.
+// - `<day>.local.json`: a sidecar. When `<day>.json` was written by a newer build or cannot be read, the store
+//   never replaces it and writes the records of that day here. `MetricsStore.load` adds the two files together.
+// - `running`: the marker of `markRunning()`. `marks/`: the bundles of `MetricsMark`.
 
 /// Where a command came from.
 public enum CommandSource: String, Codable, CaseIterable, Sendable {
@@ -82,9 +89,9 @@ public struct Histogram: Codable, Equatable, Sendable {
 
     public mutating func merge(_ other: Histogram) {
         // Decoded histograms are checked in `LenientHistogram`, so both arrays have the same size.
-        for i in 0..<Swift.min(counts.count, other.counts.count) { counts[i] += other.counts[i] }
-        count += other.count
-        sum += other.sum
+        for i in 0..<Swift.min(counts.count, other.counts.count) { counts[i] = counts[i].saturatingAdd(other.counts[i]) }
+        count = count.saturatingAdd(other.count)
+        sum = sum.saturatingAdd(other.sum)
         max = Swift.max(max, other.max)
     }
 
@@ -94,10 +101,12 @@ public struct Histogram: Codable, Equatable, Sendable {
         guard count > 0 else { return 0 }
         let q = p.isNaN ? 0 : Swift.min(Swift.max(p, 0), 100)
         // q * count / 100, not q / 100 * count: 95 * 20 / 100 is exactly 19, 0.95 * 20 is not.
-        let rank = Swift.max(1, Int((q * Double(count) / 100).rounded(.up)))
+        let exact = (q * Double(count) / 100).rounded(.up)
+        // Double(Int.max) is 2^63, one more than Int.max: Int(_:) of it traps.
+        let rank = exact >= Double(Int.max) ? Int.max : Swift.max(1, Int(exact))
         var seen = 0
         for (i, n) in counts.enumerated() {
-            seen += n
+            seen = seen.saturatingAdd(n)
             if seen >= rank {
                 return i < Histogram.bounds.count ? Swift.min(Histogram.bounds[i], max) : max
             }
@@ -107,10 +116,13 @@ public struct Histogram: Codable, Equatable, Sendable {
 
     public var mean: Double { count > 0 ? sum / Double(count) : 0 }
 
-    /// Samples above `ms`. Exact only when `ms` is one of `bounds`.
+    /// Samples above `ms`. Exact only when `ms` is one of `bounds`. 0 when `ms` is at or above `max`.
     public func count(above ms: Double) -> Int {
+        guard ms < max else { return 0 }
         var n = 0
-        for (i, c) in counts.enumerated() where i >= Histogram.bounds.count || Histogram.bounds[i] > ms { n += c }
+        for (i, c) in counts.enumerated() where i >= Histogram.bounds.count || Histogram.bounds[i] > ms {
+            n = n.saturatingAdd(c)
+        }
         return n
     }
 }
@@ -123,8 +135,9 @@ extension Histogram {
     @discardableResult
     mutating func insert(_ ms: Double) -> Bool {
         guard accepts(ms) else { return false }
-        counts[Histogram.bucket(for: ms)] += 1
-        count += 1
+        let i = Histogram.bucket(for: ms)
+        counts[i] = counts[i].saturatingAdd(1)
+        count = count.saturatingAdd(1)
         sum += ms
         if ms > max { max = ms }
         return true
@@ -146,7 +159,7 @@ extension Histogram {
     init(checking counts: [Int], sum: Double, max: Double) {
         self.init()
         guard counts.count == Histogram.bounds.count + 1, counts.allSatisfy({ $0 >= 0 }) else { return }
-        let total = counts.reduce(0, +)
+        let total = counts.reduce(0) { $0.saturatingAdd($1) }
         guard total > 0 else { return }
         self.counts = counts
         self.count = total
@@ -179,7 +192,7 @@ private struct LenientApp: Decodable {
         let c = try decoder.container(keyedBy: Keys.self)
         app.axWrite = c.value(.axWrite, LenientHistogram()).histogram
         app.axErrors = Swift.max(0, c.value(.axErrors, 0))
-        app.friction = c.value(.friction, [String: Int]())
+        app.friction = DayMetrics.counts(c.value(.friction, [String: Int]()))
     }
 }
 
@@ -195,8 +208,8 @@ public struct AppMetrics: Codable, Equatable, Sendable {
 
     public mutating func merge(_ other: AppMetrics) {
         axWrite.merge(other.axWrite)
-        axErrors += other.axErrors
-        friction.merge(other.friction, uniquingKeysWith: +)
+        axErrors = axErrors.saturatingAdd(other.axErrors)
+        friction.merge(other.friction) { $0.saturatingAdd($1) }
     }
 }
 
@@ -249,21 +262,21 @@ public struct DayMetrics: Codable, Equatable, Sendable {
     /// Adds `other` into this day. `day` stays; versions are unioned; peakRSSMB takes the max.
     public mutating func merge(_ other: DayMetrics) {
         appVersions = Set(appVersions).union(other.appVersions).sorted()
-        activeSeconds += other.activeSeconds
+        activeSeconds = activeSeconds.saturatingAdd(other.activeSeconds)
         frameWrite.merge(other.frameWrite)
         commandLatency.merge(other.commandLatency)
         commandSettle.merge(other.commandSettle)
         tickInterval.merge(other.tickInterval)
-        ticks += other.ticks
-        slowTicks += other.slowTicks
-        cpuSeconds += other.cpuSeconds
-        wakeups += other.wakeups
+        ticks = ticks.saturatingAdd(other.ticks)
+        slowTicks = slowTicks.saturatingAdd(other.slowTicks)
+        cpuSeconds = cpuSeconds.saturatingAdd(other.cpuSeconds)
+        wakeups = wakeups.saturatingAdd(other.wakeups)
         peakRSSMB = Swift.max(peakRSSMB, other.peakRSSMB)
-        events.merge(other.events, uniquingKeysWith: +)
+        events.merge(other.events) { $0.saturatingAdd($1) }
         for (name, bySource) in other.commands {
-            commands[name, default: [:]].merge(bySource, uniquingKeysWith: +)
+            commands[name, default: [:]].merge(bySource) { $0.saturatingAdd($1) }
         }
-        columnsPerStrip.merge(other.columnsPerStrip, uniquingKeysWith: +)
+        columnsPerStrip.merge(other.columnsPerStrip) { $0.saturatingAdd($1) }
         for (bundleID, app) in other.apps {
             apps[bundleID, default: AppMetrics()].merge(app)
         }
@@ -289,18 +302,87 @@ public struct DayMetrics: Codable, Equatable, Sendable {
         cpuSeconds = Self.amount(c.value(.cpuSeconds, 0.0))
         wakeups = Swift.max(0, c.value(.wakeups, 0))
         peakRSSMB = Self.amount(c.value(.peakRSSMB, 0.0))
-        events = c.value(.events, [String: Int]())
-        commands = c.value(.commands, [String: [String: Int]]())
-        columnsPerStrip = c.value(.columnsPerStrip, [String: Int]())
+        events = Self.counts(c.value(.events, [String: Int]()))
+        commands = c.value(.commands, [String: [String: Int]]()).mapValues(Self.counts)
+        columnsPerStrip = Self.counts(c.value(.columnsPerStrip, [String: Int]()))
         apps = c.value(.apps, [String: LenientApp]()).mapValues(\.app)
     }
 
     /// A finite, not negative amount, else 0.
     private static func amount(_ v: Double) -> Double { v.isFinite && v >= 0 ? v : 0 }
+
+    /// Counts from a file: a negative count becomes 0.
+    static func counts(_ values: [String: Int]) -> [String: Int] { values.mapValues { Swift.max(0, $0) } }
+}
+
+extension Int {
+    /// `self + other`, but Int.max or Int.min instead of a trap on overflow.
+    @inline(__always)
+    func saturatingAdd(_ other: Int) -> Int {
+        let (sum, overflow) = addingReportingOverflow(other)
+        return overflow ? (other > 0 ? .max : .min) : sum
+    }
+}
+
+extension Double {
+    /// `self + other`, but the largest finite value instead of infinity (JSON has no infinity).
+    func saturatingAdd(_ other: Double) -> Double {
+        let sum = self + other
+        if sum.isFinite || sum.isNaN { return sum }
+        return sum > 0 ? .greatestFiniteMagnitude : -.greatestFiniteMagnitude
+    }
 }
 
 public enum MetricsError: Error, Equatable {
     case newerSchema(Int)
+}
+
+/// One day in memory, and how it is saved.
+struct DayEntry: Equatable {
+    var metrics: DayMetrics
+    /// The data of the day file on disk is in `metrics` (or there is no file). When false, the store reads the
+    /// file at the first write of the day and adds it in, so a day that started again in memory never replaces
+    /// a file with more data.
+    var includesDisk: Bool
+    /// Saved to `<day>.local.json`, because `<day>.json` is from a newer build or cannot be read.
+    var sidecar: Bool
+    /// Tells this entry apart from a later entry of the same day (the clock can leave a day and come back).
+    /// A copy that a flush takes keeps the serial.
+    var serial: Int
+
+    var day: String { metrics.day }
+
+    init(_ metrics: DayMetrics, includesDisk: Bool = false, sidecar: Bool = false, serial: Int = 0) {
+        self.metrics = metrics
+        self.includesDisk = includesDisk
+        self.sidecar = sidecar
+        self.serial = serial
+    }
+
+    /// Adds what is on disk for this day and remembers where the day is saved.
+    mutating func absorb(_ disk: DiskDay) {
+        if let saved = disk.metrics { metrics.merge(saved) }
+        sidecar = disk.sidecar
+        includesDisk = true
+    }
+
+    /// Adds the records of `other`, another entry of the same day.
+    mutating func merge(_ other: DayEntry) {
+        metrics.merge(other.metrics)
+        if other.includesDisk, !includesDisk {
+            includesDisk = true
+            sidecar = other.sidecar
+        }
+    }
+}
+
+/// What is on disk for one day: the file this run writes to, and the data in it.
+struct DiskDay: Equatable {
+    var day: String
+    /// True when `<day>.json` must not be replaced: then the run writes `<day>.local.json`.
+    var sidecar: Bool
+    /// The data of the file the run writes to. Nil when there is no such file, or when a sidecar cannot be read.
+    var metrics: DayMetrics?
 }
 
 /// All the logic of `MetricsStore`, as a value without a clock, a lock or files.
@@ -333,48 +415,65 @@ struct MetricsAccumulator {
     /// Gregorian, in the time zone of the calendar the store got.
     let calendar: Calendar
     let appVersion: String
-    /// Days whose file this run must not replace (newer schema or unreadable at init).
-    let protectedDays: Set<String>
     /// The day that records go to.
-    private(set) var current: DayMetrics
-    /// Older days with changes that are not on disk yet, oldest first. Each day is here at most once.
-    private(set) var pending: [DayMetrics] = []
-    /// `current` has changes that are not on disk yet.
+    private(set) var entry: DayEntry
+    /// Other days with changes that are not on disk yet, sorted by day. Each day is here at most once,
+    /// and never the day of `entry`.
+    private(set) var pending: [DayEntry] = []
+    /// `entry` has changes that are not on disk yet.
     private(set) var currentDirty = false
-    /// Records with a time in [dayStart, dayEnd) go to `current` without a new day key. Seconds since 2001.
+    /// Records with a time in [dayStart, dayEnd) go to `entry` without a new day key. Seconds since 2001.
     private var dayStart: Double = 0
     private var dayEnd: Double = 0
     private var lastFocus: (direction: FocusDirection, at: Date)?
+    /// The serial of the next new entry. The first entry has serial 0.
+    private var nextSerial = 1
 
-    init(day: DayMetrics, appVersion: String, calendar: Calendar, protectedDays: Set<String> = [], now: Date) {
+    init(_ entry: DayEntry, appVersion: String, calendar: Calendar, now: Date) {
         self.calendar = MetricsStore.gregorian(calendar)
         self.appVersion = appVersion
-        self.protectedDays = protectedDays
-        current = day
-        if !appVersion.isEmpty, !current.appVersions.contains(appVersion) {
-            current.appVersions = Set(current.appVersions).union([appVersion]).sorted()
-        }
-        if MetricsStore.dayKey(now, calendar: self.calendar) == day.day { cacheDay(of: now) }
+        self.entry = entry
+        addVersion()
+        if MetricsStore.dayKey(now, calendar: self.calendar) == entry.day { cacheDay(of: now) }
     }
+
+    /// The day that records go to.
+    var current: DayMetrics { entry.metrics }
 
     /// There are changes that are not on disk yet.
     var needsFlush: Bool { currentDirty || !pending.isEmpty }
 
-    /// Starts a new day when `now` is on a later local day than `current`. The old day goes to `pending` when it
-    /// has unsaved changes. The day only moves forward: when the clock goes back (for example a clock correction
-    /// just after midnight), records stay on the newer day, so a day already written is never started again
-    /// from zero and overwritten.
+    /// Starts the day of `now` when it is not the day in memory. This works in both directions: after midnight,
+    /// and when the clock goes back (for example a clock that was a week ahead and is corrected).
+    /// The old day goes to `pending` when it has unsaved changes. When the new day is in `pending`, it becomes
+    /// the current day again. Else a new empty day starts; its file on disk is added at its first write.
     mutating func rollOver(now: Date) {
         let t = now.timeIntervalSinceReferenceDate
         if t >= dayStart && t < dayEnd { return }
         let key = MetricsStore.dayKey(now, calendar: calendar)
-        if key > current.day {
-            if currentDirty { pending.append(current) }
-            current = DayMetrics(day: key)
-            if !appVersion.isEmpty { current.appVersions = [appVersion] }
-            currentDirty = false
+        if key != entry.day {
+            if currentDirty { insertPending(entry) }
+            if let i = pending.firstIndex(where: { $0.day == key }) {
+                entry = pending.remove(at: i)
+                currentDirty = true
+            } else {
+                entry = DayEntry(DayMetrics(day: key), serial: nextSerial)
+                nextSerial += 1
+                currentDirty = false
+            }
+            addVersion()
         }
         cacheDay(of: now)
+    }
+
+    private mutating func insertPending(_ day: DayEntry) {
+        let i = pending.firstIndex { $0.day > day.day } ?? pending.endIndex
+        pending.insert(day, at: i)
+    }
+
+    private mutating func addVersion() {
+        guard !appVersion.isEmpty, !entry.metrics.appVersions.contains(appVersion) else { return }
+        entry.metrics.appVersions = Set(entry.metrics.appVersions).union([appVersion]).sorted()
     }
 
     private mutating func cacheDay(of now: Date) {
@@ -392,32 +491,35 @@ struct MetricsAccumulator {
     private mutating func change(now: Date, _ body: (inout DayMetrics) -> Bool) -> Bool {
         rollOver(now: now)
         let wasDirty = needsFlush
-        guard body(&current) else { return false }
+        guard body(&entry.metrics) else { return false }
         currentDirty = true
         return !wasDirty
     }
 
-    // MARK: Records
+    // MARK: Records. Counters saturate at Int.max: a damaged file with huge counts never makes a record trap.
 
     mutating func record(command: Command, source: CommandSource, now: Date) -> Bool {
         let name = MetricsStore.metricName(for: command)
-        return change(now: now) { $0.commands[name, default: [:]][source.rawValue, default: 0] += 1; return true }
+        return change(now: now) { $0.commands[name, default: [:]][source.rawValue, default: 0].addOne(); return true }
     }
 
     mutating func record(_ event: MetricEvent, count: Int, now: Date) -> Bool {
         guard count > 0 else { return false }
-        return change(now: now) { $0.events[event.rawValue, default: 0] += count; return true }
+        return change(now: now) { day in
+            day.events[event.rawValue, default: 0] = day.events[event.rawValue, default: 0].saturatingAdd(count)
+            return true
+        }
     }
 
     mutating func record(_ friction: FrictionKind, bundleID: String, now: Date) -> Bool {
-        change(now: now) { $0.apps[bundleID, default: AppMetrics()].friction[friction.rawValue, default: 0] += 1; return true }
+        change(now: now) { $0.apps[bundleID, default: AppMetrics()].friction[friction.rawValue, default: 0].addOne(); return true }
     }
 
     mutating func recordAXWrite(bundleID: String, ms: Double, failed: Bool, now: Date) -> Bool {
         change(now: now) { day in
             // A failed write still took time, so its time is kept too.
             let timed = day.apps[bundleID, default: AppMetrics()].axWrite.insert(ms)
-            if failed { day.apps[bundleID, default: AppMetrics()].axErrors += 1 }
+            if failed { day.apps[bundleID, default: AppMetrics()].axErrors.addOne() }
             return timed || failed
         }
     }
@@ -438,8 +540,8 @@ struct MetricsAccumulator {
     mutating func recordTick(intervalMs: Double, periodMs: Double, now: Date) -> Bool {
         change(now: now) { day in
             guard day.tickInterval.insert(intervalMs) else { return false }
-            day.ticks += 1
-            if periodMs.isFinite, periodMs > 0, intervalMs > periodMs * 1.5 { day.slowTicks += 1 }
+            day.ticks.addOne()
+            if periodMs.isFinite, periodMs > 0, intervalMs > periodMs * 1.5 { day.slowTicks.addOne() }
             return true
         }
     }
@@ -449,7 +551,7 @@ struct MetricsAccumulator {
     mutating func recordColumns(_ count: Int, now: Date) -> Bool {
         guard count >= 1 else { return false }
         let key = MetricsAccumulator.columnKeys[Swift.min(count, 10) - 1]
-        return change(now: now) { $0.columnsPerStrip[key, default: 0] += 1; return true }
+        return change(now: now) { $0.columnsPerStrip[key, default: 0].addOne(); return true }
     }
 
     mutating func recordActive(seconds: Double, now: Date) -> Bool {
@@ -470,7 +572,7 @@ struct MetricsAccumulator {
                 changed = true
             }
             if wakeups > 0 {
-                day.wakeups += wakeups
+                day.wakeups = day.wakeups.saturatingAdd(wakeups)
                 changed = true
             }
             if rssMB.isFinite, rssMB > day.peakRSSMB {
@@ -504,32 +606,57 @@ struct MetricsAccumulator {
 
     // MARK: Flush
 
-    /// The days to write, oldest first, and marks everything as saved. The caller writes them outside the lock
-    /// and calls `restore` with the days it could not write. Changes made during the write make the store unsaved
-    /// again, so they call `onFirstChange` as usual. Protected days are dropped here: their file is never replaced.
-    mutating func takeFlushBatch(now: Date) -> [DayMetrics] {
+    /// The days to write, sorted by day, and marks everything as saved. The caller reads the file of each day that
+    /// does not include its disk data, writes the days outside the lock, then calls `absorb` with what it read and
+    /// `restore` with the days it could not write. Changes made during the write make the store unsaved again,
+    /// so they call `onFirstChange` as usual.
+    mutating func takeFlushBatch(now: Date) -> [DayEntry] {
         rollOver(now: now)
         var batch = pending
-        if currentDirty { batch.append(current) }
+        if currentDirty {
+            let i = batch.firstIndex { $0.day > entry.day } ?? batch.endIndex
+            batch.insert(entry, at: i)
+        }
         pending = []
         currentDirty = false
-        return batch.filter { !protectedDays.contains($0.day) }
+        return batch
     }
 
-    /// Puts back the days that a failed flush did not write. The data in memory is always the full day, so a day
-    /// that is still current, or that is in `pending` again, has the newer copy and is only marked unsaved.
-    mutating func restore(_ unwritten: [DayMetrics]) -> Bool {
-        let wasDirty = needsFlush
-        for day in unwritten {
-            if day.day == current.day {
-                currentDirty = true
-            } else if !pending.contains(where: { $0.day == day.day }) {
-                pending.append(day)
+    /// Adds the disk data that a flush read (for the batch entry with `serial`) to the same entry in memory.
+    /// A later entry of that day (the clock left the day and came back during the write) gets nothing: it reads
+    /// the file, which then has the batch too, at its own first write.
+    mutating func absorb(_ read: [(serial: Int, disk: DiskDay)]) {
+        for (serial, disk) in read {
+            if entry.serial == serial, entry.day == disk.day, !entry.includesDisk { entry.absorb(disk) }
+            if let i = pending.firstIndex(where: { $0.serial == serial && $0.day == disk.day }), !pending[i].includesDisk {
+                pending[i].absorb(disk)
             }
         }
-        pending.sort { $0.day < $1.day }
+    }
+
+    /// Puts back the days that a failed flush did not write. The same entry in memory (same serial) has all the
+    /// batch data and newer records, so it is only marked unsaved. A later entry of the same day gets the batch
+    /// data added. Else the batch copy goes back to `pending`. Call `absorb` first.
+    mutating func restore(_ unwritten: [DayEntry]) -> Bool {
+        let wasDirty = needsFlush
+        for day in unwritten {
+            if day.day == entry.day {
+                if day.serial != entry.serial { entry.merge(day) }
+                currentDirty = true
+            } else if let i = pending.firstIndex(where: { $0.day == day.day }) {
+                if day.serial != pending[i].serial { pending[i].merge(day) }
+            } else {
+                insertPending(day)
+            }
+        }
         return !wasDirty && needsFlush
     }
+}
+
+extension Int {
+    /// `+= 1` that stops at Int.max.
+    @inline(__always)
+    mutating func addOne() { if self < .max { self += 1 } }
 }
 
 /// Collects metrics in memory and saves one JSON file per local day.
@@ -566,8 +693,9 @@ public final class MetricsStore: @unchecked Sendable {
     /// Loads today's file if there is one, so counts continue after a restart.
     ///
     /// When today's file has a newer schema (a newer build wrote it) or cannot be read, the store never replaces
-    /// it: records of today stay in memory (`snapshot()` shows them) but `flush()` skips that day. The next day
-    /// is saved as usual. So a downgrade or a broken file never loses the data that is already on disk.
+    /// it. It loads the sidecar `<day>.local.json` instead (if there is one) and `flush()` writes that day to the
+    /// sidecar. `load` adds the two files together, so a downgrade or a broken file loses no data.
+    /// The same check runs at the first write of any other day (see `flush()`).
     public init(directory: URL, appVersion: String, retentionDays: Int = MetricsStore.defaultRetentionDays,
                 calendar: Calendar = .current, now: @escaping @Sendable () -> Date = Date.init) {
         self.directory = directory
@@ -576,19 +704,9 @@ public final class MetricsStore: @unchecked Sendable {
         self.retentionDays = retentionDays
         let today = now()
         let key = MetricsStore.dayKey(today, calendar: self.calendar)
-        let file = MetricsStore.fileURL(directory: directory, day: key)
-        var day = DayMetrics(day: key)
-        var protected: Set<String> = []
-        if FileManager.default.fileExists(atPath: file.path) {
-            do {
-                day = try JSONDecoder().decode(DayMetrics.self, from: Data(contentsOf: file))
-                day.day = key
-            } catch {
-                protected.insert(key)
-            }
-        }
-        state = MetricsAccumulator(day: day, appVersion: appVersion, calendar: self.calendar,
-                                   protectedDays: protected, now: today)
+        var entry = DayEntry(DayMetrics(day: key))
+        entry.absorb(MetricsStore.readDisk(directory: directory, day: key))
+        state = MetricsAccumulator(entry, appVersion: appVersion, calendar: self.calendar, now: today)
     }
 
     /// When false, every record call is a no-op and `flush()` writes nothing. Turning it off keeps the files.
@@ -610,6 +728,8 @@ public final class MetricsStore: @unchecked Sendable {
     }
 
     /// Called (on the recording thread, outside the lock) when the store goes from saved to unsaved.
+    /// Setting a callback while the store is enabled and has unsaved changes calls it at once (on the setting
+    /// thread, outside the lock): for example `markRunning()` can record `uncleanExit` before the owner sets it.
     public var onFirstChange: (@Sendable () -> Void)? {
         get {
             lock.lock()
@@ -619,7 +739,9 @@ public final class MetricsStore: @unchecked Sendable {
         set {
             lock.lock()
             firstChange = newValue
+            let callback = enabled && state.needsFlush ? newValue : nil
             lock.unlock()
+            callback?()
         }
     }
 
@@ -632,10 +754,18 @@ public final class MetricsStore: @unchecked Sendable {
 
     /// `focus-window-<id>` becomes `focus-window`; `focus-index-3` and `move-to-index-3` stay
     /// (there are only nine). Every other name stays as it is.
+    /// The names come from tables, so recording a command does not make a new String (1...9 for the index commands).
     public static func metricName(for command: Command) -> String {
-        if case .focusWindow = command { return "focus-window" }
-        return command.name
+        switch command {
+        case .focusWindow: return "focus-window"
+        case .focusIndex(let n): return (1...9).contains(n) ? focusIndexNames[n - 1] : command.name
+        case .moveToIndex(let n): return (1...9).contains(n) ? moveToIndexNames[n - 1] : command.name
+        default: return command.name
+        }
     }
+
+    static let focusIndexNames = (1...9).map { "focus-index-\($0)" }
+    static let moveToIndexNames = (1...9).map { "move-to-index-\($0)" }
 
     /// `YYYY-MM-DD` of `date` in `calendar` (local day, Gregorian digits, not localized).
     /// A calendar that is not Gregorian (for example Buddhist) gives the Gregorian date in its time zone,
@@ -727,7 +857,8 @@ public final class MetricsStore: @unchecked Sendable {
 
     // MARK: Day rollover and files
 
-    /// The day in memory now, as a copy.
+    /// The day in memory now, as a copy. After the clock moved to a day with a file that this run did not read
+    /// yet, the copy has only the records of this run; the file is added at the first write.
     public func snapshot() -> DayMetrics {
         lock.lock()
         defer { lock.unlock() }
@@ -739,6 +870,10 @@ public final class MetricsStore: @unchecked Sendable {
     /// Merges with a file written by another run of the same day only at `init` (one app runs at a time).
     /// Does nothing when disabled or when nothing changed. Calls `prune()` after a successful write.
     ///
+    /// A day that started in memory after `init` (a new day, or the clock went back to an older day) is merged
+    /// with its file at its first write, so the file never loses data. When that file has a newer schema or
+    /// cannot be read, the day goes to `<day>.local.json` instead, as in `init`.
+    ///
     /// The files are written outside the lock, so recording never waits for the disk. When a write fails, the
     /// days that were not written stay in memory as unsaved, `onFirstChange` is called (the owner retries later)
     /// and the error is thrown.
@@ -749,7 +884,7 @@ public final class MetricsStore: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let batch = state.takeFlushBatch(now: clock())
+        var batch = state.takeFlushBatch(now: clock())
         guard !batch.isEmpty else {
             lock.unlock()
             return
@@ -757,16 +892,24 @@ public final class MetricsStore: @unchecked Sendable {
         writing = true
         lock.unlock()
 
+        var read: [(serial: Int, disk: DiskDay)] = []
         var written = 0
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let encoder = MetricsStore.encoder()
-            for day in batch {
-                try encoder.encode(day).write(to: MetricsStore.fileURL(directory: directory, day: day.day), options: .atomic)
+            for i in batch.indices {
+                if !batch[i].includesDisk {
+                    let disk = MetricsStore.readDisk(directory: directory, day: batch[i].day)
+                    batch[i].absorb(disk)
+                    read.append((batch[i].serial, disk))
+                }
+                let url = MetricsStore.fileURL(directory: directory, day: batch[i].day, sidecar: batch[i].sidecar)
+                try encoder.encode(batch[i].metrics).write(to: url, options: .atomic)
                 written += 1
             }
         } catch {
             lock.lock()
+            state.absorb(read)
             let callback = state.restore(Array(batch[written...])) ? firstChange : nil
             writing = false
             lock.broadcast()
@@ -775,25 +918,35 @@ public final class MetricsStore: @unchecked Sendable {
             throw error
         }
         lock.lock()
+        state.absorb(read)
         writing = false
         lock.broadcast()
         lock.unlock()
         prune()
     }
 
-    /// Deletes `YYYY-MM-DD.json` files older than the retention. Never touches other files or folders.
-    /// The retention counts today: with 90, today and the 89 days before it stay.
+    /// Deletes day files (`<day>.json` and `<day>.local.json`) older than the retention. Never touches other files
+    /// or folders. The retention counts today: with 90, today and the 89 days before it stay.
+    /// When the newest day file before today is more than 2 days older than today, it deletes nothing: the clock
+    /// may be far ahead, and a wrong clock must not delete real data. A normal break (a holiday) only delays it.
     public func prune() {
         let today = calendar.startOfDay(for: clock())
-        guard let oldestKept = calendar.date(byAdding: .day, value: -(Swift.max(retentionDays, 1) - 1), to: today) else { return }
+        let todayKey = MetricsStore.dayKey(today, calendar: calendar)
+        guard let oldestKept = calendar.date(byAdding: .day, value: -(Swift.max(retentionDays, 1) - 1), to: today),
+              let trusted = calendar.date(byAdding: .day, value: -2, to: today) else { return }
+        let files = MetricsStore.dayFiles(in: directory)
+        guard let newest = files.lazy.map(\.key).filter({ $0 < todayKey }).max(),
+              newest >= MetricsStore.dayKey(trusted, calendar: calendar) else { return }
         let cutoff = MetricsStore.dayKey(oldestKept, calendar: calendar)
-        for (key, url) in MetricsStore.dayFiles(in: directory) where key < cutoff {
-            try? FileManager.default.removeItem(at: url)
+        for file in files where file.key < cutoff {
+            try? FileManager.default.removeItem(at: file.url)
         }
     }
 
     /// Reads the files of the last `days` local days up to and including today, oldest first.
     /// A missing day is skipped. A broken file is skipped and named in `skipped`.
+    /// A sidecar `<day>.local.json` is added to the data of `<day>.json`; a day with only one readable file of
+    /// the two is still loaded.
     public static func load(directory: URL, days: Int, calendar: Calendar = .current, now: Date = Date())
         -> (days: [DayMetrics], skipped: [String]) {
         guard days > 0 else { return ([], []) }
@@ -803,17 +956,18 @@ public final class MetricsStore: @unchecked Sendable {
         // Very large `days` have no first day: then every file up to today is read.
         let first = calendar.date(byAdding: .day, value: -(Swift.min(days, 1_000_000) - 1), to: today)
             .map { dayKey($0, calendar: calendar) } ?? ""
-        let decoder = JSONDecoder()
+        let files = dayFiles(in: directory)
+            .filter { $0.key >= first && $0.key <= last }
+            .sorted { $0.key != $1.key ? $0.key < $1.key : !$0.sidecar && $1.sidecar }
         var result: [DayMetrics] = []
         var skipped: [String] = []
-        for (key, url) in dayFiles(in: directory).sorted(by: { $0.key < $1.key }) where key >= first && key <= last {
-            do {
-                var day = try decoder.decode(DayMetrics.self, from: Data(contentsOf: url))
-                day.day = key
-                result.append(day)
-            } catch {
-                skipped.append(url.lastPathComponent)
+        for file in files {
+            guard var day = decode(file.url) else {
+                skipped.append(file.url.lastPathComponent)
+                continue
             }
+            day.day = file.key
+            if result.last?.day == file.key { result[result.count - 1].merge(day) } else { result.append(day) }
         }
         return (result, skipped)
     }
@@ -845,8 +999,31 @@ public final class MetricsStore: @unchecked Sendable {
 extension MetricsStore {
     static let runningMarker = "running"
 
-    static func fileURL(directory: URL, day: String) -> URL {
-        directory.appendingPathComponent("\(day).json", isDirectory: false)
+    static let sidecarSuffix = ".local.json"
+
+    static func fileURL(directory: URL, day: String, sidecar: Bool = false) -> URL {
+        directory.appendingPathComponent(day + (sidecar ? sidecarSuffix : ".json"), isDirectory: false)
+    }
+
+    /// A day file, leniently decoded, or nil when it is missing, broken or from a newer schema.
+    static func decode(_ url: URL) -> DayMetrics? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(DayMetrics.self, from: data)
+    }
+
+    /// The file a run writes `day` to, and its data. `<day>.json` when it is missing or readable. When it has a
+    /// newer schema or cannot be read, it is never replaced: then the sidecar `<day>.local.json` is used.
+    /// A sidecar that cannot be read is replaced (it holds only the records of older builds of this day).
+    static func readDisk(directory: URL, day: String) -> DiskDay {
+        let main = fileURL(directory: directory, day: day)
+        guard FileManager.default.fileExists(atPath: main.path) else { return DiskDay(day: day, sidecar: false, metrics: nil) }
+        if var saved = decode(main) {
+            saved.day = day
+            return DiskDay(day: day, sidecar: false, metrics: saved)
+        }
+        var local = decode(fileURL(directory: directory, day: day, sidecar: true))
+        local?.day = day
+        return DiskDay(day: day, sidecar: true, metrics: local)
     }
 
     /// Sorted keys so that the same day gives the same bytes; pretty, so a person can read the file.
@@ -871,10 +1048,11 @@ extension MetricsStore {
         return n < 0 ? "-" + padded : padded
     }
 
-    /// The key of a day file name (`2026-10-13.json` gives `2026-10-13`), or nil for any other name.
+    /// The key of a day file name (`2026-10-13.json` and `2026-10-13.local.json` give `2026-10-13`),
+    /// or nil for any other name.
     static func dayKey(fileName name: String) -> String? {
         let u = Array(name.utf8)
-        guard u.count == 15, name.hasSuffix(".json") else { return nil }
+        guard (u.count == 15 && name.hasSuffix(".json")) || (u.count == 21 && name.hasSuffix(sidecarSuffix)) else { return nil }
         for (i, ch) in u.prefix(10).enumerated() {
             let ok = (i == 4 || i == 7) ? ch == UInt8(ascii: "-") : (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(ch)
             if !ok { return nil }
@@ -882,13 +1060,15 @@ extension MetricsStore {
         return String(name.prefix(10))
     }
 
-    /// The regular files in `directory` whose name is a day file name. Folders and other files are left out.
-    static func dayFiles(in directory: URL) -> [(key: String, url: URL)] {
+    /// The regular files in `directory` whose name is a day file name or a sidecar name.
+    /// Folders and other files are left out.
+    static func dayFiles(in directory: URL) -> [(key: String, url: URL, sidecar: Bool)] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])) ?? []
         return urls.compactMap { url in
-            guard let key = dayKey(fileName: url.lastPathComponent),
+            let name = url.lastPathComponent
+            guard let key = dayKey(fileName: name),
                   (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
-            return (key, url)
+            return (key, url, name.hasSuffix(sidecarSuffix))
         }
     }
 }
@@ -967,11 +1147,13 @@ public struct MetricsReport: Codable, Equatable, Sendable {
     /// Files that could not be read.
     public var skipped: [String]
 
-    /// `total.day` is the last day, or "" without days. Rows with a count of 0 are left out.
+    /// The days are sorted by `day` first. `total.day` is the last day, or "" without days.
+    /// Rows with a count of 0 are left out.
     /// A budget with a name that is not in `MetricsBudget.live` has no value. Without days no budget has a value,
     /// also not unclean-exits: no file means nothing is known.
     public static func make(days: [DayMetrics], skipped: [String] = [], budgets: [MetricsBudget] = MetricsBudget.live)
         -> MetricsReport {
+        let days = days.sorted { $0.day < $1.day }
         var total = DayMetrics(day: days.last?.day ?? "")
         for day in days { total.merge(day) }
 
@@ -986,7 +1168,7 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         }
 
         let commands = total.commands
-            .map { CommandRow(name: $0.key, total: $0.value.values.reduce(0, +), bySource: $0.value) }
+            .map { CommandRow(name: $0.key, total: $0.value.values.reduce(0) { $0.saturatingAdd($1) }, bySource: $0.value) }
             .filter { $0.total > 0 }
             .sorted { $0.total != $1.total ? $0.total > $1.total : $0.name < $1.name }
 
@@ -1078,7 +1260,7 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         out.append("Reliability")
         let reliability: [MetricEvent] = [.uncleanExit, .permissionLost, .observerRepair, .focusFallback, .staleApp,
                                           .hotkeyRefused, .configError, .engineRestart]
-        let axErrors = total.apps.values.reduce(0) { $0 + $1.axErrors }
+        let axErrors = total.apps.values.reduce(0) { $0.saturatingAdd($1.axErrors) }
         out += F.table(reliability.map { [$0.rawValue, String(total.events[$0.rawValue] ?? 0)] }
                        + [["ax.errors", String(axErrors)]], right: [1])
 
@@ -1093,16 +1275,20 @@ public struct MetricsReport: Codable, Equatable, Sendable {
 
         out.append("")
         out.append(F.heading("Commands", shown: Swift.min(commands.count, 10), of: commands.count))
-        out += F.table(commands.prefix(10).map { row in
-            let sources = row.bySource.filter { $0.value > 0 }
-                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
-                .map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-            return [row.name, String(row.total), sources]
-        }, right: [1])
+        if !commands.isEmpty {
+            out += F.table(commands.prefix(10).map { row in
+                let sources = row.bySource.filter { $0.value > 0 }
+                    .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                    .map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+                return [row.name, String(row.total), sources]
+            }, right: [1])
+        }
 
         out.append("")
         out.append(F.heading("Friction", shown: Swift.min(friction.count, 10), of: friction.count))
-        out += F.table(friction.prefix(10).map { [$0.bundleID, $0.kind, String($0.count)] }, right: [2])
+        if !friction.isEmpty {
+            out += F.table(friction.prefix(10).map { [$0.bundleID, $0.kind, String($0.count)] }, right: [2])
+        }
 
         out.append("")
         out.append(F.heading("Slowest apps (AX write ms)", shown: Swift.min(slowApps.count, 10), of: slowApps.count))
@@ -1134,12 +1320,13 @@ enum ReportFormat {
     }
 
     static func amount(_ v: Double, unit: String, short: Bool = false) -> String {
-        if unit == "count" { return short ? shortNumber(v) : String(Int(v.rounded())) }
+        if unit == "count" { return short ? shortNumber(v) : number(v, digits: 0) }
         return "\(short ? shortNumber(v) : number(v)) \(unit)"
     }
 
     static func duration(_ seconds: Double) -> String {
-        let s = seconds.isFinite ? Int(Swift.max(seconds, 0).rounded()) : 0
+        // Capped (about 31,000 years), so a damaged file cannot make Int(_:) trap.
+        let s = seconds.isFinite ? Int(Swift.min(Swift.max(seconds, 0), 1e12).rounded()) : 0
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m \(MetricsStore.digits(s % 60, 2))s" }
         return "\(s / 3600)h \(MetricsStore.digits(s / 60 % 60, 2))m"
@@ -1182,27 +1369,32 @@ public enum MetricsMark {
     public static let logWindow: TimeInterval = 60
 
     /// The engine log lines from the last `window` seconds before `now`. Log lines start with an ISO 8601 time
-    /// with fractional seconds. A line without a time belongs to the line before it.
+    /// with fractional seconds; a time without fractional seconds is read too. A line without a time belongs to
+    /// the line before it. Lines end with "\n", "\r\n" or "\r".
     /// Lines after `now` are left out, and so are lines without a time at the start of the log.
     public static func logTail(_ log: String, now: Date, window: TimeInterval = logWindow) -> [String] {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let whole = ISO8601DateFormatter()
+        whole.formatOptions = [.withInternetDateTime]
         let start = now.addingTimeInterval(-window)
-        var lines = log.components(separatedBy: "\n")
-        if lines.last == "" { lines.removeLast() }
+        // "\r\n" is one Character in Swift, and it is a newline, so this split handles every line end.
+        var lines = log.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        if lines.last?.isEmpty == true { lines.removeLast() }
         var tail: [String] = []
         var keep = false
-        for raw in lines {
-            let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : raw
-            if let time = leadingTime(line, parser) { keep = time >= start && time <= now }
-            if keep { tail.append(line) }
+        for line in lines {
+            if let time = leadingTime(line, fractional, whole) { keep = time >= start && time <= now }
+            if keep { tail.append(String(line)) }
         }
         return tail
     }
 
-    private static func leadingTime(_ line: String, _ parser: ISO8601DateFormatter) -> Date? {
+    private static func leadingTime(_ line: Substring, _ fractional: ISO8601DateFormatter,
+                                    _ whole: ISO8601DateFormatter) -> Date? {
         guard let first = line.utf8.first, first >= UInt8(ascii: "0"), first <= UInt8(ascii: "9") else { return nil }
-        return parser.date(from: String(line.prefix { $0 != " " && $0 != "\t" }))
+        let token = String(line.prefix { $0 != " " && $0 != "\t" })
+        return fractional.date(from: token) ?? whole.date(from: token)
     }
 
     /// The state with every window title removed (set to an empty string).
@@ -1221,16 +1413,33 @@ public enum MetricsMark {
     /// Writes note.txt (the note, can be empty), state.json (redacted), stats.json, day.json (the snapshot)
     /// and engine.log (the tail). Returns the folder. Creates the folders it needs.
     /// note.txt and engine.log are always written; state.json, stats.json and day.json only when the value is not nil.
+    /// NaN and infinity are written as the strings "nan", "inf" and "-inf".
+    /// Everything is encoded before the folder is made, and each file is written atomically. When a write fails,
+    /// the new folder is removed again, so a failed mark leaves no half folder.
     public static func write(note: String, state: EngineState?, stats: EngineStats?, day: DayMetrics?,
                              logLines: [String], marksDirectory: URL, now: Date,
                              calendar: Calendar = .current) throws -> URL {
+        let encoder = MetricsStore.encoder()
+        encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "inf", negativeInfinity: "-inf",
+                                                                      nan: "nan")
+        var files: [(name: String, data: Data)] = [("note.txt", Data(note.utf8))]
+        if let state { files.append(("state.json", try encoder.encode(redacted(state)))) }
+        if let stats { files.append(("stats.json", try encoder.encode(stats))) }
+        if let day { files.append(("day.json", try encoder.encode(day))) }
+        let log = logLines.isEmpty ? "" : logLines.joined(separator: "\n") + "\n"
+        files.append(("engine.log", Data(log.utf8)))
+        return try writeFolder(files, marksDirectory: marksDirectory, name: folderName(now, calendar: calendar))
+    }
+
+    /// Makes a new folder `name` (or `name-2`, `name-3` ... when it exists) in `marksDirectory` and writes `files`
+    /// into it. On an error it removes only that new folder, then throws.
+    static func writeFolder(_ files: [(name: String, data: Data)], marksDirectory: URL, name: String) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: marksDirectory, withIntermediateDirectories: true)
-        let base = folderName(now, calendar: calendar)
         var folder: URL?
         var suffix = 1
         while folder == nil {
-            let url = marksDirectory.appendingPathComponent(suffix == 1 ? base : "\(base)-\(suffix)", isDirectory: true)
+            let url = marksDirectory.appendingPathComponent(suffix == 1 ? name : "\(name)-\(suffix)", isDirectory: true)
             do {
                 // Not intermediate: creating fails when the folder exists, so two marks never share one.
                 try fm.createDirectory(at: url, withIntermediateDirectories: false)
@@ -1241,13 +1450,12 @@ public enum MetricsMark {
             }
         }
         let dir = folder!
-        let encoder = MetricsStore.encoder()
-        try Data(note.utf8).write(to: dir.appendingPathComponent("note.txt"), options: .atomic)
-        if let state { try encoder.encode(redacted(state)).write(to: dir.appendingPathComponent("state.json"), options: .atomic) }
-        if let stats { try encoder.encode(stats).write(to: dir.appendingPathComponent("stats.json"), options: .atomic) }
-        if let day { try encoder.encode(day).write(to: dir.appendingPathComponent("day.json"), options: .atomic) }
-        let log = logLines.isEmpty ? "" : logLines.joined(separator: "\n") + "\n"
-        try Data(log.utf8).write(to: dir.appendingPathComponent("engine.log"), options: .atomic)
+        do {
+            for file in files { try file.data.write(to: dir.appendingPathComponent(file.name), options: .atomic) }
+        } catch {
+            try? fm.removeItem(at: dir)
+            throw error
+        }
         return dir
     }
 
