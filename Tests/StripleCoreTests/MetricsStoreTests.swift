@@ -204,6 +204,31 @@ import Testing
         #expect(calls.value == 1)
     }
 
+    @Test func turningOffOrClearingTheCallbackAsksAgainForTheSameChanges() throws {
+        let dir = F.tempDirectory()
+        defer { F.remove(dir) }
+        let store = F.store(dir, clock: F.Clock(F.date(2026, 10, 13, 12)))
+        let calls = F.Counter()
+        store.onFirstChange = { calls.increment() }
+        store.record(.swipe)
+        #expect(calls.value == 1)
+        // The owner turns the store off and cancels its flush timer: turning on must ask again.
+        store.isEnabled = false
+        store.isEnabled = true
+        #expect(calls.value == 2)
+        // The owner clears the callback (and its timer), then sets a new one: it is called for the same changes.
+        store.onFirstChange = nil
+        store.onFirstChange = { calls.increment() }
+        #expect(calls.value == 3)
+        // Every other path stays once only.
+        store.onFirstChange = { calls.increment() }
+        store.record(.fling)
+        store.isEnabled = true
+        #expect(calls.value == 3)
+        try store.flush()
+        #expect(try F.readDay(dir, "2026-10-13").events == ["swipe": 1, "fling": 1])
+    }
+
     @Test func aFailedWriteAsksForExactlyOneMoreFlush() throws {
         let dir = F.tempDirectory()
         defer { F.remove(dir) }

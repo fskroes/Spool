@@ -11,6 +11,21 @@ import Testing
         return d
     }
 
+    @Test func aNonFiniteBudgetValueIsNoDataAndJSONStillEncodes() throws {
+        let d = day("2026-10-13") { d in
+            d.activeSeconds = 1e-310
+            d.cpuSeconds = 1
+        }
+        let r = MetricsReport.make(days: [d])
+        #expect(budget(r, "cpu-while-active")?.value == nil)
+        #expect(budget(r, "cpu-while-active")?.pass == nil)
+        #expect(budget(r, "unclean-exits")?.value == 0)
+        let json = try JSONEncoder().encode(r)
+        #expect(!json.isEmpty)
+        let line = r.renderText().split(separator: "\n").first { $0.contains("cpu-while-active") }
+        #expect(line?.contains("no data") == true)
+    }
+
     @Test func noDaysGiveNoDataForEveryBudget() {
         let r = MetricsReport.make(days: [])
         #expect(r.firstDay == nil && r.lastDay == nil && r.dayCount == 0)
