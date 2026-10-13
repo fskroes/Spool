@@ -84,11 +84,20 @@ public struct Histogram: Codable, Equatable, Sendable {
         max = 0
     }
 
+    private enum CodingKeys: String, CodingKey { case counts, count, sum, max }
+
+    /// Lenient and checked (see `init(checking:sum:max:)`), so a hand-edited or broken file cannot crash
+    /// `add` or `merge`, or give wrong percentiles.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(checking: c.value(.counts, [Int]()), sum: c.value(.sum, 0.0), max: c.value(.max, 0.0))
+    }
+
     /// Ignores NaN, infinite and negative values.
     public mutating func add(_ ms: Double) { insert(ms) }
 
     public mutating func merge(_ other: Histogram) {
-        // Decoded histograms are checked in `LenientHistogram`, so both arrays have the same size.
+        // Decoded histograms are checked, so both arrays have the same size.
         for i in 0..<Swift.min(counts.count, other.counts.count) { counts[i] = counts[i].saturatingAdd(other.counts[i]) }
         count = count.saturatingAdd(other.count)
         sum = sum.saturatingAdd(other.sum)
@@ -154,45 +163,21 @@ extension Histogram {
         return lo
     }
 
-    /// A histogram from decoded parts. A bad `counts` array gives an empty histogram, because the buckets
-    /// cannot be trusted. `count` always is the sum of `counts`.
+    /// A histogram from decoded parts. A bad `counts` array (wrong length, a negative count) gives an empty
+    /// histogram, because the buckets cannot be trusted. `count` always is the sum of `counts`.
+    /// A bad `sum` or `max` (NaN, infinite, negative) becomes 0. `max` is at least the lower bound of the
+    /// highest bucket with samples (the last bound for the overflow bucket), so a too-small `max` cannot make
+    /// `percentile` smaller than the samples.
     init(checking counts: [Int], sum: Double, max: Double) {
         self.init()
         guard counts.count == Histogram.bounds.count + 1, counts.allSatisfy({ $0 >= 0 }) else { return }
         let total = counts.reduce(0) { $0.saturatingAdd($1) }
-        guard total > 0 else { return }
+        guard total > 0, let top = counts.lastIndex(where: { $0 > 0 }) else { return }
         self.counts = counts
         self.count = total
         self.sum = sum.isFinite && sum >= 0 ? sum : 0
-        self.max = max.isFinite && max >= 0 ? max : 0
-    }
-}
-
-/// Decodes a `Histogram` leniently and checks it, so a hand-edited or broken file cannot crash `add` or `merge`.
-private struct LenientHistogram: Decodable {
-    private enum Keys: String, CodingKey { case counts, sum, max }
-
-    var histogram = Histogram()
-
-    init() {}
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: Keys.self)
-        histogram = Histogram(checking: c.value(.counts, [Int]()), sum: c.value(.sum, 0.0), max: c.value(.max, 0.0))
-    }
-}
-
-/// Decodes `AppMetrics` leniently: a missing field gets its default.
-private struct LenientApp: Decodable {
-    private enum Keys: String, CodingKey { case axWrite, axErrors, friction }
-
-    var app = AppMetrics()
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: Keys.self)
-        app.axWrite = c.value(.axWrite, LenientHistogram()).histogram
-        app.axErrors = Swift.max(0, c.value(.axErrors, 0))
-        app.friction = DayMetrics.counts(c.value(.friction, [String: Int]()))
+        let lowest = top == 0 ? 0 : Histogram.bounds[top - 1]
+        self.max = Swift.max(max.isFinite && max >= 0 ? max : 0, lowest)
     }
 }
 
@@ -205,6 +190,16 @@ public struct AppMetrics: Codable, Equatable, Sendable {
     public var friction: [String: Int] = [:]
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey { case axWrite, axErrors, friction }
+
+    /// Lenient and checked: a missing or bad field gets its default, a negative count becomes 0.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        axWrite = c.value(.axWrite, Histogram())
+        axErrors = Swift.max(0, c.value(.axErrors, 0))
+        friction = DayMetrics.counts(c.value(.friction, LenientDictionary<Int>()).values)
+    }
 
     public mutating func merge(_ other: AppMetrics) {
         axWrite.merge(other.axWrite)
@@ -283,7 +278,10 @@ public struct DayMetrics: Codable, Equatable, Sendable {
     }
 
     /// Decodes leniently: a missing field gets its default, so a file from an older build still loads.
+    /// Dictionaries are read entry by entry: a bad entry is skipped, the other entries stay.
     /// A file with a newer `schema` than `schemaVersion` throws `MetricsError.newerSchema`.
+    /// A new top-level field needs a schema bump: an older build does not know the field, so it would drop it
+    /// when it writes the file again. With the bump the older build writes the sidecar instead.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let version = c.value(.schema, DayMetrics.schemaVersion)
@@ -293,19 +291,19 @@ public struct DayMetrics: Codable, Equatable, Sendable {
         day = c.value(.day, "")
         appVersions = Set(c.value(.appVersions, [String]())).sorted()
         activeSeconds = Self.amount(c.value(.activeSeconds, 0.0))
-        frameWrite = c.value(.frameWrite, LenientHistogram()).histogram
-        commandLatency = c.value(.commandLatency, LenientHistogram()).histogram
-        commandSettle = c.value(.commandSettle, LenientHistogram()).histogram
-        tickInterval = c.value(.tickInterval, LenientHistogram()).histogram
+        frameWrite = c.value(.frameWrite, Histogram())
+        commandLatency = c.value(.commandLatency, Histogram())
+        commandSettle = c.value(.commandSettle, Histogram())
+        tickInterval = c.value(.tickInterval, Histogram())
         ticks = Swift.max(0, c.value(.ticks, 0))
         slowTicks = Swift.max(0, c.value(.slowTicks, 0))
         cpuSeconds = Self.amount(c.value(.cpuSeconds, 0.0))
         wakeups = Swift.max(0, c.value(.wakeups, 0))
         peakRSSMB = Self.amount(c.value(.peakRSSMB, 0.0))
-        events = Self.counts(c.value(.events, [String: Int]()))
-        commands = c.value(.commands, [String: [String: Int]]()).mapValues(Self.counts)
-        columnsPerStrip = Self.counts(c.value(.columnsPerStrip, [String: Int]()))
-        apps = c.value(.apps, [String: LenientApp]()).mapValues(\.app)
+        events = Self.counts(c.value(.events, LenientDictionary<Int>()).values)
+        commands = c.value(.commands, LenientDictionary<LenientDictionary<Int>>()).values.mapValues { Self.counts($0.values) }
+        columnsPerStrip = Self.counts(c.value(.columnsPerStrip, LenientDictionary<Int>()).values)
+        apps = c.value(.apps, LenientDictionary<AppMetrics>()).values
     }
 
     /// A finite, not negative amount, else 0.
@@ -313,6 +311,28 @@ public struct DayMetrics: Codable, Equatable, Sendable {
 
     /// Counts from a file: a negative count becomes 0.
     static func counts(_ values: [String: Int]) -> [String: Int] { values.mapValues { Swift.max(0, $0) } }
+}
+
+/// A JSON object read entry by entry: an entry whose value does not decode is skipped, so one bad entry does
+/// not lose the others. Something that is not an object throws.
+struct LenientDictionary<Value: Decodable>: Decodable {
+    private struct Key: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    var values: [String: Value] = [:]
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Key.self)
+        for key in c.allKeys {
+            if let value = try? c.decode(Value.self, forKey: key) { values[key.stringValue] = value }
+        }
+    }
 }
 
 extension Int {
@@ -685,6 +705,10 @@ public final class MetricsStore: @unchecked Sendable {
     private var state: MetricsAccumulator
     private var enabled = true
     private var firstChange: (@Sendable () -> Void)?
+    /// A callback was handed out for the unsaved changes now in memory, so the owner has a flush scheduled.
+    /// Cleared when a flush takes the changes or finds the store disabled (that flush was used up), and when
+    /// the store is turned off or the callback is set to nil (the owner may have dropped its flush).
+    private var notified = false
     /// A flush is writing files now.
     private var writing = false
 
@@ -719,17 +743,22 @@ public final class MetricsStore: @unchecked Sendable {
         }
         set {
             lock.lock()
-            let resume = newValue && !enabled && state.needsFlush
+            let resume = newValue && !enabled
             enabled = newValue
-            let callback = resume ? firstChange : nil
+            // Off: the owner may cancel its scheduled flush, so turning on again must ask for a new one.
+            if !newValue { notified = false }
+            let callback = resume ? handOut() : nil
             lock.unlock()
             callback?()
         }
     }
 
     /// Called (on the recording thread, outside the lock) when the store goes from saved to unsaved.
-    /// Setting a callback while the store is enabled and has unsaved changes calls it at once (on the setting
-    /// thread, outside the lock): for example `markRunning()` can record `uncleanExit` before the owner sets it.
+    /// Setting a callback while the store is enabled and has unsaved changes that no callback was called for yet
+    /// calls it at once (on the setting thread, outside the lock): for example `markRunning()` can record
+    /// `uncleanExit` before the owner sets it. One saved-to-unsaved step calls a callback once only, also when
+    /// the owner sets the callback again or sets it from inside the callback. Setting nil (or turning the store
+    /// off) tells the store that no flush is scheduled: the next callback that is set is called for the changes.
     public var onFirstChange: (@Sendable () -> Void)? {
         get {
             lock.lock()
@@ -739,7 +768,8 @@ public final class MetricsStore: @unchecked Sendable {
         set {
             lock.lock()
             firstChange = newValue
-            let callback = enabled && state.needsFlush ? newValue : nil
+            if newValue == nil { notified = false }
+            let callback = handOut()
             lock.unlock()
             callback?()
         }
@@ -850,9 +880,17 @@ public final class MetricsStore: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let callback = body(&state, now) ? firstChange : nil
+        let callback = body(&state, now) ? handOut() : nil
         lock.unlock()
         callback?()
+    }
+
+    /// The callback to call for the unsaved changes, or nil when there is none to call (saved, disabled, already
+    /// called, or no callback). Call with the lock held, and call the result after unlocking.
+    private func handOut() -> (@Sendable () -> Void)? {
+        guard enabled, state.needsFlush, !notified, let callback = firstChange else { return nil }
+        notified = true
+        return callback
     }
 
     // MARK: Day rollover and files
@@ -881,10 +919,13 @@ public final class MetricsStore: @unchecked Sendable {
         lock.lock()
         while writing { lock.wait() }
         guard enabled else {
+            // This flush was the one the last callback asked for: turning on again asks for a new one.
+            notified = false
             lock.unlock()
             return
         }
         var batch = state.takeFlushBatch(now: clock())
+        notified = false
         guard !batch.isEmpty else {
             lock.unlock()
             return
@@ -910,7 +951,7 @@ public final class MetricsStore: @unchecked Sendable {
         } catch {
             lock.lock()
             state.absorb(read)
-            let callback = state.restore(Array(batch[written...])) ? firstChange : nil
+            let callback = state.restore(Array(batch[written...])) ? handOut() : nil
             writing = false
             lock.broadcast()
             lock.unlock()
@@ -926,19 +967,19 @@ public final class MetricsStore: @unchecked Sendable {
     }
 
     /// Deletes day files (`<day>.json` and `<day>.local.json`) older than the retention. Never touches other files
-    /// or folders. The retention counts today: with 90, today and the 89 days before it stay.
-    /// When the newest day file before today is more than 2 days older than today, it deletes nothing: the clock
-    /// may be far ahead, and a wrong clock must not delete real data. A normal break (a holiday) only delays it.
+    /// or folders. A file goes only when both are true:
+    /// - Its day is before the clock's retention: with 90, today and the 89 days before it stay.
+    /// - Its day is not one of the newest `retentionDays` days that have a file (a sidecar is the same day).
+    /// So a clock that is far ahead cannot delete the real data, and a user who runs Striple only some days keeps
+    /// the last `retentionDays` days of use. Each wrong future day that was written keeps one old day less.
     public func prune() {
+        let retention = Swift.max(retentionDays, 1)
         let today = calendar.startOfDay(for: clock())
-        let todayKey = MetricsStore.dayKey(today, calendar: calendar)
-        guard let oldestKept = calendar.date(byAdding: .day, value: -(Swift.max(retentionDays, 1) - 1), to: today),
-              let trusted = calendar.date(byAdding: .day, value: -2, to: today) else { return }
-        let files = MetricsStore.dayFiles(in: directory)
-        guard let newest = files.lazy.map(\.key).filter({ $0 < todayKey }).max(),
-              newest >= MetricsStore.dayKey(trusted, calendar: calendar) else { return }
+        guard let oldestKept = calendar.date(byAdding: .day, value: -(retention - 1), to: today) else { return }
         let cutoff = MetricsStore.dayKey(oldestKept, calendar: calendar)
-        for file in files where file.key < cutoff {
+        let files = MetricsStore.dayFiles(in: directory)
+        let newest = Set(Set(files.map(\.key)).sorted(by: >).prefix(retention))
+        for file in files where file.key < cutoff && !newest.contains(file.key) {
             try? FileManager.default.removeItem(at: file.url)
         }
     }
@@ -1105,7 +1146,7 @@ public struct MetricsBudget: Codable, Equatable, Sendable {
 public struct MetricsReport: Codable, Equatable, Sendable {
     public struct BudgetResult: Codable, Equatable, Sendable {
         public var budget: MetricsBudget
-        /// Nil when there is no data for it (for example no commands yet).
+        /// Nil when there is no data for it (for example no commands yet), or when it is not finite.
         public var value: Double?
         /// Nil when `value` is nil.
         public var pass: Bool?
@@ -1158,7 +1199,8 @@ public struct MetricsReport: Codable, Equatable, Sendable {
         for day in days { total.merge(day) }
 
         let results = budgets.map { budget -> BudgetResult in
-            let value = days.isEmpty ? nil : budgetValue(budget.name, total)
+            // A non-finite value (for example a tiny activeSeconds) is no data: JSON cannot hold it.
+            let value = days.isEmpty ? nil : budgetValue(budget.name, total).flatMap { $0.isFinite ? $0 : nil }
             let pass = value.map { v -> Bool in
                 switch budget.comparison {
                 case .atMost: return v <= budget.limit
@@ -1372,22 +1414,38 @@ public enum MetricsMark {
     /// with fractional seconds; a time without fractional seconds is read too. A line without a time belongs to
     /// the line before it. Lines end with "\n", "\r\n" or "\r".
     /// Lines after `now` are left out, and so are lines without a time at the start of the log.
+    /// The log is in time order: the scan starts at the end and stops at the first line with a time before the
+    /// window, so a large log costs only the lines of the window.
     public static func logTail(_ log: String, now: Date, window: TimeInterval = logWindow) -> [String] {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let whole = ISO8601DateFormatter()
         whole.formatOptions = [.withInternetDateTime]
         let start = now.addingTimeInterval(-window)
-        // "\r\n" is one Character in Swift, and it is a newline, so this split handles every line end.
-        var lines = log.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-        if lines.last?.isEmpty == true { lines.removeLast() }
-        var tail: [String] = []
-        var keep = false
-        for line in lines {
-            if let time = leadingTime(line, fractional, whole) { keep = time >= start && time <= now }
-            if keep { tail.append(String(line)) }
+        // "\r\n" is one Character in Swift, and it is a newline, so this handles every line end.
+        var end = log.endIndex
+        if end > log.startIndex, log[log.index(before: end)].isNewline { end = log.index(before: end) }
+        guard end > log.startIndex else { return [] }
+        // Both newest first. `continuation` holds the lines without a time after the line being read.
+        var tail: [Substring] = []
+        var continuation: [Substring] = []
+        while true {
+            let newline = log[..<end].lastIndex(where: \.isNewline)
+            let line = log[(newline.map { log.index(after: $0) } ?? log.startIndex)..<end]
+            if let time = leadingTime(line, fractional, whole) {
+                if time < start { break }
+                if time <= now {
+                    tail += continuation
+                    tail.append(line)
+                }
+                continuation.removeAll(keepingCapacity: true)
+            } else {
+                continuation.append(line)
+            }
+            guard let newline else { break }
+            end = newline
         }
-        return tail
+        return tail.reversed().map(String.init)
     }
 
     private static func leadingTime(_ line: Substring, _ fractional: ISO8601DateFormatter,

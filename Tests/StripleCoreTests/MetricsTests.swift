@@ -54,6 +54,66 @@ enum MetricsFixtures {
 }
 
 @Suite struct MetricsHistogramTests {
+    static func json(_ text: String) throws -> Histogram {
+        let d = JSONDecoder()
+        d.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
+        return try d.decode(Histogram.self, from: Data(text.utf8))
+    }
+
+    static func counts(_ edit: (inout [Int]) -> Void) -> String {
+        var c = Array(repeating: 0, count: Histogram.bounds.count + 1)
+        edit(&c)
+        return "[" + c.map(String.init).joined(separator: ",") + "]"
+    }
+
+    @Test func decodingAHistogramDirectlyIsChecked() throws {
+        #expect(try Self.json("{}") == Histogram())
+        #expect(try Self.json(#"{"counts":[1,2],"count":3,"sum":1,"max":1}"#) == Histogram())
+        let negative = Self.counts { $0[3] = 2; $0[4] = -1 }
+        #expect(try Self.json(#"{"counts":\#(negative),"count":1,"sum":1,"max":1}"#) == Histogram())
+        let good = Self.counts { $0[3] = 2 }
+        let h = try Self.json(#"{"counts":\#(good),"count":99,"sum":"nan","max":"inf"}"#)
+        #expect(h.count == 2 && h.sum == 0)
+        #expect(h.max == Histogram.bounds[2])
+        let wrongType = try Self.json(#"{"counts":"x","sum":-5,"max":-1}"#)
+        #expect(wrongType == Histogram())
+    }
+
+    @Test func aTooSmallMaxIsRaisedToTheLowestValueOfItsBucket() throws {
+        // 5 samples in the 75...100 ms bucket, but max 0: the percentile must not be 0.
+        let i100 = Histogram.bounds.firstIndex(of: 100)!
+        let h = try Self.json(#"{"counts":\#(Self.counts { $0[i100] = 5 }),"sum":450,"max":0}"#)
+        #expect(h.max == 75)
+        #expect(h.percentile(50) == 75)
+        #expect(h.count(above: 50) == 5)
+        let overflow = try Self.json(#"{"counts":\#(Self.counts { $0[1] = 1; $0[Histogram.bounds.count] = 2 }),"sum":1,"max":3}"#)
+        #expect(overflow.max == 5000)
+        #expect(overflow.percentile(100) == 5000)
+        // A max inside the bucket stays.
+        let inside = try Self.json(#"{"counts":\#(Self.counts { $0[i100] = 1 }),"sum":80,"max":80}"#)
+        #expect(inside.max == 80)
+    }
+
+    @Test func decodingAppMetricsSkipsOnlyTheBadFrictionEntry() throws {
+        let text = #"{"friction":{"user.drag":3,"user.resize":"bad","focus.bounce":null}}"#
+        let app = try JSONDecoder().decode(AppMetrics.self, from: Data(text.utf8))
+        #expect(app.friction == ["user.drag": 3])
+    }
+
+    @Test func decodingAppMetricsDirectlyIsChecked() throws {
+        let text = #"{"axErrors":-3,"friction":{"user.drag":-1,"user.resize":2},"axWrite":{"counts":[1]}}"#
+        let app = try JSONDecoder().decode(AppMetrics.self, from: Data(text.utf8))
+        #expect(app.axErrors == 0)
+        #expect(app.friction == ["user.drag": 0, "user.resize": 2])
+        #expect(app.axWrite == Histogram())
+        #expect(try JSONDecoder().decode(AppMetrics.self, from: Data("{}".utf8)) == AppMetrics())
+        var good = AppMetrics()
+        good.axWrite.add(3)
+        good.axErrors = 2
+        good.friction = ["user.drag": 1]
+        #expect(try JSONDecoder().decode(AppMetrics.self, from: JSONEncoder().encode(good)) == good)
+    }
+
     @Test func emptyHistogramGivesZero() {
         let h = Histogram()
         #expect(h.counts.count == Histogram.bounds.count + 1)
@@ -179,6 +239,28 @@ enum MetricsFixtures {
 }
 
 @Suite struct MetricsDayTests {
+    @Test func aBadDictionaryEntryIsSkippedAndTheOthersStay() throws {
+        let text = """
+        {"schema": 1, "day": "2026-10-13",
+         "events": {"swipe": 500, "x": "bad", "fling": -2},
+         "commands": {"wider": {"hotkey": 4, "menu": "bad"}, "narrower": 7, "focus-left": {"cli": 1}},
+         "columnsPerStrip": {"2": 9, "3": [1]},
+         "apps": {"com.example.a": {"axErrors": 2, "friction": {"user.drag": 1, "user.resize": {}}},
+                  "com.example.bad": 5, "com.example.b": {"axErrors": 1}}}
+        """
+        let d = try JSONDecoder().decode(DayMetrics.self, from: Data(text.utf8))
+        #expect(d.events == ["swipe": 500, "fling": 0])
+        #expect(d.commands == ["wider": ["hotkey": 4], "focus-left": ["cli": 1]])
+        #expect(d.columnsPerStrip == ["2": 9])
+        #expect(Set(d.apps.keys) == ["com.example.a", "com.example.b"])
+        #expect(d.apps["com.example.a"]?.axErrors == 2)
+        #expect(d.apps["com.example.a"]?.friction == ["user.drag": 1])
+        #expect(d.apps["com.example.b"]?.axErrors == 1)
+        // Not an object at all: the default.
+        let notObjects = try JSONDecoder().decode(DayMetrics.self, from: Data(#"{"day":"2026-10-13","events":[1],"apps":"x"}"#.utf8))
+        #expect(notObjects.events.isEmpty && notObjects.apps.isEmpty)
+    }
+
     static func sample(_ day: String) -> DayMetrics {
         var d = DayMetrics(day: day)
         d.appVersions = ["1.0"]

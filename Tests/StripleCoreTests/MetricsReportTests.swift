@@ -11,6 +11,21 @@ import Testing
         return d
     }
 
+    @Test func aNonFiniteBudgetValueIsNoDataAndJSONStillEncodes() throws {
+        let d = day("2026-10-13") { d in
+            d.activeSeconds = 1e-310
+            d.cpuSeconds = 1
+        }
+        let r = MetricsReport.make(days: [d])
+        #expect(budget(r, "cpu-while-active")?.value == nil)
+        #expect(budget(r, "cpu-while-active")?.pass == nil)
+        #expect(budget(r, "unclean-exits")?.value == 0)
+        let json = try JSONEncoder().encode(r)
+        #expect(!json.isEmpty)
+        let line = r.renderText().split(separator: "\n").first { $0.contains("cpu-while-active") }
+        #expect(line?.contains("no data") == true)
+    }
+
     @Test func noDaysGiveNoDataForEveryBudget() {
         let r = MetricsReport.make(days: [])
         #expect(r.firstDay == nil && r.lastDay == nil && r.dayCount == 0)
@@ -113,6 +128,47 @@ import Testing
             }
         }
         let a = MetricsReport.make(days: days), b = MetricsReport.make(days: days)
+        #expect(a == b)
+        #expect(a.renderText() == b.renderText())
+        let e = JSONEncoder()
+        e.outputFormatting = .sortedKeys
+        #expect(try e.encode(a) == e.encode(b))
+    }
+
+    @Test func theOutputDoesNotDependOnInsertionOrder() throws {
+        func build(reversed: Bool) -> [DayMetrics] {
+            func ordered<T>(_ items: [T]) -> [T] { reversed ? items.reversed() : items }
+            let days = (1...6).map { n -> DayMetrics in
+                var d = DayMetrics(day: "2026-10-0\(n)")
+                d.frameWrite.add(Double(n))
+                d.ticks = 10 * n
+                d.slowTicks = n
+                // A different capacity gives a different order inside the dictionary.
+                var commands = [String: [String: Int]](minimumCapacity: reversed ? 64 : 1)
+                var events = [String: Int](minimumCapacity: reversed ? 64 : 1)
+                var apps = [String: AppMetrics](minimumCapacity: reversed ? 64 : 1)
+                for (i, name) in ordered(["focus-left", "focus-right", "wider", "narrower", "fling", "mark"]).enumerated() {
+                    var sources = [String: Int](minimumCapacity: reversed ? 16 : 1)
+                    for source in ordered(["hotkey", "cli", "menu", "gesture"]) { sources[source] = (n + i) % 3 }
+                    commands[name] = sources
+                }
+                for event in ordered(["swipe", "fling", "unclean.exit", "ax.timeout"]) { events[event] = n }
+                for bundle in ordered(["com.example.a", "com.example.b", "com.example.c", "com.example.d"]) {
+                    var app = AppMetrics()
+                    app.axWrite.add(Double(bundle.count % 5 + n))
+                    var friction = [String: Int](minimumCapacity: reversed ? 16 : 1)
+                    for kind in ordered(["user.drag", "user.resize", "focus.bounce"]) { friction[kind] = 1 }
+                    app.friction = friction
+                    apps[bundle] = app
+                }
+                d.commands = commands
+                d.events = events
+                d.apps = apps
+                return d
+            }
+            return ordered(days)
+        }
+        let a = MetricsReport.make(days: build(reversed: false)), b = MetricsReport.make(days: build(reversed: true))
         #expect(a == b)
         #expect(a.renderText() == b.renderText())
         let e = JSONEncoder()
@@ -268,9 +324,65 @@ import Testing
             "2026-10-13T09:59:59.999Z last before now",
             "2026-10-13T09:59:50.000Z back in the window",
         ])
-        #expect(MetricsMark.logTail(log, now: now, window: 0.5) == ["2026-10-13T09:59:59.999Z last before now"])
+        // The last line is before this window: the log is in time order, so the scan stops there.
+        #expect(MetricsMark.logTail(log, now: now, window: 0.5) == [])
+        #expect(MetricsMark.logTail(log, now: now.addingTimeInterval(-9.5), window: 0.5) == ["2026-10-13T09:59:50.000Z back in the window"])
         #expect(MetricsMark.logTail("", now: now).isEmpty)
         #expect(MetricsMark.logTail("2026-10-13T11:59:59.000+02:00 local offset\r\nnext\r\n", now: now) == ["2026-10-13T11:59:59.000+02:00 local offset", "next"])
+    }
+
+    /// The simple forward read: each line with a time decides for itself and for the lines without a time after it.
+    static func forwardTail(_ log: String, now: Date, window: TimeInterval) -> [String] {
+        let fractional = ISO8601DateFormatter.fractional
+        let whole = ISO8601DateFormatter()
+        var lines = log.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        if lines.last?.isEmpty == true { lines.removeLast() }
+        var tail: [String] = []
+        var keep = false
+        for line in lines {
+            if line.first?.isNumber == true {
+                let token = String(line.prefix { $0 != " " && $0 != "\t" })
+                if let time = fractional.date(from: token) ?? whole.date(from: token) {
+                    keep = time >= now.addingTimeInterval(-window) && time <= now
+                }
+            }
+            if keep { tail.append(String(line)) }
+        }
+        return tail
+    }
+
+    @Test func logTailGivesTheSameLinesAsAForwardReadOfAnOrderedLog() {
+        let base = ISO8601DateFormatter.fractional.date(from: "2026-10-13T09:00:00.000Z")!
+        var log = "orphan before the first time\n1 digit garbage\n"
+        for i in 0..<400 {
+            let t = base.addingTimeInterval(Double(i) * 10.25)
+            let stamp = i % 3 == 0 ? ISO8601DateFormatter().string(from: t) : ISO8601DateFormatter.fractional.string(from: t)
+            log += "\(stamp) line \(i)" + (i % 4 == 0 ? "\r\n" : "\n")
+            if i % 5 == 0 { log += "  detail of \(i)\n" }
+            if i % 7 == 0 { log += "\n2026-13-45T99:99:99Z digit garbage\r" }
+        }
+        let first = base.addingTimeInterval(-1)
+        let last = base.addingTimeInterval(400 * 10.25)
+        for now in [first, base, base.addingTimeInterval(1000), base.addingTimeInterval(2000.5), last, last.addingTimeInterval(30)] {
+            for window in [0.5, 10.25, 60, 600, 100_000] {
+                let tail = MetricsMark.logTail(log, now: now, window: window)
+                #expect(tail == Self.forwardTail(log, now: now, window: window), "now \(now) window \(window)")
+            }
+        }
+        #expect(MetricsMark.logTail(log, now: last, window: 60).count > 5)
+    }
+
+    @Test func logTailDoesNotReadLinesBeforeTheWindow() {
+        let now = ISO8601DateFormatter.fractional.date(from: "2026-10-13T10:00:00.000Z")!
+        // The first lines are out of order on purpose: a forward read would keep the first one.
+        let log = """
+        2026-10-13T09:59:30.000Z before the stop line, never read
+        123 garbage that starts with a digit
+        2026-10-13T09:00:00.000Z older than the window: the scan stops here
+        2026-10-13T09:59:40.000Z kept
+        detail
+        """
+        #expect(MetricsMark.logTail(log, now: now) == ["2026-10-13T09:59:40.000Z kept", "detail"])
     }
 
     @Test func logTailReadsTimesWithoutFractionsAndEveryLineEnd() {
