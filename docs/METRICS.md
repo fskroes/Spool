@@ -10,7 +10,9 @@ turn it off.
 - No window titles, no key presses, no text that you type. A mark keeps the note that you give it, and nothing else
   that you typed.
 - Apps are named by their bundle ID only (for example `com.apple.Safari`).
-- Striple keeps 90 days. It deletes older day files by itself.
+- Striple keeps 90 days. It deletes older day files by itself. When the clock of the Mac seems to be far ahead (the
+  newest day file before today is more than 2 days old), Striple deletes nothing, so a wrong clock cannot delete
+  real data.
 
 ## Turn it on or off
 
@@ -32,11 +34,15 @@ To delete the data, quit Striple and delete the folder `~/Library/Application Su
 | File | What it is |
 |---|---|
 | `~/Library/Application Support/Striple/metrics/YYYY-MM-DD.json` | The numbers of one local day |
+| `~/Library/Application Support/Striple/metrics/YYYY-MM-DD.local.json` | Only when `YYYY-MM-DD.json` is from a newer Striple or cannot be read. Striple never replaces that file and writes the numbers of this run here. The report adds the two files together |
 | `~/Library/Application Support/Striple/metrics/running` | Exists while Striple runs. If it is there at launch, the last run did not quit cleanly |
 | `~/Library/Application Support/Striple/metrics/marks/<date and time>/` | One mark (see "Marks") |
 
 Striple keeps the numbers in memory and writes the day file 60 s after the first change, when `striple report` asks
 for them, and when you quit. There is no repeating timer: when nothing happens, Striple writes nothing.
+
+The day is the local day of the Mac clock. When the clock changes (a time zone, a manual change), the numbers go to
+the day of the new time, also to an earlier day. Striple adds them to the file of that day.
 
 ## What Striple measures
 
@@ -112,7 +118,9 @@ day files. When Striple runs, it first asks Striple to write the numbers that ar
 The report has these parts:
 
 - The period and the time the engine ran.
-- The live budgets, each with PASS, FAIL or no data. The budgets are in [SPEC.md](SPEC.md#live-budget).
+- The live budgets, each with PASS, FAIL or no data. Without day files, every budget shows no data, also
+  `unclean-exits`: with no file, Striple knows nothing. Then the first line of the report is
+  `Striple metrics: no data yet`. The budgets are in [SPEC.md](SPEC.md#live-budget).
   `slow-tick-ratio` is the slow frames in percent of all frames. `cpu-while-active` is the CPU time in percent of the
   time the engine ran.
 - Speed (p50, p95 and the highest value), cost and problems.
@@ -142,5 +150,6 @@ A mark is a new folder in `metrics/marks/` with:
 | `day.json` | The numbers of today, so far |
 | `engine.log` | The last 60 s of the engine log |
 
-The engine log names the folder of each mark. Marks need metrics on. Striple does not delete marks; delete the
+`striple mark` prints `Saving a mark (see engine.log for the folder)`, because Striple writes the folder after it
+answers. The engine log (`~/Library/Logs/Striple/engine.log`) names the folder of each mark. Marks need metrics on. Striple does not delete marks; delete the
 folders that you do not need.

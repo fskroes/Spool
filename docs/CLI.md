@@ -93,8 +93,9 @@ or as part of the name (`striple focus-index-3`).
 `focus-index 9` and `move-to-index 9` mean the last place, also when there are more than 9 columns.
 
 `striple mark` takes the words after `mark` as the note. Quotes are not necessary. Use a mark when something goes
-wrong: Striple writes a new folder in `~/Library/Application Support/Striple/metrics/marks/` and prints its parent
-folder. The note is the only text that you type that Striple keeps. Marks need metrics on (Settings > General).
+wrong: Striple writes a new folder in `~/Library/Application Support/Striple/metrics/marks/`. It writes the folder
+after it answers, so `striple mark` prints `Saving a mark (see engine.log for the folder)`. The engine log
+(`~/Library/Logs/Striple/engine.log`) names the folder when the write ends. The note is the only text that you type that Striple keeps. Marks need metrics on (Settings > General).
 See [METRICS.md](METRICS.md#marks).
 
 ## Queries

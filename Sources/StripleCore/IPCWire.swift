@@ -396,6 +396,8 @@ public enum StripleCLI {
     static let metaWords = ["help", "list", "commands", "version", "command", "report"]
 
     /// `striple report` runs in the CLI: it reads the metrics files, so it also works when Striple is not running.
+    /// Striple writes the mark after it answers (off the main thread), so the CLI cannot name the folder.
+    public static let markReply = "Saving a mark (see engine.log for the folder)\n"
     public static let reportEntry = Entry(name: "report", usage: "report [--days <n>]", title: "Show the local metrics report", url: nil)
 
     /// Days in a report: `--days` must be in this range.
@@ -707,7 +709,7 @@ public enum StripleCLI {
         case .flushMetrics:
             return Output()
         case nil:
-            if request.command == .mark { return Output(stdout: "Saved a mark in \(StriplePaths.marksDirectory.path)\n") }
+            if request.command == .mark { return Output(stdout: markReply) }
             return Output()
         }
     }
@@ -769,6 +771,8 @@ public enum StripleCLI {
             state (without window titles), the stats, the metrics of today, the last minute of the
             engine log and your note to a new folder in:
               \(StriplePaths.marksDirectory.path)
+            Striple writes the folder after it answers. The engine log names it:
+              \(StriplePaths.logFile.path)
             Shortcut: ⌃⌥⇧M. Needs metrics on (Settings > General).
 
             URL: striple://mark

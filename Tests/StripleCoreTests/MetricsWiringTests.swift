@@ -156,7 +156,7 @@ import Testing
         var sent: [IPCRequest] = []
         let out = run(["mark", "focus", "went", "to", "Teams"]) { sent.append($0); return IPCResponse(ok: true) }
         #expect(sent == [IPCRequest(command: .mark, note: "focus went to Teams")])
-        #expect(out == .init(stdout: "Saved a mark in \(StriplePaths.marksDirectory.path)\n"))
+        #expect(out == .init(stdout: "Saving a mark (see engine.log for the folder)\n"))
     }
 
     @Test func notRunningIsExit3() {
@@ -227,6 +227,20 @@ import Testing
         // An app that answers with an error or too late does not stop the report.
         #expect(run(["report"], Calls(), send: { _ in IPCResponse(ok: false, error: "x") }).code == .ok)
         #expect(run(["report"], Calls(), send: { _ in throw IPCClient.Error.timeout }).code == .ok)
+    }
+
+    @Test func withoutFilesEveryBudgetHasNoData() throws {
+        let out = run(["report", "--json"], Calls(), send: { _ in throw IPCClient.Error.notRunning })
+        #expect(out.code == .ok)
+        let report = try JSONDecoder().decode(MetricsReport.self, from: Data(out.stdout.utf8))
+        #expect(report.dayCount == 0)
+        let unclean = try #require(report.budgets.first { $0.budget.name == "unclean-exits" })
+        #expect(unclean.value == nil)
+        #expect(unclean.pass == nil)
+        #expect(report.budgets.allSatisfy { $0.value == nil && $0.pass == nil })
+        let text = run(["report"], Calls(), send: { _ in throw IPCClient.Error.notRunning }).stdout
+        #expect(text.hasPrefix("Striple metrics: no data yet\n"))
+        #expect(!text.contains("PASS") && !text.contains("FAIL"))
     }
 
     @Test func json() throws {
