@@ -138,6 +138,7 @@ public enum DefaultBindings {
             .toggleFloat: [KeyCombo(KeyCode.t, co)],
             .sendToNextDisplay: [KeyCombo(KeyCode.n, co)],
             .toggleEngine: [KeyCombo(KeyCode.q, co)],
+            .mark: [KeyCombo(KeyCode.m, cos)],
         ]
         for (i, key) in KeyCode.digits.enumerated() {
             b[.focusIndex(i + 1)] = [KeyCombo(key, co)]

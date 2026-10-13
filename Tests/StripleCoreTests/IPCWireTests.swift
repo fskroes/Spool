@@ -280,7 +280,7 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         let text = StripleCLI.listText()
         #expect(text.hasPrefix("Commands:\n  focus-left            Focus left\n"))
         #expect(text.contains("\n  focus-index <1-9>     Focus place <n> (9 is the last place)\n"))
-        #expect(text.hasSuffix("Queries:\n  ping                  Check that Striple is running\n  state                 Show displays, columns and windows\n  stats                 Show performance counters\n"))
+        #expect(text.hasSuffix("Queries:\n  ping                  Check that Striple is running\n  state                 Show displays, columns and windows\n  stats                 Show performance counters\n  report [--days <n>]   Show the local metrics report\n"))
     }
 }
 
@@ -402,7 +402,7 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
 
     @Test func cliDocListsEveryCommand() throws {
         let doc = try String(contentsOf: Self.root.appendingPathComponent("docs/CLI.md"), encoding: .utf8)
-        for entry in StripleCLI.commandEntries + StripleCLI.queries {
+        for entry in StripleCLI.commandEntries + StripleCLI.queries + [StripleCLI.reportEntry] {
             #expect(doc.contains("`striple \(entry.usage)`"), "docs/CLI.md misses \(entry.usage)")
         }
     }

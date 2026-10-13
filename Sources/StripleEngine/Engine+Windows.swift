@@ -290,7 +290,7 @@ extension Engine {
         }
         guard let delay = Policy.watchRetryDelay(attempt: n) else {
             quietRescans[pid] = nil
-            staleApps.insert(pid)
+            if staleApps.insert(pid).inserted { metricsStore?.record(.staleApp) }
             return
         }
         quietRescans[pid] = n
@@ -374,6 +374,7 @@ extension Engine {
         windows[c.info.id] = ManagedWindow(info: c.info, element: c.element, state: state, key: key, createdAt: createdAt)
         writer.register(c.info.id, element: c.element, pid: c.info.pid)
         tracker?.observe(window: c.element, pid: c.info.pid)
+        metricsSink.setBundle(c.info.bundleID, for: c.info.pid)
     }
 
     /// Some apps create a window first and set its role or subrole a moment later. Look again once.
@@ -422,6 +423,7 @@ extension Engine {
         let renewed = plan.renewed.count
         scanApp(pid)
         relayoutAll(animate: false)
+        metricsStore?.record(.observerRepair)
         log.log("tracker: pid \(pid) watched again, \(renewed) window elements renewed")
     }
 
@@ -562,7 +564,7 @@ extension Engine {
         guard let w = windows[id] else { return }
         if !scroll { suppressScrollFor = id }
         focusedID = id
-        Focuser.focus(window: id, pid: w.info.pid, element: w.element)
+        if !Focuser.focus(window: id, pid: w.info.pid, element: w.element) { metricsStore?.record(.focusFallback) }
         updateFocusOverlays()
         if fromCommand, config.behavior.mouseFollowsFocus { warpMouse(to: id) }
     }
@@ -680,6 +682,7 @@ extension Engine {
         writer.unregisterApp(pid)
         applier.forgetApp(pid)
         recorder.forget(pid: pid)
+        metricsSink.forget(pid: pid)
         tracker?.unwatch(pid)
     }
 
@@ -687,6 +690,9 @@ extension Engine {
 
     func toggleFloat() {
         guard let id = systemFocusedWindow()?.id ?? focusedID, let w = windows[id] else { return }
+        if !w.info.bundleID.isEmpty, let kind = Self.floatFriction(state: w.state, userFloating: w.userFloating, offDisplay: w.offDisplay) {
+            metricsStore?.record(kind, bundleID: w.info.bundleID)
+        }
         switch w.state {
         case .tiled:
             let shown = placements[id]

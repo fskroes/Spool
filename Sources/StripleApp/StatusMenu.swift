@@ -13,6 +13,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let toggleItem = NSMenuItem(title: "", action: #selector(toggleEngine), keyEquivalent: "")
     private let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
     private let configErrorItem = NSMenuItem(title: "", action: #selector(openSettings), keyEquivalent: "")
+    /// Saves a mark (docs/METRICS.md). Off while metrics are off.
+    private let markItem = NSMenuItem(title: "Mark This Moment", action: #selector(markMoment), keyEquivalent: "")
     private var cancellable: AnyCancellable?
 
     init(app: AppModel) {
@@ -41,6 +43,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         updatesItem.isEnabled = Updater.shared.isConfigured
         menu.addItem(target(updatesItem))
         menu.addItem(target(NSMenuItem(title: "Reveal Engine Log", action: #selector(revealLog), keyEquivalent: "")))
+        menu.addItem(target(markItem))
         menu.addItem(.separator())
         menu.addItem(target(NSMenuItem(title: "Quit Striple", action: #selector(quit), keyEquivalent: "q")))
     }
@@ -65,6 +68,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         updatesItem.isEnabled = Updater.shared.isConfigured
+        markItem.isEnabled = app.store.config.metrics.enabled
         show(app.engine.status)
         showConfigError()
     }
@@ -76,8 +80,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         configErrorItem.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
     }
 
-    @objc private func toggleEngine() { app.engine.toggle() }
-    @objc private func restartEngine() { app.engine.restart() }
+    @objc private func toggleEngine() { app.engine.perform(.toggleEngine, source: .menu) }
+    @objc private func restartEngine() { app.engine.perform(.restart, source: .menu) }
+    @objc private func markMoment() { app.engine.perform(.mark, source: .menu) }
     @objc private func openSettings() { app.openSettings() }
     @objc private func openConfig() { app.openConfigFile() }
     @objc private func openMacSetup() { app.openSettings(.macSetup) }

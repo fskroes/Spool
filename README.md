@@ -41,6 +41,7 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 | F21 | Guided start and a Mac Setup check | first launch, Settings > Mac Setup |
 | F22 | Every shortcut can be changed | Settings > Shortcuts, [docs/SHORTCUTS.md](docs/SHORTCUTS.md) |
 | F23 | Every setting applies at once; `config.json` edits load automatically | always on |
+| F24 | Local metrics: speed, cost, problems and use on this Mac only, `striple report`, and marks of bad moments | Settings > General, [docs/METRICS.md](docs/METRICS.md) |
 
 ## Performance
 
@@ -93,7 +94,20 @@ An ad hoc signed build gets a new signature with each rebuild, and macOS then fo
   `striple state` shows the strips as text. Add `--json` for scripts. `striple stats` shows live performance numbers.
 
 - URL scheme: `open -g striple://focus-right`, `open striple://settings/shortcuts`.
-- Menu bar: start or stop tiling, settings, the engine log, updates.
+- Menu bar: start or stop tiling, settings, the engine log, updates, a mark.
+
+### Measure
+
+Striple measures its own speed, cost and problems on this Mac. Nothing leaves the Mac, and Striple keeps no window
+titles and no keys. See [docs/METRICS.md](docs/METRICS.md).
+
+```sh
+striple report
+striple mark Safari jumped to the left
+```
+
+`striple report` shows the last 7 days and checks the live budgets. When something goes wrong, press `⌃⌥⇧M` or run
+`striple mark` with a note: Striple saves the state of that moment. To turn the metrics off, use Settings > General.
 
 Settings live in `~/Library/Application Support/Striple/config.json`. The engine log is `~/Library/Logs/Striple/engine.log`.
 If you edit the file and it has an error, Striple keeps the last good settings and Settings shows the error and where it is.

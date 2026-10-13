@@ -44,6 +44,8 @@ public final class ConfigStore: ObservableObject {
     public var lastGoodURL: URL { fileURL.appendingPathExtension("lastgood") }
     /// True while `config.json` has errors. Automatic changes (not made by the user) must wait until it is fixed.
     public var fileHasError: Bool { fileIsBroken }
+    /// Called each time a read of `config.json` fails to decode (the engine counts it in the metrics).
+    public var onLoadError: (() -> Void)?
 
     public init(fileURL: URL = StriplePaths.configFile, watch: Bool = true, arrowsTaken: Bool = Config.systemTakesArrows,
                 linkRetryDelay: TimeInterval = 5) {
@@ -129,6 +131,7 @@ public final class ConfigStore: ObservableObject {
             hasProblem = true
             decodeError = Self.describe(error)
             loadError = "config.json has an error, so Striple keeps the last good settings: \(decodeError ?? "")"
+            onLoadError?()
         }
     }
 

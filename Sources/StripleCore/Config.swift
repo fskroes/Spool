@@ -184,6 +184,19 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// Local metrics (docs/METRICS.md). Off: Striple records nothing and writes no metrics file.
+public struct MetricsSettings: Codable, Equatable, Sendable {
+    public var enabled = true
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = MetricsSettings()
+        enabled = c.value(.enabled, d.enabled)
+    }
+}
+
 public struct AppRule: Codable, Equatable, Hashable, Identifiable, Sendable {
     public enum Action: Codable, Equatable, Hashable, Sendable {
         case float
@@ -220,6 +233,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var gestures = GestureSettings()
     public var appearance = AppearanceSettings()
     public var behavior = BehaviorSettings()
+    public var metrics = MetricsSettings()
     /// Display UUIDs on which Striple does not manage windows.
     public var disabledDisplays: Set<String> = []
     public var rules: [AppRule] = []
@@ -228,7 +242,7 @@ public struct Config: Codable, Equatable, Sendable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case version, layout, animation, gestures, appearance, behavior, disabledDisplays, rules, bindings
+        case version, layout, animation, gestures, appearance, behavior, metrics, disabledDisplays, rules, bindings
     }
 
     public init(from decoder: Decoder) throws {
@@ -240,6 +254,7 @@ public struct Config: Codable, Equatable, Sendable {
         gestures = c.value(.gestures, d.gestures)
         appearance = c.value(.appearance, d.appearance)
         behavior = c.value(.behavior, d.behavior)
+        metrics = c.value(.metrics, d.metrics)
         disabledDisplays = try c.strict(.disabledDisplays, d.disabledDisplays)
         rules = try c.strict(.rules, d.rules)
         // An unknown command name is skipped (it can come from a newer Striple). A bad combo is an error.
@@ -290,6 +305,7 @@ public struct Config: Codable, Equatable, Sendable {
         try c.encode(gestures, forKey: .gestures)
         try c.encode(appearance, forKey: .appearance)
         try c.encode(behavior, forKey: .behavior)
+        try c.encode(metrics, forKey: .metrics)
         try c.encode(disabledDisplays.sorted(), forKey: .disabledDisplays)
         try c.encode(rules, forKey: .rules)
         try c.encode(Dictionary(uniqueKeysWithValues: bindings.map { ($0.key.name, $0.value) }), forKey: .bindings)

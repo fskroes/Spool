@@ -323,9 +323,12 @@ public enum StripleCLI {
     public struct Options: Equatable, Sendable {
         public var json = false
         public var socketPath: String?
-        public init(json: Bool = false, socketPath: String? = nil) {
+        /// `--days` of `striple report`. Nil when not given.
+        public var days: Int?
+        public init(json: Bool = false, socketPath: String? = nil, days: Int? = nil) {
             self.json = json
             self.socketPath = socketPath
+            self.days = days
         }
     }
 
@@ -335,6 +338,8 @@ public enum StripleCLI {
         case help(String?)
         case listCommands
         case version
+        /// `striple report`: read the local metrics files of the last `days` days.
+        case report(days: Int)
         /// No arguments: print the usage to stderr.
         case missingCommand
         case error(String)
@@ -388,7 +393,14 @@ public enum StripleCLI {
         Entry(name: "stats", usage: "stats", title: "Show performance counters", url: nil),
     ]
 
-    static let metaWords = ["help", "list", "commands", "version", "command"]
+    static let metaWords = ["help", "list", "commands", "version", "command", "report"]
+
+    /// `striple report` runs in the CLI: it reads the metrics files, so it also works when Striple is not running.
+    public static let reportEntry = Entry(name: "report", usage: "report [--days <n>]", title: "Show the local metrics report", url: nil)
+
+    /// Days in a report: `--days` must be in this range.
+    public static let reportDays = 1...90
+    public static let defaultReportDays = 7
 
     /// Every command the CLI accepts, in the order of the Shortcuts page. Commands with a number are one entry.
     public static let commandEntries: [Entry] = {
@@ -400,6 +412,8 @@ public enum StripleCLI {
             guard seen.insert(name).inserted else { continue }
             if let p = parametrized.first(where: { $0.name == name }) {
                 entries.append(Entry(name: name, usage: "\(name) \(p.argument)", title: p.title, url: "striple://\(name)/\(p.example)"))
+            } else if command == .mark {
+                entries.append(Entry(name: name, usage: "mark [<note>]", title: command.title, url: "striple://mark"))
             } else {
                 entries.append(Entry(name: name, usage: name, title: command.title, url: "striple://\(name)"))
             }
@@ -440,6 +454,10 @@ public enum StripleCLI {
                 guard i + 1 < args.count, !args[i + 1].isEmpty else { return fail("--socket needs a path.") }
                 options.socketPath = args[i + 1]
                 i += 1
+            case "--days":
+                guard i + 1 < args.count, let n = Int(args[i + 1]) else { return fail(daysError) }
+                options.days = n
+                i += 1
             case "-h", "--help": wantsHelp = true
             case "-V", "-v", "--version": wantsVersion = true
             case "--": words.append(contentsOf: args[(i + 1)...]); i = args.count; continue
@@ -448,6 +466,9 @@ public enum StripleCLI {
                     let path = String(arg.dropFirst("--socket=".count))
                     guard !path.isEmpty else { return fail("--socket needs a path.") }
                     options.socketPath = path
+                } else if arg.hasPrefix("--days=") {
+                    guard let n = Int(arg.dropFirst("--days=".count)) else { return fail(daysError) }
+                    options.days = n
                 } else if arg.hasPrefix("-"), arg.count > 1 {
                     return fail("Unknown option '\(arg)'.")
                 } else {
@@ -465,6 +486,7 @@ public enum StripleCLI {
         guard let first = words.first else { return Invocation(action: .missingCommand, options: options) }
         let rest = Array(words.dropFirst())
         let word = normalize(first)
+        if options.days != nil, word != "report" { return fail("--days works only with report.") }
         let action: Action
         switch word {
         case "help":
@@ -475,10 +497,21 @@ public enum StripleCLI {
             action = rest.isEmpty ? .version : .error("version takes no argument.")
         case "ping", "state", "stats":
             action = rest.isEmpty ? .send(IPCRequest(query: IPCRequest.Query(rawValue: word)!)) : .error("\(word) takes no argument.")
+        case "report":
+            let days = options.days ?? defaultReportDays
+            if !rest.isEmpty {
+                action = .error("report takes no argument. Use --days <n>.")
+            } else {
+                action = reportDays.contains(days) ? .report(days: days) : .error(daysError)
+            }
+        case "mark":
+            action = markAction(rest)
         case "command":
             if rest.isEmpty {
                 action = .error("command needs a command name. Example: striple command focus-left")
-            } else if let q = IPCRequest.Query(rawValue: normalize(rest[0])) {
+            } else if normalize(rest[0]) == "mark" {
+                action = markAction(Array(rest.dropFirst()))
+            } else if let q = IPCRequest.Query(rawValue: normalize(rest[0])), q != .flushMetrics {
                 action = rest.count == 1 ? .send(IPCRequest(query: q)) : .error("\(q.rawValue) takes no argument.")
             } else {
                 action = parseCommand(rest)
@@ -487,6 +520,14 @@ public enum StripleCLI {
             action = parseCommand(words)
         }
         return Invocation(action: action, options: options)
+    }
+
+    static let daysError = "--days needs a number from 1 to 90. Example: striple report --days 30"
+
+    /// `striple mark [<note>...]`: the words after `mark` are the note.
+    static func markAction(_ noteWords: [String]) -> Action {
+        let note = noteWords.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return .send(IPCRequest(command: .mark, note: note.isEmpty ? nil : note))
     }
 
     static func parseCommand(_ words: [String]) -> Action {
@@ -595,15 +636,36 @@ public enum StripleCLI {
         return "striple \(short)"
     }
 
-    /// Runs a parsed invocation. `send` talks to the app; it is only called for `.send`.
-    public static func run(_ invocation: Invocation, versionLine: String, send: (IPCRequest) throws -> IPCResponse) -> Output {
+    /// Reads the metrics files for `striple report`.
+    public typealias MetricsLoader = (_ days: Int) -> (days: [DayMetrics], skipped: [String])
+
+    /// The files in `StriplePaths.metricsDirectory`.
+    public static func readMetricsFiles(days: Int) -> (days: [DayMetrics], skipped: [String]) {
+        MetricsStore.load(directory: StriplePaths.metricsDirectory, days: days)
+    }
+
+    /// Runs a parsed invocation. `send` talks to the app; it is only called for `.send` and `.report`.
+    /// `loadMetrics` reads the metrics files for `.report`; tests give their own.
+    public static func run(_ invocation: Invocation, versionLine: String, send: (IPCRequest) throws -> IPCResponse,
+                           loadMetrics: MetricsLoader = { StripleCLI.readMetricsFiles(days: $0) }) -> Output {
         let json = invocation.options.json
         switch invocation.action {
+        case .report(let days):
+            // A running app keeps the last minute in memory. Not running is fine: the files are all there is.
+            _ = try? send(IPCRequest(query: .flushMetrics))
+            let loaded = loadMetrics(days)
+            let report = MetricsReport.make(days: loaded.days, skipped: loaded.skipped)
+            if json {
+                guard let text = try? IPCWire.prettyJSON(report) else { return Output(stderr: "Cannot encode the report.\n", code: .failed) }
+                return Output(stdout: text + "\n")
+            }
+            let text = report.renderText()
+            return Output(stdout: text.hasSuffix("\n") ? text : text + "\n")
         case .help(let topic):
             return Output(stdout: helpText(topic: topic))
         case .listCommands:
             if json {
-                return Output(stdout: ((try? IPCWire.prettyJSON(commandEntries + queries)) ?? "[]") + "\n")
+                return Output(stdout: ((try? IPCWire.prettyJSON(commandEntries + queries + [reportEntry])) ?? "[]") + "\n")
             }
             return Output(stdout: listText())
         case .version:
@@ -642,7 +704,10 @@ public enum StripleCLI {
         case .stats:
             guard let stats = response.stats else { return Output(stderr: "The response has no stats.\n", code: .failed) }
             return Output(stdout: format(stats: stats))
+        case .flushMetrics:
+            return Output()
         case nil:
+            if request.command == .mark { return Output(stdout: "Saved a mark in \(StriplePaths.marksDirectory.path)\n") }
             return Output()
         }
     }
@@ -667,11 +732,14 @@ public enum StripleCLI {
           striple ping              Check that Striple is running.
           striple state             Show displays, columns and windows.
           striple stats             Show performance counters.
+          striple report            Show speed, use and problems of the last 7 days.
+          striple mark [<note>]     Save the state of this moment, with a note.
           striple command <name>    Run a command by name (same as striple <name>).
           striple --version         Show the version.
 
         Options:
           --json                    Print the full response as JSON.
+          --days <n>                Days in the report, 1 to 90 (default 7).
           --socket <path>           Use this socket. You can also set STRIPLE_SOCKET.
                                     Default: ~/Library/Application Support/Striple/striple.sock
 
@@ -693,6 +761,20 @@ public enum StripleCLI {
 
             """
         }
+        if topic == "mark" {
+            return """
+            Usage: striple mark [<note>]
+
+            Save the state of this moment, for example when something went wrong. Striple writes the
+            state (without window titles), the stats, the metrics of today, the last minute of the
+            engine log and your note to a new folder in:
+              \(StriplePaths.marksDirectory.path)
+            Shortcut: ⌃⌥⇧M. Needs metrics on (Settings > General).
+
+            URL: striple://mark
+
+            """
+        }
         if let entry = commandEntries.first(where: { $0.name == topic }) {
             return "Usage: striple \(entry.usage)\n\n\(entry.title).\n\nURL: \(entry.url ?? "")\n"
         }
@@ -705,6 +787,17 @@ public enum StripleCLI {
         case "help": return "Usage: striple help [<command>]\n\nShow the general help, or help for one command.\n"
         case "version": return "Usage: striple --version\n\nShow the version of Striple.\n"
         case "command": return "Usage: striple command <name> [<n>]\n\nRun a command by name. Same as striple <name>.\n"
+        case "report":
+            return """
+            Usage: striple report [--days <n>] [--json]
+
+            Show the local metrics of the last <n> days (1 to 90, default 7): live budgets (PASS or FAIL),
+            speed, cost, problems, the most used commands, friction per app and the slowest apps.
+            It reads the files in \(StriplePaths.metricsDirectory.path),
+            so it also works when Striple is not running. See docs/METRICS.md.
+            --json prints the full report as JSON.
+
+            """
         default: return usageText()
         }
     }
@@ -712,7 +805,8 @@ public enum StripleCLI {
     public static func listText() -> String {
         let width = (commandEntries + queries).map(\.usage.count).max()! + 2
         func line(_ e: Entry) -> String { "  " + e.usage.padding(toLength: width, withPad: " ", startingAt: 0) + e.title }
-        return (["Commands:"] + commandEntries.map(line) + ["", "Queries:"] + queries.map(line)).joined(separator: "\n") + "\n"
+        return (["Commands:"] + commandEntries.map(line) + ["", "Queries:"] + (queries + [reportEntry]).map(line))
+            .joined(separator: "\n") + "\n"
     }
 
     // MARK: Format

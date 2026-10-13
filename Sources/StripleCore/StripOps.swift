@@ -139,7 +139,7 @@ extension Strip {
             center(on: focusedColumn, settings: settings, metrics: metrics)
         case .focusWindow(let id):
             guard setFocus(id) else { return .none }
-        case .toggleFloat, .sendToNextDisplay, .start, .stop, .toggleEngine, .restart:
+        case .toggleFloat, .sendToNextDisplay, .start, .stop, .toggleEngine, .restart, .mark:
             return .none
         }
         if self == before { return .none }

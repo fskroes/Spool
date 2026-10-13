@@ -85,8 +85,23 @@ struct GeneralTab: View {
                 Toggle("Drag a window to change its place on the strip", isOn: store.binding(\.behavior.dragToReorder))
                 Toggle("Apps in the background cannot take the focus", isOn: store.binding(\.behavior.preventFocusStealing))
             }
+
+            Section("Metrics") {
+                Toggle("Measure speed and usage on this Mac (local only)", isOn: store.binding(\.metrics.enabled))
+                Note("Striple counts commands, frame times and problems in files on this Mac. No window titles and no keys. Nothing leaves the Mac. Run striple report to read them.")
+                HStack {
+                    Spacer()
+                    Button("Open metrics folder", action: openMetricsFolder)
+                }
+            }
         }
         .formStyle(.grouped)
+    }
+
+    private func openMetricsFolder() {
+        let folder = StriplePaths.metricsDirectory
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
     }
 
     private var borderColor: Binding<CGColor> {
@@ -110,7 +125,7 @@ struct EngineStatusRow: View {
             if engine.status == .noPermission {
                 Button("Mac Setup") { app.openSettings(.macSetup) }
             }
-            Button(engine.status == .stopped ? "Start" : "Stop") { engine.toggle() }
+            Button(engine.status == .stopped ? "Start" : "Stop") { engine.perform(.toggleEngine, source: .menu) }
         }
     }
 

@@ -57,6 +57,8 @@ public final class FrameApplier: @unchecked Sendable {
         public var axMs: Double
         /// From the `apply` call that queued this frame until it was written: the wait for the app plus `axMs`.
         public var latencyMs: Double
+        /// The AX write failed.
+        public var failed = false
     }
 
     private struct Pending {
@@ -356,7 +358,7 @@ public final class FrameApplier: @unchecked Sendable {
                 let after = DispatchTime.now().uptimeNanoseconds
                 results.append((p.write.id, p.write.frame, ok, token))
                 timings.append(WriteTiming(pid: pid, axMs: Double(after - before) / 1_000_000,
-                                           latencyMs: Double(after - p.queuedAt) / 1_000_000))
+                                           latencyMs: Double(after - p.queuedAt) / 1_000_000, failed: !ok))
             }
             writer.endBatch(pid: pid)
             let done: [@Sendable () -> Void] = lock.withLock {

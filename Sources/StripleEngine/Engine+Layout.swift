@@ -17,6 +17,7 @@ extension Engine {
         }
         let result = Layout.compute(strip, display: d.geometry, settings: config.layout)
         layouts[key] = result
+        if swipe == nil { metricsStore?.recordColumns(strip.columns.count) }
         var anim = animators[key] ?? FrameAnimator(response: config.animation.response, enabled: config.animation.enabled)
         let now = CACurrentMediaTime()
         anim.setTargets(result.frames, at: now, animate: animate, velocityX: velocityX)
@@ -54,10 +55,15 @@ extension Engine {
         if !writes.isEmpty {
             let start = pendingCommandStart
             pendingCommandStart = nil
-            applier.apply(writes, completion: Self.recordTick(recorder, commandStart: start))
+            if let start { settleStart = start }
+            applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore, commandStart: start))
         }
         updateOverlays()
         if settled && swipe == nil {
+            if let start = settleStart {
+                settleStart = nil
+                metricsStore?.recordCommandSettle(ms: (t - start) * 1000)
+            }
             ticker?.stop()
             applier.settle()
             checkHealth()
@@ -209,6 +215,7 @@ extension Engine {
         guard recent.count < 2 else { return }
         corrections[id] = recent + [now]
         log.log("correct: window \(id) of \(w.info.bundleID) moved by its app (wrote \(Policy.text(last)), now \(Policy.text(f))), putting it back")
+        if !w.info.bundleID.isEmpty { metricsStore?.record(.appCorrection, bundleID: w.info.bundleID) }
         applier.forget(id)
         tick(now)
     }
@@ -218,6 +225,7 @@ extension Engine {
         drag = nil
         guard let w = windows[d.id], w.state == .tiled, let key = w.key, var strip = strips[key],
               let disp = display(key.display) else { return }
+        if !w.info.bundleID.isEmpty { metricsStore?.record(d.resize ? .userResize : .userDrag, bundleID: w.info.bundleID) }
         let m = disp.geometry.metrics(config.layout)
         let dropped = AX.frame(w.element)
         applier.forget(d.id)
@@ -412,6 +420,13 @@ extension Engine {
             guard var strip = strips[s.key], let m = metrics(s.key) else { return }
             let v = Policy.scrollDelta(dx: velocity, viewWidth: m.usableWidth, settings: config.gestures)
             let snap = strip.snappedScroll(from: s.shown, velocity: v, settings: config.layout, metrics: m)
+            if let store = metricsStore {
+                store.record(.swipe)
+                // A fling: the speed of the fingers, not only where they stopped, picked the column.
+                if snap.column != strip.snappedScroll(from: s.shown, velocity: 0, settings: config.layout, metrics: m).column {
+                    store.record(.fling)
+                }
+            }
             strip.scroll = snap.scroll
             strip.focusedColumn = snap.column
             strips[s.key] = strip
@@ -478,6 +493,7 @@ extension Engine {
     func configChanged(_ new: Config) {
         let old = config
         config = new
+        if old.metrics != new.metrics { metricsSettingChanged() }
         if old.bindings != new.bindings { registerHotkeys() }
         guard status == .running else { return }
         if old.gestures.fingers != new.gestures.fingers {
