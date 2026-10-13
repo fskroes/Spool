@@ -849,6 +849,7 @@ public enum StripleCLI {
             ("Skipped writes", "\(s.skippedWrites)"),
             ("Coalesced writes", "\(s.coalescedWrites)"),
             ("AX errors", "\(s.axErrors)"),
+        ] + (s.closedWindowWrites.map { [("Closed-window writes", "\($0) (the window closed first; not errors)")] } ?? []) + [
             ("Frame write", "p50 \(ms(s.frameWriteP50)), p95 \(ms(s.frameWriteP95))"),
         ] + (s.frameOwnP50.flatMap { p50 in s.frameOwnP95.map { p95 in
             [("Striple's part", "p50 \(ms(p50)), p95 \(ms(p95)) (frame write without the AX calls)")] } } ?? []) + [

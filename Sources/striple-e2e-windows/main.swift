@@ -39,6 +39,8 @@ final class TestWindows: NSObject, NSApplicationDelegate {
     private var seq = 0
     private var commandsDone = 0
     private var timer: Timer?
+    private var activationCount = 0
+    private var activations: [AppActivation] = []
     /// Encodes and writes the report off the main thread. The main thread answers Striple's AX calls; a file
     /// write there (open, fsync, rename) would delay them and add the test app's own time to Striple's numbers.
     /// Serial, so the reports land in `seq` order.
@@ -47,12 +49,30 @@ final class TestWindows: NSObject, NSApplicationDelegate {
     init(options: Options) { self.options = options }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Every app that becomes active, so the runner can tell a focus taken by another app from a focus
+        // Striple lost (docs/E2E.md, "Focus taken by another app").
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                          object: nil, queue: .main) { note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let pid = app?.processIdentifier ?? 0
+            let name = app?.localizedName ?? app?.bundleIdentifier ?? "?"
+            MainActor.assumeIsolated { self.activated(pid: pid, name: name) }
+        }
         for _ in 0..<options.count { openWindow() }
-        NSApp.activate(ignoringOtherApps: true)
+        // With no windows this is the focus thief of `--steal-focus`: it becomes active only when the runner
+        // steals with `open`. Its launch must not count as a theft.
+        if options.count > 0 { NSApp.activate(ignoringOtherApps: true) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             MainActor.assumeIsolated { self.tick() }
         }
         tick()
+    }
+
+    private func activated(pid: pid_t, name: String) {
+        activationCount += 1
+        activations.append(AppActivation(index: activationCount, pid: pid, name: name))
+        if activations.count > AppActivation.kept { activations.removeFirst(activations.count - AppActivation.kept) }
+        writeReport()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -98,6 +118,7 @@ final class TestWindows: NSObject, NSApplicationDelegate {
             switch WindowCommand(line: line) {
             case .open: openWindow()
             case .close(let title): close(title: title)
+            case .activate: NSApp.activate(ignoringOtherApps: true)
             case .quit:
                 writeReport()
                 reportQueue.sync {}
@@ -115,7 +136,8 @@ final class TestWindows: NSObject, NSApplicationDelegate {
                            frame: Coordinates.topLeft($0.frame, primaryHeight: primary.frame.height))
         }
         let report = WindowReport(pid: getpid(), seq: seq, commandsDone: commandsDone, windows: list,
-                                  active: NSApp.isActive, key: NSApp.keyWindow?.windowNumber)
+                                  active: NSApp.isActive, key: NSApp.keyWindow?.windowNumber,
+                                  activationCount: activationCount, activations: activations)
         let path = options.report
         reportQueue.async {
             guard let data = try? JSONEncoder().encode(report) else { return }

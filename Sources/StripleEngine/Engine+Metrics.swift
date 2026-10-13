@@ -17,12 +17,46 @@ final class MetricsSink: @unchecked Sendable {
     }
     func forget(pid: pid_t) { lock.withLock { _ = bundles.removeValue(forKey: pid) } }
     func forgetAllApps() { lock.withLock { bundles.removeAll() } }
+    func bundleID(for pid: pid_t) -> String? { lock.withLock { bundles[pid] } }
 
     /// Called on an AX queue for each window write.
     func record(write t: FrameApplier.WriteTiming) {
         let target = lock.withLock { store.flatMap { s in bundles[t.pid].map { (s, $0) } } }
         guard let (store, bundleID) = target else { return }
         store.recordAXWrite(bundleID: bundleID, ms: t.axMs, failed: t.failed)
+    }
+}
+
+/// Logs failed AX frame writes, so the log tells why `axErrors` went up: the window, the app, the AX call and the
+/// code. Only the first `limit` failures per app and code are logged, so an app that fails every frame does not
+/// fill the log. Called on the AX queues; `clear` (when the engine forgets its windows) starts the counts again.
+final class WriteFailureLog: @unchecked Sendable {
+    static let limit = 3
+    private struct Key: Hashable { let pid: pid_t; let code: Int32 }
+    private let lock = NSLock()
+    private var counts: [Key: Int] = [:]
+    private let output: @Sendable (String) -> Void
+
+    init(output: @escaping @Sendable (String) -> Void) { self.output = output }
+
+    func record(_ t: FrameApplier.WriteTiming, bundleID: String?) {
+        guard case .failed(_, let code) = t.result else { return }
+        let n = lock.withLock { () -> Int in
+            let k = Key(pid: t.pid, code: code)
+            counts[k, default: 0] += 1
+            return counts[k]!
+        }
+        if let line = Self.message(t, bundleID: bundleID, count: n) { output(line) }
+    }
+
+    func clear() { lock.withLock { counts.removeAll() } }
+
+    /// The log line of the `count`th failure of this app with this code, nil when it is not logged.
+    static func message(_ t: FrameApplier.WriteTiming, bundleID: String?, count: Int) -> String? {
+        guard case .failed(let call, let code) = t.result, count <= limit else { return nil }
+        let app = bundleID.map { "\($0) (pid \(t.pid))" } ?? "pid \(t.pid)"
+        let more = count == limit ? "; more failures of this app with this code are not logged" : ""
+        return "ax: frame write to window \(t.id) of \(app) failed: \(call.rawValue) \(code) (\(Policy.axErrorName(code)))\(more)"
     }
 }
 

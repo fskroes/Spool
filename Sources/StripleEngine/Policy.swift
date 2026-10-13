@@ -211,10 +211,41 @@ enum Policy {
 
     /// Seconds before the next try to watch an app that did not answer, or nil to give up.
     /// Fast at first (an app that is starting), then every 5 s for about two minutes (a large app that is busy).
-    /// A frame write worked unless a call really failed. `.cannotComplete` is a timeout: the app got the request
-    /// and applies it when it can, so the frame counts as written and the app is not healed for being slow.
-    static func frameWriteWorked(_ results: [AXError]) -> Bool {
-        results.allSatisfy { $0 == .success || $0 == .cannotComplete }
+    /// The result of a frame write from its AX calls, in call order.
+    /// - `.invalidUIElement` from any call: the window closed after the frame was queued. That is `.gone`, not an
+    ///   error: Striple removes the window when the destroyed notification comes, some ms later.
+    /// - `.cannotComplete` is a timeout: the app got the request and applies it when it can, so the frame counts
+    ///   as written and the app is not healed for being slow.
+    /// - Any other code fails the write; the first such call is reported.
+    static func writeResult(_ calls: [(AXCall, AXError)]) -> WriteResult {
+        if calls.contains(where: { $0.1 == .invalidUIElement }) { return .gone }
+        if let bad = calls.first(where: { $0.1 != .success && $0.1 != .cannotComplete }) {
+            return .failed(call: bad.0, code: bad.1.rawValue)
+        }
+        return .written
+    }
+
+    /// The name of an AXError code, for the log.
+    static func axErrorName(_ code: Int32) -> String {
+        switch AXError(rawValue: code) {
+        case .success: "success"
+        case .failure: "failure"
+        case .illegalArgument: "illegal argument"
+        case .invalidUIElement: "invalid UI element"
+        case .invalidUIElementObserver: "invalid UI element observer"
+        case .cannotComplete: "cannot complete"
+        case .attributeUnsupported: "attribute unsupported"
+        case .actionUnsupported: "action unsupported"
+        case .notificationUnsupported: "notification unsupported"
+        case .notImplemented: "not implemented"
+        case .notificationAlreadyRegistered: "notification already registered"
+        case .notificationNotRegistered: "notification not registered"
+        case .apiDisabled: "API disabled"
+        case .noValue: "no value"
+        case .parameterizedAttributeUnsupported: "parameterized attribute unsupported"
+        case .notEnoughPrecision: "not enough precision"
+        default: "unknown"
+        }
     }
 
     /// Registers the app notifications in order. It stops at the first timeout: every later call to a hung app

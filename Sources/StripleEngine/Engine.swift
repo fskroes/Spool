@@ -16,7 +16,7 @@ public final class Engine: ObservableObject {
         case noPermission
     }
 
-    @Published public private(set) var status: Status = .stopped
+    @Published public internal(set) var status: Status = .stopped
     /// Shortcuts that macOS refused because another app or the system already uses them.
     @Published public private(set) var refusedShortcuts: [KeyCombo] = []
     public let configStore: ConfigStore
@@ -36,7 +36,7 @@ public final class Engine: ObservableObject {
     var tracker: WindowTracker?
     var hotkeys: Hotkeys?
     var gestureTap: GestureTap?
-    var ticker: Ticker?
+    var ticker: FrameTicker?
     var mouseUpMonitor: Any?
     var mouseDownMonitor: Any?
     var mouseDraggedMonitor: Any?
@@ -148,6 +148,8 @@ public final class Engine: ObservableObject {
     var makeMetricsStore: (() -> MetricsStore)?
     /// The AX queues record per-app write times through this box.
     let metricsSink = MetricsSink()
+    /// Logs the first failed AX writes of each app (docs/SPEC.md F2).
+    let writeFailures = WriteFailureLog { EngineLog.shared.log($0) }
     /// Writes the day file. Nil while metrics are off.
     var metricsFlusher: MetricsFlusher?
     /// CPU time and wakeups of the running engine, not counted yet.
@@ -157,22 +159,33 @@ public final class Engine: ObservableObject {
     /// So `columnsPerStrip` gets a sample only when the count of a strip changes.
     var columnCounts = ColumnCounts<StripKey>()
 
-    public init(configStore: ConfigStore) {
+    public convenience init(configStore: ConfigStore) {
+        self.init(configStore: configStore, frameWriter: nil, registersHotkeys: true)
+    }
+
+    /// `frameWriter` and `registersHotkeys: false` are for tests: an engine whose frames go to a fake writer and that
+    /// takes no shortcuts from the Mac.
+    init(configStore: ConfigStore, frameWriter: FrameWriter?, registersHotkeys: Bool) {
         self.configStore = configStore
         config = configStore.config
         let w = AXFrameWriter()
         let r = StatsRecorder()
         let sink = metricsSink
+        let failures = writeFailures
         writer = w
         recorder = r
-        applier = FrameApplier(writer: w) { r.record(write: $0); sink.record(write: $0) }
+        applier = FrameApplier(writer: frameWriter ?? w) { t in
+            r.record(write: t)
+            sink.record(write: t)
+            if t.failed { failures.record(t, bundleID: sink.bundleID(for: t.pid)) }
+        }
         overlays.onTabClick = { [weak self] id in self?.perform(.focusWindow(id), source: .tab) }
         configStore.$config
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] new in MainActor.assumeIsolated { self?.configChanged(new) } }
             .store(in: &cancellables)
-        registerHotkeys()
+        if registersHotkeys { registerHotkeys() }
     }
 
     // MARK: Lifecycle
@@ -190,8 +203,9 @@ public final class Engine: ObservableObject {
         let tracker = WindowTracker(onEvent: { [weak self] in self?.handle($0) }, log: { [weak self] in self?.log.log($0) })
         WindowTracker.current = tracker
         self.tracker = tracker
-        ticker = Ticker { [weak self] t in self?.tick(t) }
-        ticker?.onInterval = { [weak self] interval, period in self?.metricsStore?.recordTick(intervalMs: interval, periodMs: period) }
+        let link = Ticker { [weak self] t in self?.tick(t) }
+        link.onInterval = { [weak self] interval, period in self?.metricsStore?.recordTick(intervalMs: interval, periodMs: period) }
+        ticker = link
         status = .running
         metricsEngineStarted()
         refreshDisplays()
@@ -345,6 +359,7 @@ public final class Engine: ObservableObject {
         placements.removeAll()
         Self.resetWriteState(applier: applier, recorder: recorder)
         metricsSink.forgetAllApps()
+        writeFailures.clear()
         commandClock.reset()
         columnCounts.reset()
         swipe = nil
@@ -526,6 +541,7 @@ public final class Engine: ObservableObject {
         let r = recorder.snapshot()
         return EngineStats(uptimeSeconds: status == .running ? CACurrentMediaTime() - startedAt : 0, framesWritten: r.batches,
                            windowWrites: c.windowWrites, skippedWrites: c.skipped, coalescedWrites: c.coalesced, axErrors: c.errors,
+                           closedWindowWrites: c.gone,
                            frameWriteP50: r.frameP50, frameWriteP95: r.frameP95, frameOwnP50: r.ownP50, frameOwnP95: r.ownP95,
                            commandLatencyP50: r.commandP50,
                            commandLatencyP95: r.commandP95, restarts: restarts,

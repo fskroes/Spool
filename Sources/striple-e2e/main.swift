@@ -12,12 +12,13 @@ import StripleE2EKit
 func usage() -> Never {
     print("""
     usage: striple-e2e [--app <Striple.app>] [--out <dir>] [--bundle-dir <dir>] [--windows-binary <path>]
-                       [--animations on|off]
+                       [--animations on|off] [--steal-focus]
       --app             default: dist/Striple.app
       --out             report folder, default: /tmp/striple/e2e/<timestamp>
       --bundle-dir      where the test app bundle is made, default: .build/e2e
       --windows-binary  the striple-e2e-windows binary, default: next to this binary
       --animations      on (default) or off: the test Striple's animations, and the budget of scenario h
+      --steal-focus     another app takes the focus twice in scenario b; the run must give it back both times
     """)
     exit(2)
 }
@@ -30,8 +31,10 @@ func refuse(_ message: String) -> Never {
 func parseConfig() -> RunConfig {
     var args = Array(CommandLine.arguments.dropFirst())
     var values: [String: String] = [:]
+    var stealFocus = false
     while !args.isEmpty {
         let a = args.removeFirst()
+        if a == "--steal-focus" { stealFocus = true; continue }
         guard ["--app", "--out", "--bundle-dir", "--windows-binary", "--animations"].contains(a), !args.isEmpty else { usage() }
         values[a] = args.removeFirst()
     }
@@ -54,6 +57,7 @@ func parseConfig() -> RunConfig {
         guard let animations = PerformanceBudget.Animations(argument: value) else { usage() }
         config.animations = animations
     }
+    config.stealFocus = stealFocus
     return config
 }
 
@@ -118,9 +122,11 @@ func preflight(_ config: RunConfig) {
     let ping = Proc.run(app.appendingPathComponent("Contents/Helpers/striple").path, ["ping", "--socket", defaultSocket], env: env, timeout: 5)
     if ping.code == 0 { refuse("a Striple answers on \(defaultSocket). Quit it, or retry later.") }
     // A test app left over from an aborted run would add windows to the strip.
-    for old in NSRunningApplication.runningApplications(withBundleIdentifier: E2EIDs.windowsBundleID) {
-        print("striple-e2e: quitting a test app left over from an earlier run (pid \(old.processIdentifier))")
-        old.forceTerminate()
+    for id in [E2EIDs.windowsBundleID, E2EIDs.thiefBundleID] {
+        for old in NSRunningApplication.runningApplications(withBundleIdentifier: id) {
+            print("striple-e2e: quitting a test app left over from an earlier run (pid \(old.processIdentifier))")
+            old.forceTerminate()
+        }
     }
 }
 
@@ -216,12 +222,18 @@ do {
         } else if let s = harness.state(), !s.accessibilityTrusted || !s.running {
             setupFailed("Striple runs but the engine is not running (Accessibility: \(s.accessibilityTrusted ? "granted" : "missing"))")
         } else {
+            if config.stealFocus {
+                try harness.startThief()
+                notes.append("`--steal-focus`: \(E2EIDs.thiefAppName) (pid \(harness.thiefPID ?? 0)) took the focus after step 1 "
+                             + "and before step 3 of scenario b.")
+            }
             if scenarios.tiling() {
                 scenarios.focus()
                 scenarios.move()
                 scenarios.widths()
                 scenarios.closeAndOpen()
                 scenarios.float()
+                scenarios.closeWhileMoving()
             } else {
                 // The strip is in an unknown state: their results would only repeat the tiling failure.
                 Scenarios.stripScenarios.forEach { scenarios.skip($0, because: "a. Tiling failed") }
@@ -243,6 +255,7 @@ if let p = harness.striple, p.isRunning, !harness.stopStriple(wait: 5) {
 }
 var exclude: Set<Int32> = [getpid()]
 if let p = harness.windowsAppPID { exclude.insert(p) }
+if let p = harness.thiefPID { exclude.insert(p) }
 if let p = harness.striple?.processIdentifier { exclude.insert(p) }
 let after = otherWindows(excluding: exclude)
 let safety = SafetyCheck.verdict(before: before?.filter { !exclude.contains($0.pid) }, after: after)

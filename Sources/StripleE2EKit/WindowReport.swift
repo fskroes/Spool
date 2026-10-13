@@ -7,6 +7,10 @@ public enum E2EIDs {
     public static let windowsBundleID = "com.fskroes.Striple.e2e-windows"
     public static let windowsAppName = "StripleE2EWindows"
     public static let windowsExecutable = "striple-e2e-windows"
+    /// The focus thief of `--steal-focus`: the same binary with no windows, in its own bundle. Striple does not
+    /// manage it, and `open` on its bundle makes it the active app.
+    public static let thiefBundleID = "com.fskroes.Striple.e2e-thief"
+    public static let thiefAppName = "StripleE2EThief"
 }
 
 /// One window of the test app, in global top-left coordinates (the space of CGWindowList and AX:
@@ -49,14 +53,21 @@ public struct WindowReport: Codable, Equatable, Sendable {
     public var active: Bool
     /// The window number of the key window, if any.
     public var key: Int?
+    /// Apps that became active since the test app started, counted. Nil from a test app that does not report it.
+    public var activationCount: Int?
+    /// The newest app activations (at most `AppActivation.kept`), oldest first.
+    public var activations: [AppActivation]?
 
-    public init(pid: Int32, seq: Int, commandsDone: Int, windows: [ReportedWindow], active: Bool = false, key: Int? = nil) {
+    public init(pid: Int32, seq: Int, commandsDone: Int, windows: [ReportedWindow], active: Bool = false, key: Int? = nil,
+                activationCount: Int? = nil, activations: [AppActivation]? = nil) {
         self.pid = pid
         self.seq = seq
         self.commandsDone = commandsDone
         self.windows = windows
         self.active = active
         self.key = key
+        self.activationCount = activationCount
+        self.activations = activations
     }
 
     /// True when `number` has the keyboard focus of the system: the app is frontmost and the window is key.
@@ -75,17 +86,36 @@ public enum Coordinates {
     }
 }
 
+/// An app that became the active app, seen by the test app (NSWorkspace.didActivateApplicationNotification).
+public struct AppActivation: Codable, Equatable, Sendable {
+    /// The test app keeps this many of the newest activations in its report.
+    public static let kept = 64
+    /// 1 for the first activation the test app saw, then up by one.
+    public var index: Int
+    public var pid: Int32
+    public var name: String
+
+    public init(index: Int, pid: Int32, name: String) {
+        self.index = index
+        self.pid = pid
+        self.name = name
+    }
+}
+
 /// Commands the runner sends to the test app. One per line in the commands file; the app runs each new
 /// complete line once.
 public enum WindowCommand: Equatable, Sendable {
     case open
     case close(title: String)
+    /// Make the app the active app. The focus thief of `--steal-focus` uses it.
+    case activate
     case quit
 
     public var line: String {
         switch self {
         case .open: return "open"
         case .close(let title): return "close \(title)"
+        case .activate: return "activate"
         case .quit: return "quit"
         }
     }
@@ -93,6 +123,7 @@ public enum WindowCommand: Equatable, Sendable {
     public init?(line: String) {
         let t = line.trimmingCharacters(in: .whitespaces)
         if t == "open" { self = .open; return }
+        if t == "activate" { self = .activate; return }
         if t == "quit" { self = .quit; return }
         if t.hasPrefix("close ") {
             let title = String(t.dropFirst("close ".count)).trimmingCharacters(in: .whitespaces)

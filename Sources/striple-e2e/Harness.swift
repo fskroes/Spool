@@ -13,6 +13,8 @@ struct RunConfig {
     var windowCount = 3
     /// `--animations`: the test Striple's `animation.enabled`, and the budget of scenario h.
     var animations = PerformanceBudget.Animations.on
+    /// `--steal-focus`: a thief app takes the focus twice in scenario b, to test the recovery.
+    var stealFocus = false
 }
 
 enum E2EError: Error, CustomStringConvertible {
@@ -50,6 +52,16 @@ final class Harness {
     private(set) var foreignManaged: [String: String] = [:]
     /// Commands that were not sent because the test window did not get the focus. Each scenario fails on them.
     private(set) var focusFailures: [String] = []
+    /// Times another app took the focus and the runner gave it back (FocusTheft). Listed in the scenario row.
+    private(set) var thefts: [String] = []
+    /// The test app's activation count when a test window last had the focus. A later activation of another
+    /// app is a theft.
+    private var focusMark = 0
+    /// The focus thief of `--steal-focus`.
+    private var thiefBundle: URL?
+    private(set) var thiefPID: Int32?
+    let thiefReportFile: URL
+    let thiefCommandsFile: URL
 
     var cli: String { config.app.appendingPathComponent("Contents/Helpers/striple").path }
     var stripleBinary: String { config.app.appendingPathComponent("Contents/MacOS/Striple").path }
@@ -60,6 +72,8 @@ final class Harness {
         socket = home.appendingPathComponent("striple.sock").path
         reportFile = config.outDir.appendingPathComponent("windows.json")
         commandsFile = config.outDir.appendingPathComponent("commands.txt")
+        thiefReportFile = config.outDir.appendingPathComponent("thief.json")
+        thiefCommandsFile = config.outDir.appendingPathComponent("thief-commands.txt")
         FileManager.default.createFile(atPath: config.outDir.appendingPathComponent("run.log").path, contents: nil)
         logHandle = try? FileHandle(forWritingTo: config.outDir.appendingPathComponent("run.log"))
     }
@@ -95,14 +109,19 @@ final class Harness {
 
     /// Wraps the test binary in an ad hoc signed app bundle, so it has the test bundle ID.
     func makeWindowsBundle() throws -> URL {
+        try makeBundle(name: E2EIDs.windowsAppName, bundleID: E2EIDs.windowsBundleID)
+    }
+
+    /// The test binary in an ad hoc signed app bundle with `bundleID`, in `--bundle-dir`.
+    private func makeBundle(name: String, bundleID: String) throws -> URL {
         let fm = FileManager.default
-        let app = config.bundleDir.appendingPathComponent("\(E2EIDs.windowsAppName).app")
+        let app = config.bundleDir.appendingPathComponent("\(name).app")
         let macos = app.appendingPathComponent("Contents/MacOS")
         if fm.fileExists(atPath: app.path) {
-            // Replace only a test app bundle that the runner made, never another app with the same name.
+            // Replace only a bundle that the runner made, never another app with the same name.
             let plist = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))
-            guard plist?["CFBundleIdentifier"] as? String == E2EIDs.windowsBundleID else {
-                throw E2EError.setup("\(app.path) exists and is not the test app (\(E2EIDs.windowsBundleID)). "
+            guard plist?["CFBundleIdentifier"] as? String == bundleID else {
+                throw E2EError.setup("\(app.path) exists and is not the test app (\(bundleID)). "
                                      + "Move it away or pass another --bundle-dir.")
             }
             try fm.removeItem(at: app)
@@ -110,8 +129,8 @@ final class Harness {
         try fm.createDirectory(at: macos, withIntermediateDirectories: true)
         try fm.copyItem(at: config.windowsBinary, to: macos.appendingPathComponent(E2EIDs.windowsExecutable))
         let plist: [String: Any] = [
-            "CFBundleIdentifier": E2EIDs.windowsBundleID,
-            "CFBundleName": E2EIDs.windowsAppName,
+            "CFBundleIdentifier": bundleID,
+            "CFBundleName": name,
             "CFBundleExecutable": E2EIDs.windowsExecutable,
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "1.0",
@@ -123,8 +142,51 @@ final class Harness {
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: app.appendingPathComponent("Contents/Info.plist"))
         let sign = Proc.run("/usr/bin/codesign", ["--force", "--sign", "-", app.path])
-        guard sign.code == 0 else { throw E2EError.setup("codesign of the test app failed: \(sign.err)") }
+        guard sign.code == 0 else { throw E2EError.setup("codesign of \(name) failed: \(sign.err)") }
         return app
+    }
+
+    /// Starts the focus thief of `--steal-focus`: the test binary with no windows, in its own bundle. A process
+    /// can not make itself the active app (cooperative activation), so it steals through `open`. It starts in the
+    /// background (`open -g`), and the focus mark moves past every activation so far: the launch is no theft, so
+    /// a recovery can not hide a `focus-window` that failed later.
+    func startThief() throws {
+        let app = try makeBundle(name: E2EIDs.thiefAppName, bundleID: E2EIDs.thiefBundleID)
+        FileManager.default.createFile(atPath: thiefCommandsFile.path, contents: nil)
+        try? FileManager.default.removeItem(at: thiefReportFile)
+        lifecycle.lock()
+        guard !stopping else { lifecycle.unlock(); throw E2EError.setup("the run was stopped before the thief started") }
+        thiefBundle = app
+        lifecycle.unlock()
+        let r = Proc.run("/usr/bin/open", ["-g", "-n", app.path, "--args", "--count", "0", "--report", thiefReportFile.path,
+                                           "--commands", thiefCommandsFile.path], timeout: 10)
+        guard r.code == 0 else { throw E2EError.setup("open \(E2EIDs.thiefAppName) failed: \(r.err)") }
+        var pid: Int32?
+        guard poll(timeout: 10, { pid = thiefReport()?.pid; return pid != nil }), let pid else {
+            throw E2EError.setup("the focus thief did not start within 10 s")
+        }
+        lifecycle.withLock { thiefPID = pid }
+        let seen = frames()?.activationCount ?? 0
+        focusMark = max(focusMark, seen)
+        log("thief: \(E2EIDs.thiefAppName) runs, pid \(pid); focus mark at activation \(focusMark)")
+    }
+
+    private func thiefReport() -> WindowReport? {
+        guard let data = FileManager.default.contents(atPath: thiefReportFile.path) else { return nil }
+        return try? JSONDecoder().decode(WindowReport.self, from: data)
+    }
+
+    /// The thief takes the focus. True when the test app saw it become the active app.
+    func stealFocus(_ when: String) -> Bool {
+        guard let app = lifecycle.withLock({ thiefBundle }), let pid = lifecycle.withLock({ thiefPID }) else { return false }
+        let mark = frames()?.activationCount ?? 0
+        let r = Proc.run("/usr/bin/open", [app.path], timeout: 10)
+        let stolen = r.code == 0 && poll(timeout: 3) {
+            guard let f = self.frames(), let last = f.activations?.last else { return false }
+            return last.pid == pid && last.index > mark
+        }
+        log("thief: \(stolen ? "took" : "did not take") the focus \(when)")
+        return stolen
     }
 
     func startWindowsApp(_ app: URL) throws {
@@ -209,7 +271,7 @@ final class Harness {
     /// window has Striple's focus. With `repair: false` (scenario b checks the focus itself) a window without
     /// the focus is a failure: the command is not sent and the focus is not given back.
     func command(_ name: String, focus: UInt32? = nil, repair: Bool = true) -> ProcResult {
-        if !repair, let want = focus ?? currentTestFocus(), !hasFocus(want) {
+        if !repair, let want = focus ?? currentTestFocus(), !hasFocus(want), !recoverFromTheft(want, during: "before `\(name)`") {
             let why = "window \(want) did not have the focus before `\(name)` (frontmost \(frontmostApp()))"
             focusFailures.append(why)
             log("striple \(name): not sent, \(why)")
@@ -261,7 +323,45 @@ final class Harness {
 
     /// True when Striple and the system both have `id` focused (test app frontmost, window key).
     func hasFocus(_ id: UInt32) -> Bool {
-        StripCheck.hasFocus(id, stripleFocus: state()?.focusedWindow?.id, report: frames())
+        let report = frames()
+        let ok = StripCheck.hasFocus(id, stripleFocus: state()?.focusedWindow?.id, report: report)
+        if ok, let n = report?.activationCount { focusMark = max(focusMark, n) }
+        return ok
+    }
+
+    /// Waits up to `timeout` s until `id` has the focus. When another app took it (FocusTheft), gives it back
+    /// once and waits again. `during` says when, for the row and the log.
+    func waitForFocus(_ id: UInt32, timeout: Double = 3, during: String) -> Bool {
+        poll(timeout: timeout) { self.hasFocus(id) } || recoverFromTheft(id, during: during)
+    }
+
+    /// When another app took the focus after the last confirmed focus, logs it and gives the focus back to `id`
+    /// with `focus-window`. False when no app took it, when Striple's own focus is on another test window
+    /// (`FocusTheft.mayGiveBack`: Striple's failure), when the run already had `FocusTheft.maxPerRun` thefts, or
+    /// when the focus did not come back.
+    func recoverFromTheft(_ id: UInt32, during: String) -> Bool {
+        guard let thief = FocusTheft.thief(frames(), after: focusMark, striplePID: striple?.processIdentifier) else { return false }
+        focusMark = thief.index
+        let what = "\(thief.name) (pid \(thief.pid)) took the focus \(during)"
+        let own = state()?.focusedWindow
+        guard FocusTheft.mayGiveBack(to: id, stripleFocus: own?.id, focusIsTestWindow: own?.bundleID == E2EIDs.windowsBundleID) else {
+            let why = "\(what), but Striple's focus is on test window \(own?.id ?? 0), not \(id): not given back"
+            focusFailures.append(why)
+            log("focus: \(why)")
+            return false
+        }
+        guard thefts.count < FocusTheft.maxPerRun else {
+            let why = "\(what), and the run already had \(FocusTheft.maxPerRun) thefts: not given back"
+            focusFailures.append(why)
+            log("focus: \(why)")
+            return false
+        }
+        thefts.append(what)
+        log("focus: \(what); giving it back to window \(id)")
+        run(["focus-window", "\(id)"])
+        let back = poll(timeout: 3) { self.hasFocus(id) }
+        log("focus: window \(id) \(back ? "has the focus again" : "did not get the focus back within 3 s")")
+        return back
     }
 
     /// The test window Striple had focused last; used to give focus back after the user clicked elsewhere.
@@ -307,16 +407,32 @@ final class Harness {
 
     // MARK: Cleanup
 
+    /// Quits the focus thief through its commands file, then any app with the thief bundle ID that is left.
+    private func quitThieves(_ pid: Int32?) {
+        if let h = try? FileHandle(forWritingTo: thiefCommandsFile) {
+            _ = try? h.seekToEnd()
+            h.write(Data((WindowCommand.quit.line + "\n").utf8))
+            try? h.close()
+        }
+        _ = poll(timeout: 3) { NSRunningApplication.runningApplications(withBundleIdentifier: E2EIDs.thiefBundleID).isEmpty }
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: E2EIDs.thiefBundleID) {
+            log("thief: pid \(app.processIdentifier) did not quit, forcing it")
+            app.forceTerminate()
+        }
+    }
+
     /// Quits the test app and Striple and deletes the temporary STRIPLE_HOME. Safe to call more than once.
     func cleanup() {
         lifecycle.lock()
         stopping = true
-        let windowsApp = self.windowsApp, striple = self.striple
+        let windowsApp = self.windowsApp, striple = self.striple, thiefPID = self.thiefPID
+        let thiefStarting = thiefBundle != nil && thiefPID == nil
         lifecycle.unlock()
         if let p = windowsApp, p.isRunning {
             _ = send(.quit, timeout: 2)
             if !Proc.terminate(p, wait: 3) { Proc.forceKill(p) }
         }
+        if thiefPID != nil || thiefStarting { quitThieves(thiefPID) }
         if let p = striple, p.isRunning {
             if !Proc.terminate(p, wait: 5) {
                 log("Striple did not quit within 5 s after SIGTERM, killing it")

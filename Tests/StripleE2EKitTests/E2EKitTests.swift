@@ -671,7 +671,7 @@ import Testing
 
 @Suite struct WindowCommandTests {
     @Test func linesRoundTrip() {
-        for c in [WindowCommand.open, .quit, .close(title: "E2E 2")] { #expect(WindowCommand(line: c.line) == c) }
+        for c in [WindowCommand.open, .quit, .activate, .close(title: "E2E 2")] { #expect(WindowCommand(line: c.line) == c) }
         #expect(WindowCommand(line: "close ") == nil)
         #expect(WindowCommand(line: "fly") == nil)
     }
@@ -693,6 +693,66 @@ import Testing
         #expect(focused.hasSystemFocus(42))
         #expect(!focused.hasSystemFocus(7))
         #expect(!WindowReport(pid: 5, seq: 3, commandsDone: 1, windows: r.windows, active: false, key: 42).hasSystemFocus(42))
+    }
+
+    /// A report of an older test app has no activations: it still decodes, and no theft is found in it.
+    @Test func aReportWithoutActivationsDecodes() throws {
+        let old = #"{"pid":5,"seq":1,"commandsDone":0,"windows":[],"active":true,"key":42}"#
+        let r = try JSONDecoder().decode(WindowReport.self, from: Data(old.utf8))
+        #expect(r.activationCount == nil)
+        #expect(r.activations == nil)
+        #expect(FocusTheft.thief(r, after: 0, striplePID: nil) == nil)
+        let withList = WindowReport(pid: 5, seq: 2, commandsDone: 0, windows: [], activationCount: 1,
+                                    activations: [AppActivation(index: 1, pid: 9, name: "Otty")])
+        #expect(try JSONDecoder().decode(WindowReport.self, from: JSONEncoder().encode(withList)) == withList)
+    }
+}
+
+/// Follow-up of the sub-ms frames work: the user's terminal took the focus during a run, and scenario b failed
+/// as if Striple had lost it.
+@Suite struct FocusTheftTests {
+    let testPID: Int32 = 100
+    let striplePID: Int32 = 200
+
+    func report(_ list: [(Int32, String)]) -> WindowReport {
+        let acts = list.enumerated().map { AppActivation(index: $0.offset + 1, pid: $0.element.0, name: $0.element.1) }
+        return WindowReport(pid: testPID, seq: 1, commandsDone: 0, windows: [], activationCount: acts.count, activations: acts)
+    }
+
+    @Test func anotherAppActiveAfterTheMarkIsATheft() {
+        let r = report([(testPID, "Test"), (8564, "Otty")])
+        #expect(FocusTheft.thief(r, after: 1, striplePID: striplePID) == AppActivation(index: 2, pid: 8564, name: "Otty"))
+    }
+
+    @Test func anActivationBeforeTheMarkIsNotATheft() {
+        // The terminal was active, then the test window got the focus (mark 2): that old activation is no theft.
+        let r = report([(8564, "Otty"), (testPID, "Test")])
+        #expect(FocusTheft.thief(r, after: 2, striplePID: striplePID) == nil)
+        #expect(FocusTheft.thief(report([(8564, "Otty")]), after: 1, striplePID: striplePID) == nil)
+    }
+
+    @Test func theTestAppOrStripleIsNeverTheThief() {
+        // Striple that makes itself active is Striple's fault, not another app's: the run must fail on it.
+        #expect(FocusTheft.thief(report([(testPID, "Test"), (striplePID, "Striple")]), after: 1, striplePID: striplePID) == nil)
+        #expect(FocusTheft.thief(report([(8564, "Otty"), (testPID, "Test")]), after: 0, striplePID: striplePID) == nil)
+        #expect(FocusTheft.thief(report([(testPID, "Test"), (0, "?")]), after: 1, striplePID: striplePID) == nil)
+    }
+
+    @Test func onlyTheNewestActivationCounts() {
+        // Otty took the focus, then the test app was active again: the focus problem now is not Otty's doing.
+        let r = report([(testPID, "Test"), (8564, "Otty"), (testPID, "Test")])
+        #expect(FocusTheft.thief(r, after: 1, striplePID: striplePID) == nil)
+        // Two foreign apps in a row: the newest is the thief.
+        let two = report([(testPID, "Test"), (8564, "Otty"), (858, "Finder")])
+        #expect(FocusTheft.thief(two, after: 1, striplePID: striplePID)?.name == "Finder")
+    }
+
+    @Test func theFocusGoesBackOnlyWhenStripleKeptIt() {
+        #expect(FocusTheft.mayGiveBack(to: 7, stripleFocus: 7, focusIsTestWindow: true), "Striple still has the window")
+        #expect(FocusTheft.mayGiveBack(to: 7, stripleFocus: nil, focusIsTestWindow: false), "the thief's window is not managed")
+        #expect(FocusTheft.mayGiveBack(to: 7, stripleFocus: 42, focusIsTestWindow: false), "a window of another app")
+        // Striple moved its focus to another test window: Striple's failure, not the thief's.
+        #expect(!FocusTheft.mayGiveBack(to: 7, stripleFocus: 8, focusIsTestWindow: true))
     }
 }
 

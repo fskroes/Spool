@@ -59,7 +59,7 @@ import Testing
         sink.setBundle("com.example.app", for: 42)
         sink.record(write: write)
         var failed = write
-        failed.failed = true
+        failed.result = .failed(call: .size, code: -25200)
         sink.record(write: failed)
         let app = try #require(store.snapshot().apps["com.example.app"])
         #expect(app.axWrite.count == 2)
@@ -629,8 +629,9 @@ extension CommandClock {
     private static let rest: (Double) -> Bool = { _ in true }
 
     @Test func fromRestTheSpringsStartOneFrameEarlier() {
-        #expect(Engine.animationStart(now: 10, velocityX: nil, settled: Self.rest) == 10 - Engine.firstFrameLead)
-        #expect(Engine.firstFrameLead == 1.0 / 60)
+        #expect(Engine.animationStart(now: 10, velocityX: nil, settled: Self.rest) == 10 - Engine.defaultFramePeriod)
+        #expect(Engine.defaultFramePeriod == 1.0 / 60)
+        #expect(Engine.animationStart(now: 10, velocityX: nil, lead: 1.0 / 120, settled: Self.rest) == 10 - 1.0 / 120)
     }
 
     /// During an animation the springs continue from where they are: a start in the past would make them jump.
@@ -649,7 +650,7 @@ extension CommandClock {
         var asked: [Double] = []
         let start = Engine.animationStart(now: 10, velocityX: nil, settled: { t in asked.append(t); return t >= 10 })
         #expect(start == 10)
-        #expect(asked == [10 - Engine.firstFrameLead])
+        #expect(asked == [10 - Engine.defaultFramePeriod])
     }
 
     /// Round 3 critic: a shrink 800 -> 400 settles, and a few ms later a command sets 600. The springs were settled at
@@ -665,7 +666,7 @@ extension CommandClock {
         var settledAt = 1.0
         while !anim.isSettled(at: settledAt) { settledAt += 0.0005 }
         #expect(anim.writeFrame(1, at: settledAt)!.width == 400, "the settle frame wrote the target")
-        #expect(!anim.isSettled(at: settledAt + 0.005 - Engine.firstFrameLead), "the gap the bug needs")
+        #expect(!anim.isSettled(at: settledAt + 0.005 - Engine.defaultFramePeriod), "the gap the bug needs")
 
         for gap in [0.001, 0.005, 0.010, 0.016, 0.017, 0.030] {
             var a = anim
@@ -700,6 +701,142 @@ extension CommandClock {
         noLead.setTargets([1: from], at: 0, animate: true)
         noLead.setTargets([1: to], at: now, animate: true)
         #expect(noLead.writeFrame(1, at: now)!.minX == 0)
+    }
+
+    @Test func theLeadIsOneDisplayPeriod() {
+        #expect(Engine.firstFrameLead(period: 1.0 / 60) == 1.0 / 60)
+        #expect(Engine.firstFrameLead(period: 1.0 / 120) == 1.0 / 120)
+        #expect(Engine.firstFrameLead(period: 1.0 / 144) == 1.0 / 144)
+        #expect(Engine.firstFrameLead(period: 1.0 / 1000) == 1.0 / 240, "clamped: no display refreshes faster")
+        #expect(Engine.firstFrameLead(period: 1) == 1.0 / 30, "clamped: a slow link must not start an animation 1 s back")
+        for bad in [0, -1, Double.nan, .infinity] {
+            #expect(Engine.firstFrameLead(period: bad) == 1.0 / 60, "\(bad)")
+        }
+    }
+
+    /// While the link runs, `kick` writes nothing and the next refresh writes the strip's first frame, so a lead
+    /// would add one period to that step. From rest with the link stopped, the lead is one display period.
+    @Test func noLeadWhileTheLinkRuns() {
+        #expect(Engine.animationLead(period: 1.0 / 120, linkRunning: false) == 1.0 / 120)
+        #expect(Engine.animationLead(period: 1.0 / 120, linkRunning: true) == 0)
+        #expect(Engine.animationStart(now: 10, velocityX: nil, lead: Engine.animationLead(period: 1.0 / 60, linkRunning: true),
+                                      settled: { _ in true }) == 10)
+    }
+
+    /// The frames a command from rest writes on a display with refresh period `period`: the kick tick at `now`,
+    /// then the display link one period apart, until the springs settle.
+    static func xFrames(period: Double, lead: Double) -> [Double] {
+        let from = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let to = CGRect(x: 816, y: 0, width: 800, height: 600)
+        var anim = FrameAnimator()
+        anim.setTargets([1: from], at: 0, animate: true)
+        let now = 5.0
+        anim.setTargets([1: to], at: Engine.animationStart(now: now, velocityX: nil, lead: lead,
+                                                           settled: { anim.isSettled(at: $0) }), animate: true)
+        var xs: [Double] = [0]
+        var t = now
+        while xs.count < 400 {
+            xs.append(Double(anim.writeFrame(1, at: t)!.minX))
+            if anim.isSettled(at: t) { break }
+            t += period
+        }
+        return xs
+    }
+
+    /// Follow-up of the sub-ms frames work: the lead was 1/60 s on every display. On a fast display the kick frame
+    /// then holds several refreshes of motion, and the window jumps, then slows down. With a lead of one period the
+    /// kick frame moves, frames never go back, and the steps from rest grow: the kick step is the smallest step of
+    /// the speed-up, as on a display link that started one period earlier.
+    @Test(arguments: [48.0, 60, 120, 144, 240])
+    func theKickFrameFitsTheDisplayRate(hz: Double) {
+        let period = 1 / hz
+        let xs = Self.xFrames(period: period, lead: Engine.firstFrameLead(period: period))
+        #expect(xs.last == 816, "\(hz) Hz: it settles at the target")
+        let steps = zip(xs.dropFirst(), xs).map { $0 - $1 }
+        #expect(steps[0] > 0.5, "\(hz) Hz: the kick frame moved")
+        #expect(steps.allSatisfy { $0 >= 0 }, "\(hz) Hz: no frame goes back")
+        #expect(steps[0] <= steps[1], "\(hz) Hz: kick step \(steps[0]) is larger than the next \(steps[1])")
+    }
+
+    /// The test above fails with the old fixed lead on a 240 Hz display: it does catch the bug.
+    @Test func aFixedSixtyHertzLeadJumpsOnAFastDisplay() {
+        let xs = Self.xFrames(period: 1.0 / 240, lead: 1.0 / 60)
+        #expect(xs[1] - xs[0] > xs[2] - xs[1], "the kick step is larger than the step after it")
+    }
+}
+
+/// Follow-up of the sub-ms frames work: after a drag, `mouseUp` wrote a frame at the window's old slot, then moved the
+/// spring to where the user let go. The window flashed back to its old slot for one frame.
+@Suite struct DropFlashTests {
+    let oldSlot = CGRect(x: 824, y: 47, width: 800, height: 1274)
+    let newSlot = CGRect(x: 8, y: 47, width: 800, height: 1274)
+    let dropped = CGRect(x: 300, y: 120, width: 800, height: 1274)
+
+    /// The animator as it was during the drag: settled at the old slot (the tick skips the dragged window).
+    func atRest() -> FrameAnimator {
+        var anim = FrameAnimator()
+        anim.setTargets([1: oldSlot, 2: newSlot], at: 0, animate: false)
+        return anim
+    }
+
+    @Test func theFirstFrameAfterADropStartsWhereTheUserLetGo() {
+        var anim = atRest()
+        let now = 10.0
+        let start = Engine.animationStart(now: now, velocityX: nil, settled: { anim.isSettled(at: $0) })
+        Engine.retarget(&anim, to: [1: newSlot, 2: oldSlot], at: start, animate: true, velocityX: nil, from: [1: dropped])
+        var t = now
+        var previous = dropped
+        repeat {
+            let f = anim.writeFrame(1, at: t)!
+            #expect(abs(f.minX - oldSlot.minX) > 100, "t \(t): the window is back in its old slot (x \(f.minX))")
+            #expect(f.minX <= previous.minX && f.minX >= newSlot.minX, "t \(t): x \(f.minX) is not on the way from the drop")
+            previous = f
+            t += 1.0 / 60
+        } while !anim.isSettled(at: t)
+        let first = anim.writeFrame(1, at: now)!
+        #expect(abs(first.minX - dropped.minX) < 30 && abs(first.minY - dropped.minY) < 10, "first frame \(first)")
+        #expect(anim.writeFrame(1, at: t) == newSlot)
+    }
+
+    /// The old order: the first frame was written before `setCurrent`, at the old slot.
+    @Test func theOldOrderWroteTheOldSlotFirst() {
+        var anim = atRest()
+        let now = 10.0
+        anim.setTargets([1: newSlot, 2: oldSlot], at: now - Engine.defaultFramePeriod, animate: true)
+        let first = anim.writeFrame(1, at: now)!
+        #expect(abs(first.minX - oldSlot.minX) < 100, "one frame of motion from the old slot, x \(first.minX)")
+        #expect(abs(first.minX - dropped.minX) > 400, "far from where the user let go")
+    }
+
+    /// While the strip still moves, the springs start at `now`: the first frame is the drop frame itself.
+    @Test func duringAnAnimationTheFirstFrameIsTheDropFrame() {
+        var anim = atRest()
+        anim.setTargets([1: oldSlot, 2: CGRect(x: 1640, y: 47, width: 800, height: 1274)], at: 9.95, animate: true)
+        let now = 10.0
+        let start = Engine.animationStart(now: now, velocityX: nil, settled: { anim.isSettled(at: $0) })
+        #expect(start == now)
+        Engine.retarget(&anim, to: [1: newSlot, 2: oldSlot], at: start, animate: true, velocityX: nil, from: [1: dropped])
+        #expect(anim.writeFrame(1, at: now) == dropped)
+    }
+
+    /// Animations off: the window goes straight to its new slot. Before, the drop started an animation even then.
+    @Test func withAnimationsOffTheWindowGoesStraightToItsSlot() {
+        var anim = FrameAnimator(enabled: false)
+        anim.setTargets([1: oldSlot, 2: newSlot], at: 0, animate: false)
+        Engine.retarget(&anim, to: [1: newSlot, 2: oldSlot], at: 10, animate: true, velocityX: nil, from: [1: dropped])
+        #expect(anim.writeFrame(1, at: 10) == newSlot)
+        #expect(anim.isSettled(at: 10))
+    }
+
+    /// A window moved to another display is new in that strip's animator: it starts where the user let go, not at
+    /// its target. A `from` window that is not in the targets is ignored.
+    @Test func aWindowNewInTheStripStartsWhereTheUserLetGo() {
+        var anim = FrameAnimator()
+        let start = Engine.animationStart(now: 10, velocityX: nil, settled: { anim.isSettled(at: $0) })
+        Engine.retarget(&anim, to: [1: newSlot], at: start, animate: true, velocityX: nil, from: [1: dropped, 9: oldSlot])
+        let first = anim.writeFrame(1, at: 10)!
+        #expect(abs(first.minX - dropped.minX) < 30, "first frame \(first)")
+        #expect(anim.writeFrame(9, at: 10) == nil)
     }
 }
 

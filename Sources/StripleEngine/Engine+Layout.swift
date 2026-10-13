@@ -8,7 +8,10 @@ extension Engine {
     // MARK: Layout pass
 
     /// Computes the strip's target frames and starts the animation toward them.
-    func relayout(_ key: StripKey, animate: Bool = true, velocityX: Double? = nil) {
+    /// `from`: windows that are not where the animator has them (a window the user just dropped). Their springs
+    /// start there, before the first frame is written: a frame at the animator's old value would show the window
+    /// in its old slot for one frame.
+    func relayout(_ key: StripKey, animate: Bool = true, velocityX: Double? = nil, from current: [WindowID: CGRect] = [:]) {
         guard isActive(key), let d = display(key.display) else { return }
         guard let strip = strips[key], !strip.isEmpty else {
             animators[key] = nil
@@ -24,26 +27,54 @@ extension Engine {
         if Self.targetsChange(animators[key], to: result.frames) { targetChanges &+= 1 }
         var anim = animators[key] ?? FrameAnimator(response: config.animation.response, enabled: config.animation.enabled)
         let now = CACurrentMediaTime()
-        let start = Self.animationStart(now: now, velocityX: velocityX, settled: { anim.isSettled(at: $0) })
-        anim.setTargets(result.frames, at: start, animate: animate, velocityX: velocityX)
+        let lead = Self.animationLead(period: ticker?.period ?? Self.defaultFramePeriod,
+                                      linkRunning: ticker?.isRunning == true)
+        let start = Self.animationStart(now: now, velocityX: velocityX, lead: lead, settled: { anim.isSettled(at: $0) })
+        Self.retarget(&anim, to: result.frames, at: start, animate: animate, velocityX: velocityX, from: current)
         animators[key] = anim
         kick(now)
     }
 
-    /// How far back an animation from rest starts: one frame at 60 Hz. So the kick tick (dt = this lead) already
-    /// moves the windows, and a command's first frame is written in the key handler, not on the next display
-    /// refresh. The display link then continues from there; a spring from rest only moves forward.
-    nonisolated static let firstFrameLead = 1.0 / 60
+    /// Sets the new targets, then starts the windows in `current` from the frame they have on screen.
+    /// Animations off (or `animate` false): the windows go straight to their targets, so `current` does not apply.
+    nonisolated static func retarget(_ anim: inout FrameAnimator, to targets: [WindowID: CGRect], at start: Double,
+                                     animate: Bool, velocityX: Double?, from current: [WindowID: CGRect]) {
+        anim.setTargets(targets, at: start, animate: animate, velocityX: velocityX)
+        guard animate, anim.enabled else { return }
+        for (id, frame) in current where targets[id] != nil { anim.setCurrent(id, frame: frame, at: start) }
+    }
 
-    /// The start time of the springs that `relayout` sets. From rest, `now - firstFrameLead`. During an animation,
-    /// `now`: the springs continue from where they are, so nothing jumps. After a swipe (`velocityX`), `now`: the
-    /// release speed applies from the moment of the release.
+    /// The display period when the ticker does not know it: 60 Hz.
+    nonisolated static let defaultFramePeriod = 1.0 / 60
+
+    /// How far back an animation from rest starts: one display refresh period. So the kick tick (dt = this lead)
+    /// already moves the windows by one frame of motion, and a command's first frame is written in the key handler,
+    /// not on the next display refresh. The display link then continues one period later, so the steps from rest
+    /// grow from the first one on. A fixed 1/60 s lead on a 240 Hz display made the kick step four refreshes of
+    /// motion, larger than the steps after it (a jump, then a slow down).
+    /// Clamped to 1/240 ... 1/30 s; a period that is not a positive number gives 1/60 s.
+    nonisolated static func firstFrameLead(period: Double) -> Double {
+        guard period.isFinite, period > 0 else { return defaultFramePeriod }
+        return min(max(period, 1.0 / 240), 1.0 / 30)
+    }
+
+    /// The start time of the springs that `relayout` sets. From rest, `now - lead` (`firstFrameLead`). During an
+    /// animation, `now`: the springs continue from where they are, so nothing jumps. After a swipe (`velocityX`),
+    /// `now`: the release speed applies from the moment of the release.
     /// "At rest" is checked at the early start time, not at `now`: an animation that settled less than one lead ago
     /// is not settled at the early start, so the retarget would read its held size and position from before the last
     /// frame on screen (a shrink would flash back to its old width). Such a strip starts at `now`.
-    nonisolated static func animationStart(now: Double, velocityX: Double?, settled: (Double) -> Bool) -> Double {
-        let early = now - firstFrameLead
+    nonisolated static func animationStart(now: Double, velocityX: Double?, lead: Double = defaultFramePeriod,
+                                           settled: (Double) -> Bool) -> Double {
+        let early = now - lead
         return velocityX == nil && settled(early) ? early : now
+    }
+
+    /// The lead of `animationStart`. While the display link runs (another strip animates), `kick` writes nothing,
+    /// and the first frame of this strip comes on the next refresh: a lead then would add one more period of motion
+    /// to that first step (a window dropped on another display jumped 130 px instead of 45). So the lead is 0.
+    nonisolated static func animationLead(period: Double, linkRunning: Bool) -> Double {
+        linkRunning ? 0 : firstFrameLead(period: period)
     }
 
     func relayoutAll(animate: Bool) {
@@ -52,7 +83,8 @@ extension Engine {
     }
 
     /// Writes the first frame now (lowest latency for a command) and lets the display link do the rest.
-    /// From rest the springs start `firstFrameLead` in the past, so this frame already moves the windows.
+    /// From rest the springs start one display period (`firstFrameLead`) in the past, so this frame already moves
+    /// the windows.
     /// While the link runs, it alone writes, so frames never pile up faster than the display refreshes.
     func kick(_ now: Double) {
         guard let ticker else { return }
@@ -253,9 +285,14 @@ extension Engine {
     func mouseUp() {
         guard let d = drag else { return }
         drag = nil
+        guard let w = windows[d.id], w.state == .tiled else { return }
+        finishDrag(d, at: mouseLocation(), dropped: AX.frame(w.element))
+    }
+
+    /// The end of a drag: the mouse was released at `p`, and the window is at `dropped` (read with AX).
+    func finishDrag(_ d: DragState, at p: CGPoint, dropped: CGRect?) {
         guard let w = windows[d.id], w.state == .tiled, let key = w.key, var strip = strips[key],
               let disp = display(key.display) else { return }
-        let p = mouseLocation()
         let target = display(containing: p)
         let drop = d.resize || !config.behavior.dragToReorder ? nil
             : Policy.dropKind(dropDisplay: target?.uuid, ownDisplay: key.display,
@@ -265,7 +302,6 @@ extension Engine {
             metricsStore?.record(kind, bundleID: w.info.bundleID)
         }
         let m = disp.geometry.metrics(config.layout)
-        let dropped = AX.frame(w.element)
         applier.forget(d.id)
         if d.resize {
             if let f = dropped, let (c, _) = strip.locate(d.id) {
@@ -304,19 +340,17 @@ extension Engine {
                 strips[tkey] = ts
                 windows[d.id]?.key = tkey
                 relayout(key)
-                relayout(tkey)
-                if let f = dropped { animators[tkey]?.setCurrent(d.id, frame: f, at: CACurrentMediaTime()) }
+                // The new strip's animator gets the window at its target: start it where the user let go.
+                relayout(tkey, from: dropped.map { [d.id: $0] } ?? [:])
                 focusWindow(d.id, scroll: true, fromCommand: false)
                 scheduleSessionSave()
                 return
             }
         }
-        relayout(key)
-        // Animate from where the user let go, not from the old slot.
-        if let f = dropped {
-            animators[key]?.setCurrent(d.id, frame: f, at: CACurrentMediaTime())
-            if ticker?.isRunning == false { ticker?.start() }
-        }
+        // Animate from where the user let go, not from the old slot. `relayout` starts the window there before it
+        // writes the first frame; a `setCurrent` after it came one frame late, so the window flashed back to its
+        // old slot.
+        relayout(key, from: dropped.map { [d.id: $0] } ?? [:])
         scheduleSessionSave()
     }
 

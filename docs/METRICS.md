@@ -63,7 +63,7 @@ the day of the new time, also to an earlier day. Striple adds them to the file o
 | Use | Each command, with where it came from: `hotkey`, `cli`, `url`, `menu`, `tab` (a click on a tab bar) or `gesture` | `commands` |
 | | Columns on a strip, each time the number changes or a strip opens (`1` to `9`, `10+`) | `columnsPerStrip` |
 | Problems | Engine start, stop and restart, unclean exits, repaired app observers, a lost Accessibility permission, focus through the slow fallback, `config.json` errors, refused shortcuts, apps that do not answer, swipes, flings, marks | `events` |
-| Per app | Time of the AX calls of one window write, failed writes, friction | `apps` |
+| Per app | Time of the AX calls of one window write, failed writes, friction. A write to a window that closed first is not a failed write and has no time | `apps` |
 
 Today no gesture runs a command: a swipe scrolls the strip and counts as the event `swipe` (and `fling` when the
 speed of your fingers picked the column). The source `gesture` is there for gesture commands. A swipe is not a

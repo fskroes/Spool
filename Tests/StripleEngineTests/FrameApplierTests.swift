@@ -8,6 +8,8 @@ import Testing
 private final class FakeWriter: FrameWriter, @unchecked Sendable {
     let delay: Double
     let failing: Set<WindowID>
+    /// Windows that closed: their writes return `.gone`.
+    let gone: Set<WindowID>
     /// Per-window delay, used instead of `delay` for these windows.
     var delays: [WindowID: Double] = [:]
     private let lock = NSLock()
@@ -15,11 +17,13 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     private var batches: [pid_t] = []
     private var settled: [pid_t] = []
     private var gates: [WindowID: Gate] = [:]
-    private var outcomes: [WindowID: [Bool]] = [:]
+    private var outcomes: [WindowID: [WriteResult]] = [:]
     private var resizeLog: [(id: WindowID, resize: Bool)] = []
 
     /// The results of the next writes of one window, in order; after them, `failing` decides.
-    func outcomes(_ id: WindowID, _ list: [Bool]) { lock.withLock { outcomes[id] = list } }
+    func outcomes(_ id: WindowID, _ list: [Bool]) { results(id, list.map { $0 ? .written : FakeWriter.failure }) }
+    func results(_ id: WindowID, _ list: [WriteResult]) { lock.withLock { outcomes[id] = list } }
+    static let failure = WriteResult.failed(call: .size, code: -25200)
 
     /// Holds the next write of one window: `started` signals when the write begins, and the write ends after
     /// `release`. A gate holds one write only. The tests use gates to put events in a fixed order, without sleeps.
@@ -30,9 +34,10 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
 
     func gate(_ id: WindowID) -> Gate { lock.withLock { let g = Gate(); gates[id] = g; return g } }
 
-    init(delay: Double = 0, failing: Set<WindowID> = []) {
+    init(delay: Double = 0, failing: Set<WindowID> = [], gone: Set<WindowID> = []) {
         self.delay = delay
         self.failing = failing
+        self.gone = gone
     }
 
     func beginBatch(pid: pid_t) { lock.withLock { batches.append(pid) } }
@@ -44,7 +49,7 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
     /// Writes of one window, in order.
     func frames(_ id: WindowID) -> [CGRect] { lock.withLock { log.filter { $0.id == id }.map(\.frame) } }
 
-    func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
+    func write(_ w: FrameWrite, previous: CGRect?) -> WriteResult {
         if let g = lock.withLock({ gates.removeValue(forKey: w.id) }) {
             g.started.signal()
             g.release.wait()
@@ -55,11 +60,12 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
             log.append((w.pid, w.id, w.frame, previous))
             resizeLog.append((w.id, w.resize))
             if var list = outcomes[w.id], !list.isEmpty {
-                let ok = list.removeFirst()
+                let result = list.removeFirst()
                 outcomes[w.id] = list
-                return ok
+                return result
             }
-            return !failing.contains(w.id)
+            if gone.contains(w.id) { return .gone }
+            return failing.contains(w.id) ? FakeWriter.failure : .written
         }
     }
 
@@ -72,7 +78,7 @@ private final class FakeWriter: FrameWriter, @unchecked Sendable {
 /// Writes at once; `settle` takes 40 ms, like Chrome turning AXEnhancedUserInterface on again.
 private final class SlowSettleWriter: FrameWriter, @unchecked Sendable {
     let settleStarted = DispatchSemaphore(value: 0)
-    func write(_ w: FrameWrite, previous: CGRect?) -> Bool { true }
+    func write(_ w: FrameWrite, previous: CGRect?) -> WriteResult { .written }
     func settle(pid: pid_t) {
         settleStarted.signal()
         Thread.sleep(forTimeInterval: 0.04)
@@ -850,6 +856,106 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         applier.clearFailures(11)
         #expect(applier.failingApps(threshold: 1).isEmpty)
     }
+
+    // Follow-up of the sub-ms frames work: writes to a window that had closed counted as AX errors.
+    @Test func aWriteToAClosedWindowIsNotAnError() {
+        let writer = FakeWriter(gone: [2])
+        let timings = Box<[FrameApplier.WriteTiming]>([])
+        let applier = FrameApplier(writer: writer) { t in timings.value.append(t) }
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(0)), FrameWrite(id: 2, pid: 10, frame: rect(0))])
+        #expect(applier.stats.errors == 0)
+        #expect(applier.stats.gone == 1)
+        #expect(applier.stats.windowWrites == 1, "a write to a closed window is not a window write")
+        #expect(applier.lastWritten(2) == nil)
+        #expect(timings.value.map(\.id) == [1], "no timing for the closed window: it is not a slow app")
+    }
+
+    @Test func aWriteToAClosedWindowIsNotRetried() {
+        // The end of an animation asks for the frame again while the write is in flight. A failed write is
+        // queued again for that call; a gone one is not, because the window does not come back.
+        let writer = FakeWriter()
+        writer.results(1, [.gone])
+        let held = writer.gate(1)
+        let applier = FrameApplier(writer: writer)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))])
+        #expect(held.started.wait(timeout: .now() + 2) == .success)
+        let done = DispatchSemaphore(value: 0)
+        applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(0))]) { _ in done.signal() }
+        held.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        #expect(writer.frames(1) == [rect(0)])
+        #expect(applier.stats.gone == 1)
+        #expect(applier.stats.errors == 0)
+    }
+
+    @Test func anAppWhoseWindowsAreAllGoneIsReportedAsFailing() {
+        // An app that restarts its AX server makes every element invalid while its windows stay open. Only the
+        // failure count of the batches makes the engine take fresh elements, so gone writes keep counting there.
+        let writer = FakeWriter(gone: [1, 2])
+        let applier = FrameApplier(writer: writer)
+        for x in 0..<3 {
+            applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(CGFloat(x))), FrameWrite(id: 2, pid: 10, frame: rect(CGFloat(x)))])
+        }
+        #expect(applier.failingApps(threshold: 3) == [10])
+        #expect(applier.stats.errors == 0)
+        #expect(applier.stats.gone == 6)
+    }
+
+    @Test func aGoneWindowNextToAGoodOneDoesNotMakeTheAppFail() {
+        let writer = FakeWriter(gone: [2])
+        let applier = FrameApplier(writer: writer)
+        for x in 0..<3 {
+            applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(CGFloat(x))), FrameWrite(id: 2, pid: 10, frame: rect(CGFloat(x)))])
+        }
+        #expect(applier.failingApps(threshold: 1).isEmpty)
+    }
+
+    @Test func aFailedWriteTimingNamesTheWindowAndTheCode() {
+        let writer = FakeWriter(failing: [3])
+        let timings = Box<[FrameApplier.WriteTiming]>([])
+        let applier = FrameApplier(writer: writer) { t in timings.value.append(t) }
+        applier.applyAndWait([FrameWrite(id: 3, pid: 10, frame: rect(0))])
+        let t = timings.value
+        #expect(t.map(\.id) == [3])
+        #expect(t.map(\.result) == [FakeWriter.failure])
+        #expect(t.allSatisfy { $0.failed })
+    }
+}
+
+@Suite struct WriteFailureLogTests {
+    private func failure(_ id: WindowID = 7, pid: pid_t = 42, call: AXCall = .size, code: Int32 = -25200) -> FrameApplier.WriteTiming {
+        FrameApplier.WriteTiming(pid: pid, axMs: 1, latencyMs: 1, id: id, result: .failed(call: call, code: code))
+    }
+
+    @Test func theLineNamesTheWindowAppCallAndCode() {
+        #expect(WriteFailureLog.message(failure(), bundleID: "com.example.app", count: 1)
+                == "ax: frame write to window 7 of com.example.app (pid 42) failed: size -25200 (failure)")
+        #expect(WriteFailureLog.message(failure(call: .position, code: -25205), bundleID: nil, count: 2)
+                == "ax: frame write to window 7 of pid 42 failed: position -25205 (attribute unsupported)")
+    }
+
+    @Test func onlyTheFirstFailuresPerAppAndCodeAreLogged() {
+        let lines = Lines()
+        let log = WriteFailureLog { lines.add($0) }
+        for _ in 0..<5 { log.record(failure(), bundleID: "a") }
+        log.record(failure(code: -25205), bundleID: "a")
+        log.record(failure(pid: 43), bundleID: "b")
+        log.record(FrameApplier.WriteTiming(pid: 42, axMs: 1, latencyMs: 1, id: 7, result: .written), bundleID: "a")
+        let all = lines.all
+        #expect(all.count == WriteFailureLog.limit + 2)
+        #expect(all.filter { $0.contains("-25200") && $0.contains("pid 42") }.count == WriteFailureLog.limit)
+        #expect(all[WriteFailureLog.limit - 1].hasSuffix("; more failures of this app with this code are not logged"))
+        log.clear()
+        log.record(failure(), bundleID: "a")
+        #expect(lines.all.count == WriteFailureLog.limit + 3, "clear starts the counts again")
+    }
+}
+
+private final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ s: String) { lock.withLock { lines.append(s) } }
+    var all: [String] { lock.withLock { lines } }
 }
 
 /// What a completion got: nil until it ran, then the time it was given (itself nil for a dropped frame).

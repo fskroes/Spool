@@ -34,9 +34,15 @@ test in `Tests/`.
 - Frames are driven by the display refresh (display link). No timer runs when nothing moves.
 - A shortcut changes the layout model synchronously in the key handler. When no animation runs (the display
   link is stopped), the key handler also writes the first frame (`Engine.kick`). From rest, the springs start one
-  frame (1/60 s) in the past (`Engine.animationStart`), so that frame already moves the windows. "From rest" means
-  settled at that earlier start time, so an animation that settled less than 1/60 s ago does not read its old held
-  size. The display link writes the frames after it. During an animation the display link writes the next frame. During an animation or
+  display refresh period in the past (`Engine.animationStart`, `Engine.firstFrameLead`), so that frame already
+  moves the windows. The period is that of the display the link uses next (`Ticker.period`: the main screen's
+  refresh interval while the link is stopped, the link's own period while it runs): 1/60 s at 60 Hz, 1/120 s on a
+  120 Hz ProMotion display, clamped to 1/240 to 1/30 s. When the link already runs (another strip animates), the
+  key handler writes nothing and the next refresh writes the strip's first frame, so that strip starts with no
+  lead (`Engine.animationLead`). So the first step is one refresh of motion, and the steps
+  after it grow: a fixed 1/60 s lead made the first step larger than the next one on a display faster than 60 Hz.
+  "From rest" means settled at that earlier start time, so an animation that settled less than one period ago
+  does not read its old held size. The display link writes the frames after it. During an animation the display link writes the next frame. During an animation or
   after a swipe, the springs start at the current time, so nothing jumps.
 - The origin follows the spring on every frame. The size does not (`FrameAnimator.writeFrame`): a size write
   makes the app lay out its window again, which costs several times a move. While a size animates, the window
@@ -48,6 +54,15 @@ test in `Tests/`.
 - The app or macOS can refuse a part of a size at a position (a window may not reach past a display edge there).
   So a window that got a new size away from its final position gets that size again on the last frame of the
   animation (`Engine.sizedAway`, `FrameWrite.resize`).
+- A window can close while Striple writes to it. Until the "window destroyed" notification arrives (about 40 ms
+  later), a write to it gets `kAXErrorInvalidUIElement`. Such a write is a closed-window write
+  (`WriteResult.gone`), not an AX error: Striple does not retry it, it does not count in `AX errors`, and
+  `striple stats` shows it as `Closed-window writes`. An app whose writes in a tick all fail or are gone still
+  counts as failing for the self-healing (F17).
+- Every other failed AX write counts in `AX errors`. `engine.log` names the window, the app, the AX call and the
+  code, for example `ax: frame write to window 7 of com.x (pid 42) failed: size -25200 (failure)`. It logs the
+  first 3 failures per app and code, until the engine restarts or rebuilds its state (after a config change
+  to the rules or the disabled displays).
 
 ### F3 Stacks
 - A column can hold several windows stacked vertically.
@@ -93,6 +108,9 @@ test in `Tests/`.
 - A resize from a window edge sets the column width. A press up to 8 pt outside the edge counts, because macOS
   starts a resize there. Any other move while the button is down is put back after the release.
 - A drop onto a switched-off display, or outside every display, puts the window back in its own slot.
+- After a drop the window animates from where the user let go, also on another display. Its spring starts there
+  before the first frame is written (`Engine.retarget`), so it never shows in its old slot for one frame. With
+  animations off it goes straight to its new slot.
 
 ### F12 Multi-monitor and per-display on/off
 - Each display has its own strip, focus and scroll position.

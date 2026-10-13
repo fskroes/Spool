@@ -323,11 +323,34 @@ import Testing
 
     // Round 6 finding: with the global 0.25 s timeout, a slow app's writes counted as errors and it was healed.
     @Test func aTimedOutFrameWriteCountsAsSent() {
-        #expect(Policy.frameWriteWorked([.success, .success]))
-        #expect(Policy.frameWriteWorked([.success, .cannotComplete]))
-        #expect(Policy.frameWriteWorked([.cannotComplete]))
-        #expect(!Policy.frameWriteWorked([.success, .invalidUIElement]))
-        #expect(!Policy.frameWriteWorked([.failure]))
+        #expect(Policy.writeResult([(.size, .success), (.position, .success)]) == .written)
+        #expect(Policy.writeResult([(.size, .success), (.position, .cannotComplete)]) == .written)
+        #expect(Policy.writeResult([(.position, .cannotComplete)]) == .written)
+        #expect(Policy.writeResult([]) == .written)
+        #expect(Policy.writeResult([(.size, .failure)]) == .failed(call: .size, code: -25200))
+    }
+
+    // Follow-up of the sub-ms frames work: the live stats showed 2 AX errors, both writes to a Teams window that
+    // had just closed (kAXErrorInvalidUIElement, -25202). A closed window is gone, not an AX error.
+    @Test func aWriteToAClosedWindowIsGoneNotFailed() {
+        #expect(Policy.writeResult([(.size, .invalidUIElement)]) == .gone)
+        #expect(Policy.writeResult([(.size, .success), (.position, .invalidUIElement)]) == .gone)
+        // The window closed between the calls: a later failure of the same write is part of the close.
+        #expect(Policy.writeResult([(.size, .invalidUIElement), (.position, .failure)]) == .gone)
+        // The first real failure is the one reported.
+        #expect(Policy.writeResult([(.size, .success), (.position, .attributeUnsupported)])
+                == .failed(call: .position, code: AXError.attributeUnsupported.rawValue))
+        #expect(Policy.writeResult([(.size, .apiDisabled), (.position, .failure)])
+                == .failed(call: .size, code: AXError.apiDisabled.rawValue))
+    }
+
+    @Test func axErrorCodesHaveNames() {
+        #expect(Policy.axErrorName(-25200) == "failure")
+        #expect(Policy.axErrorName(-25202) == "invalid UI element")
+        #expect(Policy.axErrorName(-25204) == "cannot complete")
+        #expect(Policy.axErrorName(-25211) == "API disabled")
+        #expect(Policy.axErrorName(-25214) == "not enough precision")
+        #expect(Policy.axErrorName(1) == "unknown")
     }
 
     // Round 6 finding: the hit test skipped tiled windows above level 0, so they could not be dragged.

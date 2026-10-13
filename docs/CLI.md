@@ -126,21 +126,26 @@ Floating: calculator "Calculator"
 Example output of `striple stats`:
 
 ```
-Uptime:           1h 02m 03s
-Frames written:   1200
-Window writes:    3400
-Skipped writes:   12
-Coalesced writes: 40
-AX errors:        1
-Frame write:      p50 1.20 ms, p95 3.46 ms
-Striple's part:   p50 0.08 ms, p95 0.11 ms (frame write without the AX calls)
-Command latency:  p50 4.00 ms, p95 9.50 ms
-Restarts:         2
+Uptime:               1h 02m 03s
+Frames written:       1200
+Window writes:        3400
+Skipped writes:       12
+Coalesced writes:     40
+AX errors:            1
+Closed-window writes: 3 (the window closed first; not errors)
+Frame write:          p50 1.20 ms, p95 3.46 ms
+Striple's part:       p50 0.08 ms, p95 0.11 ms (frame write without the AX calls)
+Command latency:      p50 4.00 ms, p95 9.50 ms
+Restarts:             2
 Slowest apps (AX write per window):
   teams2 (4173)  p50 12.00 ms, p95 40.50 ms, latency p95 80.00 ms, 340 writes
   Notes (1838)   p50 3.10 ms, p95 6.20 ms, latency p95 9.80 ms, 512 writes
 ```
 
+- **AX errors**: AX frame writes that failed. `engine.log` names the window, the app, the AX call and the code of the
+  first 3 per app and code.
+- **Closed-window writes**: writes to a window that closed before Striple knew it. They are not errors and are not
+  retried. A Striple that does not report it shows no line.
 - **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
   replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
   slowest app in the tick.

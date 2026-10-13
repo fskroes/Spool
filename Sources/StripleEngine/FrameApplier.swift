@@ -20,6 +20,23 @@ public struct FrameWrite: Equatable, Sendable {
     }
 }
 
+/// The AX call of a frame write.
+public enum AXCall: String, Equatable, Sendable {
+    case size, position
+}
+
+/// What one frame write did.
+public enum WriteResult: Equatable, Sendable {
+    case written
+    /// The window does not exist any more (kAXErrorInvalidUIElement, or Striple has no element for it): it closed
+    /// after the frame was queued, before Striple heard of it. Not an AX error (docs/SPEC.md F2).
+    case gone
+    /// An AX call failed. `code` is the AXError raw value.
+    case failed(call: AXCall, code: Int32)
+
+    public var ok: Bool { self == .written }
+}
+
 /// Writes frames to real windows. The live version talks to AX; tests use a fake with a fixed delay.
 /// Called on a per-app serial queue, never on the main thread.
 public protocol FrameWriter: AnyObject, Sendable {
@@ -28,8 +45,8 @@ public protocol FrameWriter: AnyObject, Sendable {
     func endBatch(pid: pid_t)
     /// Called when an animation has settled, after the app's last write.
     func settle(pid: pid_t)
-    /// `previous` is the last frame Striple wrote to this window, nil if none. Return false on an AX error.
-    func write(_ write: FrameWrite, previous: CGRect?) -> Bool
+    /// `previous` is the last frame Striple wrote to this window, nil if none.
+    func write(_ write: FrameWrite, previous: CGRect?) -> WriteResult
 }
 
 public extension FrameWriter {
@@ -51,6 +68,8 @@ public final class FrameApplier: @unchecked Sendable {
         public var skipped = 0
         public var coalesced = 0
         public var errors = 0
+        /// Writes to a window that had closed (`WriteResult.gone`). Not in `windowWrites` or `errors`.
+        public var gone = 0
     }
 
     /// One window write, for the timing stats.
@@ -77,8 +96,10 @@ public final class FrameApplier: @unchecked Sendable {
         public var axMs: Double
         /// From the `apply` call that queued this frame until it was written: the wait for the app plus `axMs`.
         public var latencyMs: Double
-        /// The AX write failed.
-        public var failed = false
+        public var id: WindowID = 0
+        public var result: WriteResult = .written
+        /// The AX write failed. A write to a closed window does not get a timing.
+        public var failed: Bool { if case .failed = result { return true } else { return false } }
     }
 
     private struct Pending {
@@ -421,28 +442,37 @@ public final class FrameApplier: @unchecked Sendable {
                 return
             }
             writer.beginBatch(pid: pid)
-            var results: [(id: WindowID, frame: CGRect, ok: Bool, token: UInt64)] = []
+            var results: [(id: WindowID, frame: CGRect, result: WriteResult, token: UInt64)] = []
             var timings: [WriteTiming] = []
             results.reserveCapacity(batch.count)
             for (p, previous, token) in batch {
                 let before = DispatchTime.now().uptimeNanoseconds
-                let ok = writer.write(p.write, previous: previous)
+                let result = writer.write(p.write, previous: previous)
                 let after = DispatchTime.now().uptimeNanoseconds
-                results.append((p.write.id, p.write.frame, ok, token))
-                timings.append(WriteTiming(pid: pid, axMs: Double(after - before) / 1_000_000,
-                                           latencyMs: Double(after - p.queuedAt) / 1_000_000, failed: !ok))
+                results.append((p.write.id, p.write.frame, result, token))
+                // A closed window is not an app that is slow or failing: its write is left out of the timings.
+                if result != .gone {
+                    timings.append(WriteTiming(pid: pid, axMs: Double(after - before) / 1_000_000,
+                                               latencyMs: Double(after - p.queuedAt) / 1_000_000, id: p.write.id, result: result))
+                }
             }
             writer.endBatch(pid: pid)
             let batchEnd = DispatchTime.now().uptimeNanoseconds
             let done: [@Sendable () -> Void] = lock.withLock {
                 for r in results {
-                    counters.windowWrites += 1
-                    if !r.ok { counters.errors += 1 }
+                    switch r.result {
+                    case .written: counters.windowWrites += 1
+                    case .failed: counters.windowWrites += 1; counters.errors += 1
+                    case .gone: counters.gone += 1
+                    }
                     // `forget` or `reset` ran during the write: what the window has is not known any more.
                     guard let f = inFlight[r.id], f.token == r.token else { continue }
                     inFlight.removeValue(forKey: r.id)
-                    if r.ok {
+                    if r.result.ok {
                         written[r.id] = r.frame
+                    } else if r.result == .gone {
+                        // No retry: a closed window does not come back. Its remove follows the destroyed notification.
+                        written.removeValue(forKey: r.id)
                     } else {
                         written.removeValue(forKey: r.id)
                         if let again = f.again, apps[pid]?.generation == generation, apps[pid]!.pending[r.id] == nil {
@@ -457,7 +487,9 @@ public final class FrameApplier: @unchecked Sendable {
                     apps[pid]!.batchStart = nil
                 }
                 if let onWrite, resets == resetsAtTake { timings.forEach(onWrite) }
-                if results.contains(where: \.ok) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
+                // A gone write counts as not written here: when an app restarts its AX server, every element of it
+                // is invalid, and only this count makes `Engine.checkHealth` take fresh elements.
+                if results.contains(where: \.result.ok) { apps[pid]!.failedBatches = 0 } else { apps[pid]!.failedBatches += 1 }
                 apps[pid]!.landed = max(apps[pid]!.landed, upTo)
                 let landed = apps[pid]!.landed
                 let clock = apps[pid]!.axNanos
@@ -509,14 +541,14 @@ final class AXFrameWriter: FrameWriter, @unchecked Sendable {
         AX.set(app, "AXEnhancedUserInterface", true)
     }
 
-    func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
-        guard let e = lock.withLock({ elements[w.id] }) else { return false }
+    func write(_ w: FrameWrite, previous: CGRect?) -> WriteResult {
+        guard let e = lock.withLock({ elements[w.id] }) else { return .gone }
         let steps = Self.steps(w, previous: previous)
-        var results: [AXError] = []
-        if steps.size { results.append(AX.setSize(e, w.frame.size)) }
-        if steps.position { results.append(AX.setPosition(e, w.frame.origin)) }
+        var results: [(AXCall, AXError)] = []
+        if steps.size { results.append((.size, AX.setSize(e, w.frame.size))) }
+        if steps.position { results.append((.position, AX.setPosition(e, w.frame.origin))) }
         if steps.sizeAgain { AX.setSize(e, w.frame.size) }
-        return Policy.frameWriteWorked(results)
+        return Policy.writeResult(results)
     }
 
     /// The AX calls of one write, in this order: size, position, size. The first size keeps a large window from

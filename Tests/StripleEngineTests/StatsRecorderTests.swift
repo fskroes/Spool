@@ -82,15 +82,15 @@ private final class GateWriter: FrameWriter, @unchecked Sendable {
     let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var first = true
-    func write(_ w: FrameWrite, previous: CGRect?) -> Bool {
+    func write(_ w: FrameWrite, previous: CGRect?) -> WriteResult {
         if lock.withLock({ defer { first = false }; return first }) {
             started.signal()
             release.wait()
         }
-        return true
+        return .written
     }
 }
 
 private final class NoWriter: FrameWriter, @unchecked Sendable {
-    func write(_ w: FrameWrite, previous: CGRect?) -> Bool { true }
+    func write(_ w: FrameWrite, previous: CGRect?) -> WriteResult { .written }
 }

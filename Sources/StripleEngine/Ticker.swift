@@ -3,10 +3,21 @@ import CoreVideo
 import Foundation
 import QuartzCore
 
+/// What the engine needs of its frame clock. `Ticker` is the display link; tests use a fake.
+@MainActor
+protocol FrameTicker: AnyObject {
+    var isRunning: Bool { get }
+    /// The time in seconds until the next frame of the clock: the lead of an animation's first frame
+    /// (`Engine.firstFrameLead(period:)`).
+    var period: Double { get }
+    func start()
+    func stop()
+}
+
 /// Calls `onTick` once per display refresh while running. The engine stops it as soon as
 /// everything has settled, so an idle strip costs nothing.
 @MainActor
-final class Ticker: NSObject {
+final class Ticker: NSObject, FrameTicker {
     private let onTick: (Double) -> Void
     private var link: AnyObject?
     private var cvLink: CVDisplayLink?
@@ -15,6 +26,12 @@ final class Ticker: NSObject {
     init(onTick: @escaping (Double) -> Void) { self.onTick = onTick }
 
     private(set) var isRunning = false
+    /// The display refresh period in seconds, for the lead of an animation's first frame
+    /// (`Engine.firstFrameLead(period:)`). While the link runs, the period of its last refresh. While it is stopped
+    /// (an animation from rest), the period of the screen that `start` gives the link: the display can be another one
+    /// than in the last run.
+    var period: Double { isRunning ? linkPeriod : Self.screenPeriod() }
+    private var linkPeriod = 1.0 / 60
     /// Called from the second refresh of a run on: the time since the refresh before and the display period,
     /// both in ms. A run is from `start` to `stop`; the pause between two runs is not an interval.
     var onInterval: ((_ intervalMs: Double, _ periodMs: Double) -> Void)?
@@ -24,6 +41,7 @@ final class Ticker: NSObject {
         guard !isRunning else { return }
         isRunning = true
         lastStep = nil
+        linkPeriod = Self.screenPeriod()
         if #available(macOS 14.0, *), let screen = NSScreen.main ?? NSScreen.screens.first {
             let l = screen.displayLink(target: self, selector: #selector(step(_:)))
             l.add(to: .main, forMode: .common)
@@ -51,7 +69,13 @@ final class Ticker: NSObject {
         onTick(now)
     }
 
+    /// The shortest refresh period of the screen the link runs on (8.3 ms on a 120 Hz ProMotion panel).
+    static func screenPeriod() -> Double {
+        (NSScreen.main ?? NSScreen.screens.first)?.minimumRefreshInterval ?? Engine.defaultFramePeriod
+    }
+
     private func noteStep(_ now: Double, periodMs: Double) {
+        if periodMs.isFinite, periodMs > 0 { linkPeriod = periodMs / 1000 }
         if let last = lastStep, let onInterval {
             onInterval((now - last) * 1000, periodMs)
         }

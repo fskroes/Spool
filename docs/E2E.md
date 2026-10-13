@@ -27,6 +27,7 @@ make e2e E2E_ARGS="--out /tmp/striple/e2e/mine"
 | `--bundle-dir <dir>` | `.build/e2e` | Where the runner makes the test app bundle. |
 | `--windows-binary <path>` | next to `striple-e2e` | The `striple-e2e-windows` binary. |
 | `--animations on\|off` | `on` | `off` sets `animation.enabled` to false in the test config: every command is one frame write of the final frames. Scenario h uses the budget of the mode. |
+| `--steal-focus` | off | Tests the focus recovery: a second test app (`StripleE2EThief`) takes the focus after step 1 and before step 3 of scenario b. Scenario b passes only when the runner gave the focus back both times. Takes no value. |
 
 You can also start the runner directly after a build:
 
@@ -41,8 +42,9 @@ You can also start the runner directly after a build:
   so Striple gets the permission of the terminal.
 - The screen must be unlocked.
 - During the run, the test app comes to the front a few times. Do not type: your keys can go to a test window.
-  If you click another app, the runner gives the focus back to the test window before each command, except in
-  scenarios b, c and d: there a lost focus fails the scenario.
+  If you click another app, the runner gives the focus back to the test window before each command. In
+  scenarios b, c, d and i it gives the focus back only after it saw another app take it, at most 3 times per run
+  (see "Focus taken by another app"). Any other lost focus fails the scenario.
 
 ## Exit codes
 
@@ -77,7 +79,7 @@ until they are correct and did not change for 250 ms (`SettleTracker`), for a ma
 for the first tiling, 5 seconds after the test app opens a window in scenario e). A check that reaches its maximum
 fails its scenario with the last failures it saw. Frames may differ by 2 points (rounding).
 
-Every strip check of a to f also checks:
+Every strip check of a to f and i also checks:
 
 - The scroll and the frame of every column. The runner calculates the scroll of the default center mode
   `onOverflow` itself: 0 when all columns fit, else the focused column centred but never past the ends of the
@@ -116,20 +118,42 @@ Every strip check of a to f also checks:
 
 | Scenario | Checks |
 |---|---|
-| a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. At least one column is visible, and the focused column is fully in view. Columns that are out of view are parked at the edge of the display and keep a sliver on it. If this scenario fails, b to f are SKIP: the strip is in an unknown state. |
-| b. Focus | `focus-window` on the last column, then `focus-left` to the first column and `focus-right` back to the last: always 2 × (columns - 1) steps. After each step the focused column is fully in view at the expected scroll, and Striple's focus and the system focus (test app active, that window key) are on it. In this scenario the runner does not give the focus back: a step that loses it fails. |
-| c. Move | `focus-window` on the focused column, then `move-left` to the first place and `move-right` to the last. The order in `striple state` and the order of the frames change as expected. The moved window keeps the focus after each step: the runner does not give it back, so a lost focus fails. |
-| d. Widths | `focus-window` on the focused column, then `cycle-width` twice, `toggle-full-width` twice, and `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. The order, the focused column and the focus do not change: the runner does not give the focus back. |
+| a. Tiling | All windows are columns: the top and height of the work area (visible frame minus the outer gaps), the width of the default proportion, left to right, `layout.innerGap` between neighbours. At least one column is visible, and the focused column is fully in view. Columns that are out of view are parked at the edge of the display and keep a sliver on it. If this scenario fails, b to f and i are SKIP: the strip is in an unknown state. |
+| b. Focus | `focus-window` on the last column, then `focus-left` to the first column and `focus-right` back to the last: always 2 × (columns - 1) steps. After each step the focused column is fully in view at the expected scroll, and Striple's focus and the system focus (test app active, that window key) are on it. In this scenario the runner does not give the focus back, except after another app took it (see "Focus taken by another app"): a step that loses it fails. |
+| c. Move | `focus-window` on the focused column, then `move-left` to the first place and `move-right` to the last. The order in `striple state` and the order of the frames change as expected. The moved window keeps the focus after each step: the runner does not give it back, except after another app took it, so a lost focus fails. |
+| d. Widths | `focus-window` on the focused column, then `cycle-width` twice, `toggle-full-width` twice, and `cycle-width` until the default width. The focused window gets the width of the preset (`p * (work width + gap) - gap`), full width starts at the left edge, and the other columns move with the same gap. The order, the focused column and the focus do not change: the runner does not give the focus back, except after another app took it. |
 | e. Close and open | Needs 3 or more columns. The test app closes the window of column 2: the other columns close the hole and keep their order. The runner gives the focus to column 1. The test app opens one more window: it becomes column 2, directly to the right of the focused column, and not at the end ([SPEC.md](SPEC.md)). The other columns keep their order. |
 | f. Float | `toggle-float`: the window leaves the strip and the other columns close the gap. `toggle-float` again: it is a column again. |
-| h. Performance | `striple stats --json`: frame write p50/p95, Striple's part of a frame write (the wall time without the AX calls), command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), Striple's part p95 ≥ 1 ms or not reported, command latency p95 ≥ 16.7 ms, settle p95 ≥ 2 s (`--animations off`: ≥ 1 s), or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 20 settles (a 1, b 5, c 4, d 5, e 3, f 2). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 20 samples is the second slowest one. |
+| i. Close while moving | `cycle-width` on column 1, then at once the test app closes the window of column 2 while Striple animates it. The other columns close the hole, column 1 keeps the focus, and `AX errors` does not go up: a write to the closed window is a closed-window write, not an error. The details name the closed-window writes of the scenario. Then `cycle-width` back to the default width and a new window. Whether a write reaches the window after it closed depends on the timing, so 0 closed-window writes is not a failure; the unit tests (`FrameApplierTests`) cover that case exactly. |
+| h. Performance | `striple stats --json`: frame write p50/p95, Striple's part of a frame write (the wall time without the AX calls), command latency, AX errors. The runner adds the CLI round trip and the settle time it measured. A settle that reached its maximum is a sample at its full time and is also counted. Fails when AX errors > 0, frame write p95 ≥ 16 ms (one frame at 60 Hz), Striple's part p95 ≥ 1 ms or not reported, command latency p95 ≥ 16.7 ms, settle p95 ≥ 2 s (`--animations off`: ≥ 1 s), or a settle reached its maximum. SKIP when Striple wrote no frames or no settle was timed (`PerformanceBudget.verdict`). A run has 27 settles (a 1, b 5, c 5, d 6, e 3, f 2, i 5). Scenario b always ends on the last column, so the count does not change between runs. The p95 (nearest rank) of 27 samples is the second slowest one. |
 | g. Quit | SIGTERM to Striple. Before it, at least one test window must be off screen (parked or over an edge), else the quit has nothing to restore and the scenario fails. Striple exits with status 0. The test app shows the same windows as before the SIGTERM, as many as the runner expects, and each is fully on a display. |
 | Safety: other apps | See below. |
 | Safety: managed windows | Every window in every `striple state` the runner read has the bundle ID of the test app. SKIP when the runner read no state (`ManagedCheck.verdict`). |
 
-Before each command (except in scenarios b, c and d) the runner gives a test window the focus, because Striple
+Before each command (except in scenarios b, c, d and i) the runner gives a test window the focus, because Striple
 acts on the focused window. If the window does not get the focus within 10 seconds, the command is not sent and the scenario
 fails.
+
+### Focus taken by another app
+
+Another app can take the focus during a run (a terminal that gets output, a notification). In scenarios b, c, d
+and i the runner does not give the focus back, because Striple must keep it there. So such a theft made those
+scenarios fail as if Striple had lost the focus. Now the runner tells the two apart:
+
+- The test app records every app activation (`NSWorkspace.didActivateApplicationNotification`) in its report.
+- When the focus is not on the window the runner expects, it looks at the newest activation since the focus was
+  last right (`FocusTheft.thief`). If that is an app that is not the test app and not Striple, it is a theft.
+- On a theft, the runner gives the focus back with `focus-window` and waits up to 3 s. The scenario details name
+  each theft (`focus given back after: ...`). After 3 thefts in a run, a theft fails the scenario.
+- Striple that takes the focus itself still fails. When Striple's own focus is on another test window, the runner
+  does not give the focus back (`FocusTheft.mayGiveBack`): Striple moved it, so the scenario fails.
+- After each `focus-window` and each command of b, c, d, e and i, the strip check (order, focused column,
+  scroll) runs before the focus check. So the `focus-window` of a recovery cannot put right a wrong column or
+  scroll before it is checked.
+- A row lists its thefts also when it fails, because a theft can explain the failure.
+
+`--steal-focus` makes 2 thefts on purpose, so this recovery is tested. Scenario b counts its thefts from its
+start, so a third one (for example at the start) fails it.
 
 The report header says PASS only when every row is PASS. A SKIP proves nothing, so it counts as a failure, the
 same as in the exit code.
@@ -195,7 +219,16 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
 - Every 100 ms it writes the report file atomically: its PID, the visible windows (title, window number, frame in
   top-left coordinates), whether it is the active app, and its key window. The runner reads frames from this file
   and needs no AX.
-- It runs new lines of the commands file: `open`, `close <title>`, `quit`.
+- It runs new lines of the commands file: `open`, `close <title>`, `quit`, `activate`.
+- It records the app activations of the Mac (`activationCount` and the newest 64 in `activations`), so the runner
+  can see when another app took the focus.
+
+With `--steal-focus`, the runner also makes `.build/e2e/StripleE2EThief.app` (bundle ID
+`com.fskroes.Striple.e2e-thief`, the same binary with no windows). It starts in the background (`open -g`) and,
+with no windows, does not activate itself, so its launch is no theft. The runner also moves its focus mark past
+every activation before the thief started. Each steal is an `open` of the running thief: an app cannot make
+itself active on macOS 14 and later, but `open` can. The runner quits it at the end, and before a run it quits one
+that is left over.
 
 ## Limits
 
@@ -204,6 +237,8 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   still checked. With a display on one side only, Striple parks every hidden column on the free side, so the
   check of the parked side order is skipped then.
 - The test app takes the focus during the run.
+- The runner gives the focus back after another app took it (see "Focus taken by another app"), at most 3 times
+  per run.
 - Timing numbers depend on the machine and on what else runs. The budget in scenario h has room for that. The
   passing live runs on 2026-10-13 (held sizes, first frame in the key handler) measured:
 
@@ -219,4 +254,4 @@ bundle ID. With another app at that path, the runner does not touch it: the Setu
   Before these changes (2026-10-12): frame write p95 4.64 ms and command latency p95 22.91 ms with animations on.
   With animations off every frame resizes the windows, and one AX size write costs the test app about 1.5 ms,
   so a frame write stays above 1 ms there. A heavy load on the Mac can still make a run fail. Run again when
-  other work used the CPU, or when another app took the focus (scenario b names the frontmost app).
+  other work used the CPU.

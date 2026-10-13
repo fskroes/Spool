@@ -355,6 +355,28 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         #expect(!StripleCLI.format(stats: decoded).contains("Striple's part"))
     }
 
+    /// Writes that reached a closed window get their own row, after the AX errors, and are not errors.
+    @Test func statsShowClosedWindowWrites() {
+        let stats = EngineStats(axErrors: 0, closedWindowWrites: 3)
+        #expect(StripleCLI.format(stats: stats).contains("""
+            AX errors:            0
+            Closed-window writes: 3 (the window closed first; not errors)
+            Frame write:          p50 0.00 ms, p95 0.00 ms
+            """))
+    }
+
+    /// The stats of an older Striple have no closed-window count: they still decode, without the row.
+    @Test func olderStatsDecodeWithoutClosedWindowWrites() throws {
+        let json = try #require(String(data: JSONEncoder().encode(EngineStats(axErrors: 2)), encoding: .utf8))
+        #expect(!json.contains("closedWindowWrites"))
+        let decoded = try JSONDecoder().decode(EngineStats.self, from: Data(json.utf8))
+        #expect(decoded.axErrors == 2)
+        #expect(decoded.closedWindowWrites == nil)
+        #expect(!StripleCLI.format(stats: decoded).contains("Closed-window"))
+        let round = try JSONDecoder().decode(EngineStats.self, from: JSONEncoder().encode(EngineStats(closedWindowWrites: 4)))
+        #expect(round.closedWindowWrites == 4)
+    }
+
     @Test func statsListTheSlowestApps() {
         let stats = EngineStats(restarts: 0, slowestApps: [
             AppWriteStats(bundleID: "com.microsoft.teams2", pid: 4173, writes: 340, axP50: 12, axP95: 40.5, latencyP95: 80),
