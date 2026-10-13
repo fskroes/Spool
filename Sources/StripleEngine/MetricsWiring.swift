@@ -39,7 +39,7 @@ struct CommandClock: Equatable {
     }
 
     /// Before a tick's write. `moved` is true when a frame of this tick differs from where Striple placed the window
-    /// before (`Engine.tickMoves`). A tick that moves nothing does not take the start: the first tick of a command
+    /// before (`Engine.tickStep`). A tick that moves nothing does not take the start: the first tick of a command
     /// at rest has dt = 0, and a frame equal to one still in flight is the old frame, not the command's.
     /// `settles` is true when the animation ends on this tick.
     func tickStart(moved: Bool, settles: Bool) -> TickStart? {
@@ -184,10 +184,15 @@ struct ColumnCounts<Key: Hashable> {
 }
 
 extension Engine {
-    /// True when a frame of this tick differs from the frame Striple placed that window at before
-    /// (`placedBefore`, nil for a window not placed yet): the tick moves a window.
-    nonisolated static func tickMoves(_ writes: [FrameWrite], placedBefore: (WindowID) -> CGRect?) -> Bool {
-        writes.contains { placedBefore($0.id) != $0.frame }
+    /// The decision of one tick. `moved` is true when a frame of `placed` differs from where Striple placed that
+    /// window before (a window not placed yet moves). It reads `placements` before it stores the new ones there.
+    /// `ends` is true when every animation settled and no swipe runs.
+    nonisolated static func tickStep(_ placed: [(WindowID, Layout.Placement)],
+                                     placements: inout [WindowID: Layout.Placement],
+                                     settled: Bool, swiping: Bool) -> (moved: Bool, ends: Bool) {
+        let moved = placed.contains { placements[$0.0]?.frame != $0.1.frame }
+        for (id, p) in placed { placements[id] = p }
+        return (moved, settled && !swiping)
     }
 
     /// True when `frames` are not the targets the strip's animator has now: the layout pass moves a window.

@@ -57,10 +57,8 @@ extension Engine {
             }
             if !anim.isSettled(at: t) { settled = false }
         }
-        let ends = settled && swipe == nil
+        let (moved, ends) = Self.tickStep(placed, placements: &placements, settled: settled, swiping: swipe != nil)
         if !writes.isEmpty {
-            let moved = Self.tickMoves(writes) { placements[$0]?.frame }
-            for (id, p) in placed { placements[id] = p }
             // The completion gets a time only when a write was queued, so it may hold the start before `ticked`.
             let taken = commandClock.tickStart(moved: moved, settles: ends)
             let queued = applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore,

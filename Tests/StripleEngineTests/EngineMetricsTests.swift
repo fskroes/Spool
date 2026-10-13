@@ -558,15 +558,26 @@ extension CommandClock {
         #expect(seen == [true, false, true, true, true, true])
     }
 
-    @Test func tickMoves() {
-        let a = CGRect(x: 0, y: 0, width: 100, height: 100)
-        let b = CGRect(x: 1, y: 0, width: 100, height: 100)
-        let placed: [WindowID: CGRect] = [1: a, 2: b]
-        let at = { (id: WindowID) in placed[id] }
-        #expect(!Engine.tickMoves([FrameWrite(id: 1, pid: 9, frame: a), FrameWrite(id: 2, pid: 9, frame: b)], placedBefore: at))
-        #expect(Engine.tickMoves([FrameWrite(id: 1, pid: 9, frame: a), FrameWrite(id: 2, pid: 9, frame: a)], placedBefore: at))
-        #expect(Engine.tickMoves([FrameWrite(id: 3, pid: 9, frame: a)], placedBefore: at), "a window not placed yet moves")
-        #expect(!Engine.tickMoves([], placedBefore: at))
+    /// G1: `moved` compares with the placements from before this tick, then the tick stores the new ones.
+    @Test func tickStep() {
+        let a = Layout.Placement(frame: CGRect(x: 0, y: 0, width: 100, height: 100), hidden: false)
+        let b = Layout.Placement(frame: CGRect(x: 1, y: 0, width: 100, height: 100), hidden: false)
+        var placements: [WindowID: Layout.Placement] = [1: a, 2: b]
+        let same = Engine.tickStep([(1, a), (2, b)], placements: &placements, settled: false, swiping: false)
+        #expect(!same.moved)
+        #expect(!same.ends)
+        #expect(placements == [1: a, 2: b])
+        let changed = Engine.tickStep([(1, a), (2, a)], placements: &placements, settled: true, swiping: false)
+        #expect(changed.moved)
+        #expect(changed.ends)
+        #expect(placements == [1: a, 2: a])
+        let new = Engine.tickStep([(3, b)], placements: &placements, settled: true, swiping: true)
+        #expect(new.moved, "a window not placed yet moves")
+        #expect(!new.ends, "a swipe keeps the animation")
+        #expect(placements == [1: a, 2: a, 3: b])
+        let none = Engine.tickStep([], placements: &placements, settled: true, swiping: false)
+        #expect(!none.moved)
+        #expect(none.ends)
     }
 
     @Test func targetsChange() {
