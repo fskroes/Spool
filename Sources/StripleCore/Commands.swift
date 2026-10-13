@@ -16,6 +16,8 @@ public enum Command: Equatable, Hashable, Sendable {
     case sendToNextDisplay
     case focusWindow(WindowID)
     case start, stop, toggleEngine, restart
+    /// Saves a mark: the state, stats, metrics and log of this moment (docs/METRICS.md).
+    case mark
 
     /// The commands that can be bound to a key, in the order the Shortcuts page shows them.
     public static let bindable: [Command] = [
@@ -28,7 +30,7 @@ public enum Command: Equatable, Hashable, Sendable {
         .cycleWidth, .toggleFullWidth, .centerColumn, .wider, .narrower,
         .taller, .shorter, .equalizeHeights,
         .stackLeft, .stackRight, .popLeft, .popRight,
-        .toggleTabbed, .toggleFloat, .sendToNextDisplay, .toggleEngine,
+        .toggleTabbed, .toggleFloat, .sendToNextDisplay, .toggleEngine, .mark,
     ]
 
     /// Stable name used in the config file, the CLI and URLs, for example `focus-left` or `focus-index-3`.
@@ -68,6 +70,7 @@ public enum Command: Equatable, Hashable, Sendable {
         case .stop: return "stop"
         case .toggleEngine: return "toggle-engine"
         case .restart: return "restart"
+        case .mark: return "mark"
         }
     }
 
@@ -108,6 +111,7 @@ public enum Command: Equatable, Hashable, Sendable {
         case .stop: return "Stop"
         case .toggleEngine: return "Start / stop the window manager"
         case .restart: return "Restart"
+        case .mark: return "Mark this moment"
         }
     }
 
@@ -117,7 +121,7 @@ public enum Command: Equatable, Hashable, Sendable {
             .moveLeft, .moveRight, .moveUp, .moveDown, .moveFirst, .moveLast,
             .cycleWidth, .toggleFullWidth, .centerColumn, .wider, .narrower,
             .taller, .shorter, .equalizeHeights, .stackLeft, .stackRight, .popLeft, .popRight,
-            .toggleTabbed, .toggleFloat, .sendToNextDisplay, .start, .stop, .toggleEngine, .restart,
+            .toggleTabbed, .toggleFloat, .sendToNextDisplay, .start, .stop, .toggleEngine, .restart, .mark,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
     }()

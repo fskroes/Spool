@@ -33,10 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                             suspensionBehavior: .deliverImmediately)
 
         handleQuitSignals()
+        // Before the engine starts, so the start is counted. Records an unclean exit of the last run by itself.
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        model.engine.enableMetrics { MetricsStore(directory: StriplePaths.metricsDirectory, appVersion: version) }
         startIPC()
         if model.store.config.behavior.autoStart { model.engine.start() }
         didLaunch = true
-        pending.forEach(model.engine.perform)
+        for command in pending { model.engine.perform(command, source: .url) }
         pending.removeAll()
 
         // With a broken config.json the guide would save over the user's file when it closes.
@@ -54,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.recorder.stop()
         ipc?.stop()
         model.engine.stop()
+        model.engine.finishMetrics()
         // Last: if the agent started this process, unregistering it makes launchd stop the process.
         LoginItem.finishOffAtQuit(atQuit: true)
     }
@@ -96,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings(let tab):
             model.openSettings(tab)
         case .command(let command):
-            if didLaunch { model.engine.perform(command) } else { pending.append(command) }
+            if didLaunch { model.engine.perform(command, source: .url) } else { pending.append(command) }
         case .unknown:
             reject(text)
         }

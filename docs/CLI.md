@@ -13,6 +13,7 @@ other launcher. It sends one request to the app over a Unix socket and prints th
 
 ```
 striple <command> [<n>] [--json] [--socket <path>]
+striple report [--days <n>] [--json]
 ```
 
 Examples:
@@ -23,6 +24,8 @@ striple focus-index 3
 striple command focus-left
 striple state
 striple stats --json
+striple mark Safari jumped to the left
+striple report --days 30
 striple list
 striple help focus-index
 striple --version
@@ -35,6 +38,8 @@ striple --version
 | `striple command focus-left` | Same as `striple focus-left`. |
 | `striple state` | Shows the displays, columns and windows. |
 | `striple stats --json` | Shows the performance counters as JSON. |
+| `striple mark Safari jumped to the left` | Saves a mark with the note "Safari jumped to the left". |
+| `striple report --days 30` | Shows the local metrics of the last 30 days. |
 | `striple list` | Shows all commands with a short description. |
 | `striple help focus-index` | Shows the help for one command. |
 | `striple --version` | Shows the version. |
@@ -83,8 +88,15 @@ or as part of the name (`striple focus-index-3`).
 | `striple start` | Start | `striple://start` |
 | `striple stop` | Stop | `striple://stop` |
 | `striple restart` | Restart | `striple://restart` |
+| `striple mark [<note>]` | Mark this moment: save the state, the stats and the last minute of the log, with a note | `striple://mark` |
 
 `focus-index 9` and `move-to-index 9` mean the last place, also when there are more than 9 columns.
+
+`striple mark` takes the words after `mark` as the note. Quotes are not necessary. Use a mark when something goes
+wrong: Striple writes a new folder in `~/Library/Application Support/Striple/metrics/marks/`. It writes the folder
+after it answers, so `striple mark` prints `Saving a mark (see engine.log for the folder)`. The engine log
+(`~/Library/Logs/Striple/engine.log`) names the folder when the write ends. The note is the only text that you type that Striple keeps. Marks need metrics on (Settings > General).
+See [METRICS.md](METRICS.md#marks).
 
 ## Queries
 
@@ -93,6 +105,7 @@ or as part of the name (`striple focus-index-3`).
 | `striple ping` | `Striple is running.` when the app answers. |
 | `striple state` | Engine status, the focused window, and the columns of each display. |
 | `striple stats` | Uptime, frame and window write counts, AX errors, timings, restarts and the slowest apps. |
+| `striple report [--days <n>]` | The local metrics of the last &lt;n&gt; days (1 to 90, default 7). See "Metrics report". |
 
 Example output of `striple state`:
 
@@ -130,10 +143,30 @@ Slowest apps (AX write per window):
 - **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
   replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
   slowest app in the tick.
+- **Command latency**: the time from a command until its first frame that moves a window is on the windows. A command that moves
+  no window (for example `focus-left` at the first column), a command during a swipe, and a swipe give no sample.
 - **Slowest apps**: the 5 apps with the highest p95 AX time for one window write, from the newest 128
   writes of each app. **latency** is from the tick that queued the frame until it was written, so it
   includes the wait for the write before it. An app with a high AX time makes Striple feel slow; quit it or
   float its windows to check.
+
+## Metrics report
+
+`striple report` reads the metrics files in `~/Library/Application Support/Striple/metrics/` and prints a summary:
+the live budgets (PASS, FAIL or no data), speed, cost, problems, the most used commands, friction per app and the
+slowest apps. It also works when Striple is not running. When Striple runs, the tool first asks it to write the
+numbers that are still in memory.
+
+```sh
+striple report
+striple report --days 30
+striple report --json
+```
+
+- `--days <n>`: the number of days, 1 to 90. The default is 7. Another value is a usage error (exit code 2).
+- `--json`: the full report as JSON (pretty printed, keys sorted).
+
+[METRICS.md](METRICS.md) tells what each number means, and how to turn the metrics off.
 
 ## JSON output
 
@@ -186,6 +219,7 @@ The app answers in the same order.
 ```
 {"query":"ping"}                 ->  {"ok":true}
 {"command":"focus-index-3"}      ->  {"ok":true}
+{"command":"mark","note":"slow"} ->  {"ok":true}
 {"query":"state"}                ->  {"ok":true,"state":{...}}
 {"command":"fly"}                ->  {"error":"Bad request: Unknown command fly","ok":false}
 ```
@@ -206,7 +240,7 @@ open -g "striple://focus-index/3"
 
 The last URL is the same as `striple focus-index 3`.
 
-A URL opens Striple if it is not running. Queries (`ping`, `state`, `stats`) are not available as URLs.
+A URL opens Striple if it is not running. Queries (`ping`, `state`, `stats`) and `report` are not available as URLs.
 
 ## Raycast
 

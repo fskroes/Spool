@@ -148,6 +148,26 @@ test in `Tests/`.
 ### F23 Settings apply instantly
 - Every setting change shows on screen at once. There is no Save button and no restart.
 
+### F24 Local metrics and marks
+- Striple measures its own speed, cost, problems and use, and keeps the numbers on this Mac only:
+  one JSON file per local day in `~/Library/Application Support/Striple/metrics/`, kept 90 days.
+- No window titles, no key presses, no typed text. Apps are named by bundle ID. The note of a mark is the only user text.
+- Speed: frame write, command latency (to the first frame), command settle (to the end of the animation; with animations off, to the write of the frame) and the
+  time between frames while an animation runs. Only a command that moves a window gives latency and settle; a
+  swipe is not a command, and a command during a swipe gives no sample. Cost: CPU time and idle wakeups of the process while the engine runs, and its peak
+  memory, from `getrusage` and `proc_pid_rusage` at each save and at each engine start and stop. Problems: unclean
+  exits, observer repairs, a lost permission, the focus fallback, config errors, refused shortcuts, apps that do
+  not answer. Use: commands per source, columns per strip (when the number changes), swipes. Friction per app:
+  corrections, drags that Striple puts back, resizes, float changes, early resizes, focus bounces.
+- No repeating timer: the numbers are saved once 60 s after the first change, when `striple report` asks,
+  and at quit. After a failed save, the next try waits 2 min, then 4 min, and so on up to 1 h, until a save works.
+  Recording does no I/O.
+- `striple report [--days <n>] [--json]` reads the files (also when Striple does not run) and checks the live budget.
+- `striple mark [<note>]`, `⌃⌥⇧M`, the menu bar menu and `striple://mark` save a mark: the state without titles,
+  the stats, the numbers of today and the last 60 s of the engine log.
+- On by default. Settings > General turns it off at once (F23). Off: nothing is recorded or written.
+  Details: `docs/METRICS.md`.
+
 ## Performance budget
 
 | Metric | Budget | How it is measured |
@@ -156,3 +176,17 @@ test in `Tests/`.
 | Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial. The test gates the applier's own part: wall time minus the slowest write, p95 < 2 ms. The fake write sleeps, and a sleep runs over its time on a busy Mac. | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints the wall p50 and p95, the applier p95, the serial time and the load average |
 | Idle | no display link and no timer when nothing moves | `AnimatorTests` |
 | Live frame cost | p50 and p95 reported | `striple stats` |
+
+## Live budget
+
+`striple report` checks these targets against the metrics of real use (F24). Each one is a maximum.
+The table must match `MetricsBudget.live` in `Sources/StripleCore/Metrics.swift`.
+
+| Name | Limit | Unit | What it is |
+|---|---|---|---|
+| frame-write-p95 | 8 | ms | p95 of one frame write (all windows of one frame) |
+| command-latency-p95 | 16.7 | ms | p95 from a command to its first frame |
+| command-settle-p95 | 400 | ms | p95 from a command to the end of its animation |
+| slow-tick-ratio | 1 | % | frames later than 1.5 times the display period, in percent of all frames |
+| cpu-while-active | 1 | % | CPU time of Striple in percent of the time the engine ran |
+| unclean-exits | 0 | count | runs that did not end with a clean quit |

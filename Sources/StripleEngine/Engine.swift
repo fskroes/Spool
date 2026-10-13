@@ -100,7 +100,10 @@ public final class Engine: ObservableObject {
     var restarts = 0
     var swipe: SwipeState?
     var drag: DragState?
-    var pendingCommandStart: Double?
+    /// Command start for the latency (first frame) and the settle time (end of its animation).
+    var commandClock = CommandClock()
+    /// Counts layout passes that changed a target frame, so `perform` knows whether its command moves a window.
+    var targetChanges = 0
     var focusedID: WindowID?
     var floatingBorderFrame: CGRect?
     var suppressScrollFor: WindowID?
@@ -135,15 +138,33 @@ public final class Engine: ObservableObject {
     /// When an app was last re-watched after its AX writes kept failing.
     var healedAt: [pid_t: Double] = [:]
 
+    // MARK: Metrics (F24, Engine+Metrics.swift)
+
+    /// Nil until `enableMetrics` and when metrics were off since launch. Every record call is a no-op while the
+    /// store is disabled.
+    var metricsStore: MetricsStore?
+    var makeMetricsStore: (() -> MetricsStore)?
+    /// The AX queues record per-app write times through this box.
+    let metricsSink = MetricsSink()
+    /// Writes the day file. Nil while metrics are off.
+    var metricsFlusher: MetricsFlusher?
+    /// CPU time and wakeups of the running engine, not counted yet.
+    var costMeter = CostMeter()
+    /// Since when the running time is not recorded yet. Nil while the engine does not run.
+    var activeSince: Double?
+    /// So `columnsPerStrip` gets a sample only when the count of a strip changes.
+    var columnCounts = ColumnCounts<StripKey>()
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         config = configStore.config
         let w = AXFrameWriter()
         let r = StatsRecorder()
+        let sink = metricsSink
         writer = w
         recorder = r
-        applier = FrameApplier(writer: w) { r.record(write: $0) }
-        overlays.onTabClick = { [weak self] id in self?.perform(.focusWindow(id)) }
+        applier = FrameApplier(writer: w) { r.record(write: $0); sink.record(write: $0) }
+        overlays.onTabClick = { [weak self] id in self?.perform(.focusWindow(id), source: .tab) }
         configStore.$config
             .dropFirst()
             .removeDuplicates()
@@ -168,7 +189,9 @@ public final class Engine: ObservableObject {
         WindowTracker.current = tracker
         self.tracker = tracker
         ticker = Ticker { [weak self] t in self?.tick(t) }
+        ticker?.onInterval = { [weak self] interval, period in self?.metricsStore?.recordTick(intervalMs: interval, periodMs: period) }
         status = .running
+        metricsEngineStarted()
         refreshDisplays()
         tracker.start()
         scanAll(session: loadSession())
@@ -191,12 +214,14 @@ public final class Engine: ObservableObject {
         }
         tearDown(release: true)
         status = .stopped
+        metricsStore?.record(.engineStop)
         log.log("engine: stopped")
     }
 
     /// Stops every input first, so no new frame starts. Then saves the session (synchronously: at quit the
     /// process ends right after) and, with `release`, moves parked windows back into view and waits for it.
     private func tearDown(release: Bool) {
+        metricsEngineStopped()
         ticker?.stop()
         ticker = nil
         gestureTap?.stop()
@@ -245,6 +270,7 @@ public final class Engine: ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self, self.status == .running, !Permissions.isTrusted else { return }
                     self.log.log("engine: Accessibility permission was removed, waiting until it is given again")
+                    self.metricsStore?.record(.permissionLost)
                     self.tearDown(release: false)
                     self.status = .noPermission
                     self.waitForPermission()
@@ -265,6 +291,7 @@ public final class Engine: ObservableObject {
 
     public func restart() {
         restarts += 1
+        metricsStore?.record(.engineRestart)
         stop()
         start()
     }
@@ -284,8 +311,21 @@ public final class Engine: ObservableObject {
 
     /// The completion of a tick's frame writes: records the frame-write time and the command latency, but not when
     /// the applier dropped a frame (the app quit or the engine stopped): then no frame was written.
-    nonisolated static func recordTick(_ recorder: StatsRecorder, commandStart: Double?) -> @Sendable (Double?) -> Void {
-        { ms in if let ms { recorder.record(frameMs: ms, commandStart: commandStart) } }
+    /// `metrics` gets the same two numbers. `settleAtWrite`: the animation ended on the tick of this write, so the
+    /// window is in place when the write lands, and the command settle is the latency.
+    nonisolated static func recordTick(_ recorder: StatsRecorder, metrics: MetricsStore? = nil,
+                                       commandStart: Double?, settleAtWrite: Bool = false,
+                                       now: @escaping @Sendable () -> Double = CACurrentMediaTime) -> @Sendable (Double?) -> Void {
+        { ms in
+            guard let ms else { return }
+            recorder.record(frameMs: ms, commandStart: commandStart)
+            guard let metrics else { return }
+            metrics.recordFrameWrite(ms: ms)
+            guard let commandStart else { return }
+            let latency = (now() - commandStart) * 1000
+            metrics.recordCommandLatency(ms: latency)
+            if settleAtWrite { metrics.recordCommandSettle(ms: latency) }
+        }
     }
 
     /// Forgets all windows. Does not move them.
@@ -301,6 +341,9 @@ public final class Engine: ObservableObject {
         layouts.removeAll()
         placements.removeAll()
         Self.resetWriteState(applier: applier, recorder: recorder)
+        metricsSink.forgetAllApps()
+        commandClock.reset()
+        columnCounts.reset()
         swipe = nil
         drag = nil
         focusedID = nil
@@ -355,14 +398,17 @@ public final class Engine: ObservableObject {
         if hotkeys == nil {
             hotkeys = Hotkeys { [weak self] command in
                 guard let self, !self.hotkeysSuspended else { return }
-                self.perform(command)
+                self.perform(command, source: .hotkey)
             }
         }
         let failed = hotkeys?.register(config.bindings) ?? []
         // Carbon accepts combos that macOS itself uses, so those are reported too.
         let system = Hotkeys.systemShortcuts()
         let taken = Set(config.bindings.values.joined()).intersection(system)
+        let before = Set(refusedShortcuts)
         refusedShortcuts = Array(Set(failed).union(taken)).sorted { $0.usLabel < $1.usLabel }
+        let newlyRefused = Set(refusedShortcuts).subtracting(before).count
+        if newlyRefused > 0 { metricsStore?.record(.hotkeyRefused, count: newlyRefused) }
         if !refusedShortcuts.isEmpty {
             log.log("hotkeys: macOS refused \(refusedShortcuts.map(\.usLabel).joined(separator: ", "))")
         }
@@ -370,23 +416,30 @@ public final class Engine: ObservableObject {
 
     // MARK: Commands
 
-    /// Runs a command from a shortcut, the CLI, a URL or the menu.
-    public func perform(_ command: Command) {
+    /// Runs a command from a shortcut, the CLI, a URL, the menu or a tab click. `source` is for the metrics.
+    /// `note` is the user's note of a `mark`.
+    public func perform(_ command: Command, source: CommandSource, note: String = "") {
+        if Self.recordsWhenStopped(command) { metricsStore?.record(command: command, source: source) }
         switch command {
         case .start: start(); return
         case .stop: stop(); return
         case .toggleEngine: toggle(); return
         case .restart: restart(); return
+        case .mark: saveMark(note: note); return
         default: break
         }
         guard status == .running else { return }
-        pendingCommandStart = CACurrentMediaTime()
+        metricsStore?.record(command: command, source: source)
+        noteFriction(before: command)
+        commandClock.commandStarted(at: CACurrentMediaTime(), swiping: swipe != nil)
+        let changesBefore = targetChanges
         switch command {
         case .toggleFloat: toggleFloat()
         case .sendToNextDisplay: sendToNextDisplay()
         case .focusWindow(let id): focusFromCommand(id)
         default: runStripCommand(command)
         }
+        commandClock.performEnded(changedTargets: targetChanges != changesBefore)
     }
 
     private func runStripCommand(_ command: Command) {
@@ -420,12 +473,21 @@ public final class Engine: ObservableObject {
             case .ping: return IPCResponse(ok: true)
             case .state: return IPCResponse(ok: true, state: currentState())
             case .stats: return IPCResponse(ok: true, stats: currentStats())
+            case .flushMetrics:
+                metricsFlusher?.flush(sync: true, force: true)
+                return IPCResponse(ok: true)
             }
         }
         guard let command = request.command else { return IPCResponse(ok: false, error: "empty request") }
         switch command {
+        case .mark:
+            guard metricsStore?.isEnabled == true else {
+                return IPCResponse(ok: false, error: "Metrics are off, so Striple saves no mark. Turn them on in Settings > General.")
+            }
+            perform(.mark, source: .cli, note: request.note ?? "")
+            return IPCResponse(ok: true)
         case .start, .stop, .toggleEngine, .restart:
-            perform(command)
+            perform(command, source: .cli)
             if status == .noPermission {
                 return IPCResponse(ok: false, error: "Striple needs the Accessibility permission. It starts when you allow it.")
             }
@@ -437,7 +499,7 @@ public final class Engine: ObservableObject {
                 let why = status == .noPermission ? "Striple needs the Accessibility permission" : "Striple is stopped (run: striple start)"
                 return IPCResponse(ok: false, error: why)
             }
-            perform(command)
+            perform(command, source: .cli)
             return IPCResponse(ok: true)
         }
     }

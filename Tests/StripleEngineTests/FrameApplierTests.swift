@@ -106,6 +106,32 @@ private func rect(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 0, width: 100, heigh
         #expect(applier.lastWritten(1) == rect(0))
     }
 
+    /// The engine gives a command its latency start only on a tick that moved a window and queued a write. True for
+    /// a frame equal to one in flight: the call waits for that write (`moved` of the engine's `tickStep` is false there).
+    @Test func applyTellsWhetherItQueued() {
+        let writer = FakeWriter()
+        let applier = FrameApplier(writer: writer)
+        let w = FrameWrite(id: 1, pid: 10, frame: rect(0))
+        let gate = writer.gate(1)
+        let done = DispatchSemaphore(value: 0)
+        let first = applier.apply([w]) { _ in done.signal() }
+        #expect(gate.started.wait(timeout: .now() + 2) == .success)
+        // The same frame while it is in flight: this call waits for that write.
+        let inFlight = applier.apply([w])
+        gate.release.signal()
+        #expect(done.wait(timeout: .now() + 2) == .success)
+        applier.applyAndWait([w])
+        let unchanged = applier.apply([w]) { _ in }
+        let unchangedNoCompletion = applier.apply([w])
+        let moved = applier.apply([FrameWrite(id: 1, pid: 10, frame: rect(5))])
+        #expect(first)
+        #expect(inFlight)
+        #expect(!unchanged)
+        #expect(!unchangedNoCompletion)
+        #expect(moved)
+        applier.applyAndWait([FrameWrite(id: 1, pid: 10, frame: rect(5))])
+    }
+
     @Test func previousFrameIsPassedToTheWriter() {
         let writer = FakeWriter()
         let applier = FrameApplier(writer: writer)

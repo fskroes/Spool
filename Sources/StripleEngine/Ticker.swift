@@ -15,10 +15,15 @@ final class Ticker: NSObject {
     init(onTick: @escaping (Double) -> Void) { self.onTick = onTick }
 
     private(set) var isRunning = false
+    /// Called from the second refresh of a run on: the time since the refresh before and the display period,
+    /// both in ms. A run is from `start` to `stop`; the pause between two runs is not an interval.
+    var onInterval: ((_ intervalMs: Double, _ periodMs: Double) -> Void)?
+    private var lastStep: Double?
 
     func start() {
         guard !isRunning else { return }
         isRunning = true
+        lastStep = nil
         if #available(macOS 14.0, *), let screen = NSScreen.main ?? NSScreen.screens.first {
             let l = screen.displayLink(target: self, selector: #selector(step(_:)))
             l.add(to: .main, forMode: .common)
@@ -31,6 +36,7 @@ final class Ticker: NSObject {
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        lastStep = nil
         if #available(macOS 14.0, *), let l = link as? CADisplayLink { l.invalidate() }
         link = nil
         if let cvLink { CVDisplayLinkStop(cvLink) }
@@ -39,7 +45,17 @@ final class Ticker: NSObject {
 
     @available(macOS 14.0, *)
     @objc private func step(_ link: CADisplayLink) {
-        onTick(CACurrentMediaTime())
+        let now = CACurrentMediaTime()
+        noteStep(now, periodMs: Self.periodMs(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp,
+                                              duration: link.duration))
+        onTick(now)
+    }
+
+    private func noteStep(_ now: Double, periodMs: Double) {
+        if let last = lastStep, let onInterval {
+            onInterval((now - last) * 1000, periodMs)
+        }
+        lastStep = now
     }
 
     /// macOS 13: CVDisplayLink calls back on its own thread. Hop to main, and drop a tick if the last one is
@@ -58,7 +74,12 @@ final class Ticker: NSObject {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     ticker.cvPending.clear()
-                    if ticker.isRunning { ticker.onTick(CACurrentMediaTime()) }
+                    guard ticker.isRunning, let link = ticker.cvLink else { return }
+                    let now = CACurrentMediaTime()
+                    let p = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link)
+                    ticker.noteStep(now, periodMs: Ticker.periodMs(timeValue: p.timeValue, timeScale: p.timeScale,
+                                                                   indefinite: p.flags & Int32(CVTimeFlags.isIndefinite.rawValue) != 0))
+                    ticker.onTick(now)
                 }
             }
             return kCVReturnSuccess

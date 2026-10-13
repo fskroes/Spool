@@ -13,10 +13,15 @@ extension Engine {
         guard let strip = strips[key], !strip.isEmpty else {
             animators[key] = nil
             layouts[key] = nil
+            columnCounts.forget(key)
             return
         }
         let result = Layout.compute(strip, display: d.geometry, settings: config.layout)
         layouts[key] = result
+        if let store = metricsStore, store.isEnabled, columnCounts.changed(key, to: strip.columns.count) {
+            store.recordColumns(strip.columns.count)
+        }
+        if Self.targetsChange(animators[key], to: result.frames) { targetChanges &+= 1 }
         var anim = animators[key] ?? FrameAnimator(response: config.animation.response, enabled: config.animation.enabled)
         let now = CACurrentMediaTime()
         anim.setTargets(result.frames, at: now, animate: animate, velocityX: velocityX)
@@ -40,24 +45,30 @@ extension Engine {
     func tick(_ t: Double) {
         guard status == .running else { ticker?.stop(); return }
         var writes: [FrameWrite] = []
+        var placed: [(WindowID, Layout.Placement)] = []
         var settled = true
         for (key, anim) in animators where isActive(key) {
             guard let d = display(key.display) else { continue }
             for (id, f) in anim.frames(at: t) {
                 guard let w = windows[id], w.state == .tiled, drag?.id != id else { continue }
                 let p = Layout.physical(f, display: d.geometry, settings: config.layout)
-                placements[id] = p
+                placed.append((id, p))
                 writes.append(FrameWrite(id: id, pid: w.info.pid, frame: p.frame))
             }
             if !anim.isSettled(at: t) { settled = false }
         }
+        let (moved, ends) = Self.tickStep(placed, placements: &placements, settled: settled, swiping: swipe != nil)
         if !writes.isEmpty {
-            let start = pendingCommandStart
-            pendingCommandStart = nil
-            applier.apply(writes, completion: Self.recordTick(recorder, commandStart: start))
+            // The completion gets a time only when a write was queued, so it may hold the start before `ticked`.
+            let taken = commandClock.tickStart(moved: moved, settles: ends)
+            let queued = applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore,
+                                                                           commandStart: taken?.start,
+                                                                           settleAtWrite: taken?.settleAtWrite == true))
+            commandClock.ticked(taken, queued: queued)
         }
         updateOverlays()
-        if settled && swipe == nil {
+        if ends {
+            if let ms = commandClock.settled(at: t) { metricsStore?.recordCommandSettle(ms: ms) }
             ticker?.stop()
             applier.settle()
             checkHealth()
@@ -209,6 +220,7 @@ extension Engine {
         guard recent.count < 2 else { return }
         corrections[id] = recent + [now]
         log.log("correct: window \(id) of \(w.info.bundleID) moved by its app (wrote \(Policy.text(last)), now \(Policy.text(f))), putting it back")
+        if !w.info.bundleID.isEmpty { metricsStore?.record(.appCorrection, bundleID: w.info.bundleID) }
         applier.forget(id)
         tick(now)
     }
@@ -218,6 +230,15 @@ extension Engine {
         drag = nil
         guard let w = windows[d.id], w.state == .tiled, let key = w.key, var strip = strips[key],
               let disp = display(key.display) else { return }
+        let p = mouseLocation()
+        let target = display(containing: p)
+        let drop = d.resize || !config.behavior.dragToReorder ? nil
+            : Policy.dropKind(dropDisplay: target?.uuid, ownDisplay: key.display,
+                              dropDisplayDisabled: target.map { isDisabled($0.uuid) } ?? false)
+        if !w.info.bundleID.isEmpty,
+           let kind = Self.dragFriction(resize: d.resize, dragToReorder: config.behavior.dragToReorder, drop: drop) {
+            metricsStore?.record(kind, bundleID: w.info.bundleID)
+        }
         let m = disp.geometry.metrics(config.layout)
         let dropped = AX.frame(w.element)
         applier.forget(d.id)
@@ -228,11 +249,8 @@ extension Engine {
                 strip.ensureFocusVisible(settings: config.layout, metrics: m)
             }
             strips[key] = strip
-        } else if config.behavior.dragToReorder {
-            let p = mouseLocation()
-            let target = display(containing: p)
-            switch Policy.dropKind(dropDisplay: target?.uuid, ownDisplay: key.display,
-                                   dropDisplayDisabled: target.map { isDisabled($0.uuid) } ?? false) {
+        } else if let drop {
+            switch drop {
             case .putBack:
                 // Not onto a display Striple manages: the window goes back to its own slot.
                 strip.setFocus(d.id)
@@ -395,6 +413,7 @@ extension Engine {
             let key = activeKey(d)
             guard let strip = strips[key], !strip.isEmpty else { return }
             swipe = SwipeState(key: key, raw: strip.scroll, shown: strip.scroll)
+            commandClock.swipeBegan()
         case .changed(let dx):
             guard var s = swipe, var strip = strips[s.key], let m = metrics(s.key) else { return }
             s.raw += Policy.scrollDelta(dx: dx, viewWidth: m.usableWidth, settings: config.gestures)
@@ -412,10 +431,16 @@ extension Engine {
             guard var strip = strips[s.key], let m = metrics(s.key) else { return }
             let v = Policy.scrollDelta(dx: velocity, viewWidth: m.usableWidth, settings: config.gestures)
             let snap = strip.snappedScroll(from: s.shown, velocity: v, settings: config.layout, metrics: m)
+            if let store = metricsStore {
+                store.record(.swipe)
+                // A fling: the speed of the fingers, not only where they stopped, picked the column.
+                if snap.column != strip.snappedScroll(from: s.shown, velocity: 0, settings: config.layout, metrics: m).column {
+                    store.record(.fling)
+                }
+            }
             strip.scroll = snap.scroll
             strip.focusedColumn = snap.column
             strips[s.key] = strip
-            pendingCommandStart = CACurrentMediaTime()
             // Windows move opposite to the scroll, so they start with the fingers' speed.
             relayout(s.key, animate: true, velocityX: -v)
             showMinimap(s.key)
@@ -478,6 +503,7 @@ extension Engine {
     func configChanged(_ new: Config) {
         let old = config
         config = new
+        if old.metrics != new.metrics { metricsSettingChanged() }
         if old.bindings != new.bindings { registerHotkeys() }
         guard status == .running else { return }
         if old.gestures.fingers != new.gestures.fingers {

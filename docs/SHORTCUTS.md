@@ -60,6 +60,7 @@ The key names below are for a US layout. The Settings page shows the names for y
 | Float / unfloat | `⌃⌥T` | `striple toggle-float` |
 | Send window to next display | `⌃⌥N` | `striple send-to-next-display` |
 | Start / stop the window manager | `⌃⌥Q` | `striple toggle-engine` |
+| Mark this moment | `⌃⌥⇧M` | `striple mark` |
 <!-- shortcuts:end -->
 
 ### Shortcuts that macOS uses

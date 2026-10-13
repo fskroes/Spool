@@ -26,16 +26,22 @@ enum Focuser {
     /// kCPSUserGenerated: the switch counts as the user's, so macOS does not refuse it.
     private static let userGenerated: UInt32 = 0x200
 
-    static func focus(window id: WindowID, pid: pid_t, element: AXUIElement) {
+    /// False when it used the public fallback (the SkyLight calls are missing or refused the pid).
+    @discardableResult
+    static func focus(window id: WindowID, pid: pid_t, element: AXUIElement) -> Bool {
         var psn = ProcessSerialNumber()
+        let fast: Bool
         if let getPSN, let setFront, getPSN(pid, &psn) == noErr {
             _ = setFront(&psn, id, userGenerated)
             makeKey(&psn, id)
+            fast = true
         } else {
             NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+            fast = false
         }
         AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
         AX.raise(element)
+        return fast
     }
 
     /// Sends the two "make key window" event records that the window server sends on a click.

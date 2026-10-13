@@ -45,13 +45,19 @@ public enum StriplePaths {
 
 /// A request from the CLI (or another tool) to the running app. One JSON object per line.
 public struct IPCRequest: Codable, Equatable, Sendable {
-    public enum Query: String, Codable, Sendable { case ping, state, stats }
+    public enum Query: String, Codable, Sendable {
+        case ping, state, stats
+        /// Internal: `striple report` asks the app to write its metrics to disk first. Not a user command.
+        case flushMetrics = "flush-metrics"
+    }
 
     public var command: Command?
     public var query: Query?
+    /// The note of a `mark` command. Nil for other requests, and not in the JSON then.
+    public var note: String?
 
-    public init(command: Command) { self.command = command; self.query = nil }
-    public init(query: Query) { self.command = nil; self.query = query }
+    public init(command: Command, note: String? = nil) { self.command = command; self.query = nil; self.note = note }
+    public init(query: Query) { self.command = nil; self.query = query; self.note = nil }
 }
 
 public struct IPCResponse: Codable, Equatable, Sendable {
