@@ -21,6 +21,7 @@ extension Engine {
         if let store = metricsStore, store.isEnabled, columnCounts.changed(key, to: strip.columns.count) {
             store.recordColumns(strip.columns.count)
         }
+        if Self.targetsChange(animators[key], to: result.frames) { targetChanges &+= 1 }
         var anim = animators[key] ?? FrameAnimator(response: config.animation.response, enabled: config.animation.enabled)
         let now = CACurrentMediaTime()
         anim.setTargets(result.frames, at: now, animate: animate, velocityX: velocityX)
@@ -56,8 +57,10 @@ extension Engine {
             if !anim.isSettled(at: t) { settled = false }
         }
         if !writes.isEmpty {
-            let start = commandClock.framesWritten()
-            applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore, commandStart: start))
+            // The completion gets a time only when a write was queued, so it may hold the start before `ticked`.
+            let queued = applier.apply(writes, completion: Self.recordTick(recorder, metrics: metricsStore,
+                                                                           commandStart: commandClock.pending))
+            commandClock.ticked(queued: queued)
         }
         updateOverlays()
         if settled && swipe == nil {

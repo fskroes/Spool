@@ -154,7 +154,7 @@ test in `Tests/`.
 - No window titles, no key presses, no typed text. Apps are named by bundle ID. The note of a mark is the only user text.
 - Speed: frame write, command latency (to the first frame), command settle (to the end of the animation) and the
   time between frames while an animation runs. Only a command that moves a window gives latency and settle; a
-  swipe is not a command. Cost: CPU time and idle wakeups of the process while the engine runs, and its peak
+  swipe is not a command, and a command during a swipe gives no sample. Cost: CPU time and idle wakeups of the process while the engine runs, and its peak
   memory, from `getrusage` and `proc_pid_rusage` at each save and at each engine start and stop. Problems: unclean
   exits, observer repairs, a lost permission, the focus fallback, config errors, refused shortcuts, apps that do
   not answer. Use: commands per source, columns per strip (when the number changes), swipes. Friction per app:

@@ -102,6 +102,8 @@ public final class Engine: ObservableObject {
     var drag: DragState?
     /// Command start for the latency (first frame) and the settle time (end of its animation).
     var commandClock = CommandClock()
+    /// Counts layout passes that changed a target frame, so `perform` knows whether its command moves a window.
+    var targetChanges = 0
     var focusedID: WindowID?
     var floatingBorderFrame: CGRect?
     var suppressScrollFor: WindowID?
@@ -424,14 +426,15 @@ public final class Engine: ObservableObject {
         guard status == .running else { return }
         metricsStore?.record(command: command, source: source)
         noteFriction(before: command)
-        commandClock.commandStarted(at: CACurrentMediaTime())
+        commandClock.commandStarted(at: CACurrentMediaTime(), swiping: swipe != nil)
+        let changesBefore = targetChanges
         switch command {
         case .toggleFloat: toggleFloat()
         case .sendToNextDisplay: sendToNextDisplay()
         case .focusWindow(let id): focusFromCommand(id)
         default: runStripCommand(command)
         }
-        commandClock.performEnded(tickerRunning: ticker?.isRunning == true)
+        commandClock.performEnded(changedTargets: targetChanges != changesBefore)
     }
 
     private func runStripCommand(_ command: Command) {

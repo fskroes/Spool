@@ -88,63 +88,103 @@ import Testing
     }
 }
 
-/// D1, D8: latency and settle come only from a command that wrote a frame.
+/// D1, D8, E1 to E3: latency and settle come only from a command that moves a window.
 @Suite struct CommandClockTests {
-    @Test func aCommandThatWroteNoFrameHasNoLatency() {
+    @Test func aCommandThatChangedNothingHasNoLatency() {
         var clock = CommandClock()
-        clock.commandStarted(at: 10)
-        // focus-left at the first column: nothing to write, no animation runs.
-        clock.performEnded(tickerRunning: false)
+        clock.commandStarted(at: 10, swiping: false)
+        // focus-left at the first column: no target changed.
+        clock.performEnded(changedTargets: false)
         // Minutes later a new window opens: its frames are not the command's.
-        let latency = clock.framesWritten()
+        clock.ticked(queued: true)
         let settle = clock.settled(at: 200)
-        #expect(latency == nil)
+        #expect(clock.pending == nil)
         #expect(settle == nil)
     }
 
-    @Test func theFirstFrameTakesTheStartOnce() {
+    @Test func fromRestTheFirstLinkTickTakesTheStart() {
         var clock = CommandClock()
-        clock.commandStarted(at: 10)
-        // The synchronous kick wrote the first frame inside perform.
-        let first = clock.framesWritten()
-        clock.performEnded(tickerRunning: true)
-        let second = clock.framesWritten()
+        clock.commandStarted(at: 10, swiping: false)
+        // The kick tick inside perform has dt = 0: every frame equals the written frame, nothing is queued.
+        clock.ticked(queued: false)
+        clock.performEnded(changedTargets: true)
+        #expect(clock.pending == 10)
+        #expect(clock.settling == nil)
+        // The first display link tick (dt > 0) queues the first write.
+        clock.ticked(queued: true)
+        #expect(clock.pending == nil)
+        #expect(clock.settling == 10)
+        clock.ticked(queued: true)
         let settle = clock.settled(at: 10.25)
         let later = clock.settled(at: 11)
-        #expect(first == 10)
-        #expect(second == nil)
         #expect(settle == 250)
         #expect(later == nil, "a later animation does not inherit the settle")
     }
 
-    @Test func whileAnAnimationRunsTheNextTickTakesTheStart() {
+    @Test func anAnimationThatSettlesWithoutAWriteGivesNoSample() {
         var clock = CommandClock()
-        clock.commandStarted(at: 10)
-        clock.performEnded(tickerRunning: true)
-        let latency = clock.framesWritten()
-        #expect(latency == 10)
+        clock.commandStarted(at: 10, swiping: false)
+        clock.ticked(queued: false)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: false)
+        let settle = clock.settled(at: 10.1)
+        #expect(settle == nil)
+        #expect(clock.pending == nil)
+        // The next animation (a new window, no command) does not take the old start.
+        clock.ticked(queued: true)
+        #expect(clock.settling == nil)
     }
 
-    @Test func aSwipeEndsTheSettleOfTheCommandBeforeIt() {
+    @Test func aNoOpCommandDuringAnAnimationKeepsTheSettleOfTheCommandBeforeIt() {
         var clock = CommandClock()
-        clock.commandStarted(at: 10)
-        _ = clock.framesWritten()
+        clock.commandStarted(at: 10, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: true)
+        // focus-left at the first column while the scroll animates.
+        clock.commandStarted(at: 10.1, swiping: false)
+        clock.performEnded(changedTargets: false)
+        clock.ticked(queued: true)
+        #expect(clock.pending == nil)
+        let settle = clock.settled(at: 10.5)
+        #expect(settle == 500)
+    }
+
+    @Test func aCommandThatMovesDuringAnAnimationTakesOver() {
+        var clock = CommandClock()
+        clock.commandStarted(at: 10, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: true)
+        clock.commandStarted(at: 12, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: true)
+        let settle = clock.settled(at: 12.5)
+        #expect(settle == 500)
+    }
+
+    @Test func aCommandDuringASwipeHasNoSample() {
+        var clock = CommandClock()
         clock.swipeBegan()
-        // The swipe's own animation (no command): no latency and no settle sample.
-        let latency = clock.framesWritten()
-        let settle = clock.settled(at: 30)
-        #expect(latency == nil)
+        clock.commandStarted(at: 10, swiping: true)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: true)
+        let settle = clock.settled(at: 12)
+        #expect(clock.pending == nil)
         #expect(settle == nil)
     }
 
-    @Test func aNewCommandReplacesTheSettleStart() {
+    @Test func aSwipeDropsTheCommandBeforeIt() {
         var clock = CommandClock()
-        clock.commandStarted(at: 10)
-        _ = clock.framesWritten()
-        clock.commandStarted(at: 12)
-        _ = clock.framesWritten()
-        let settle = clock.settled(at: 12.5)
-        #expect(settle == 500)
+        clock.commandStarted(at: 10, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.ticked(queued: true)
+        clock.commandStarted(at: 11, swiping: false)
+        clock.performEnded(changedTargets: true)
+        clock.swipeBegan()
+        #expect(clock.pending == nil)
+        // The swipe's own animation (no command): no latency and no settle sample.
+        clock.ticked(queued: true)
+        let settle = clock.settled(at: 30)
+        #expect(settle == nil)
     }
 }
 
@@ -158,12 +198,12 @@ import Testing
 
     @Test func oneFlushPerChange() {
         var plan = MetricsFlushPlan()
-        let a = plan.changed()
-        let b = plan.changed()
+        let a = plan.changed(dirty: true)
+        let b = plan.changed(dirty: true)
         plan.fired()
         plan.writeStarted()
-        let end = plan.writeEnded(error: nil)
-        let c = plan.changed()
+        let end = plan.writeEnded(error: nil, dirty: true)
+        let c = plan.changed(dirty: true)
         #expect(a == 60)
         #expect(b == nil)
         #expect(end.log == false && end.schedule == nil)
@@ -173,22 +213,22 @@ import Testing
     @Test func aFailureWaitsLongerAndLogsEachErrorOnce() {
         var plan = MetricsFlushPlan()
         var ends: [(log: Bool, schedule: TimeInterval?)] = []
-        _ = plan.changed()
+        _ = plan.changed(dirty: true)
         plan.fired()
         plan.writeStarted()
         // The store kept the data and called back during the write.
-        let during = plan.changed()
-        ends.append(plan.writeEnded(error: "disk full"))
+        let during = plan.changed(dirty: true)
+        ends.append(plan.writeEnded(error: "disk full", dirty: true))
         for error in ["disk full", "no permission"] {
             plan.fired()
             plan.writeStarted()
-            _ = plan.changed()
-            ends.append(plan.writeEnded(error: error))
+            _ = plan.changed(dirty: true)
+            ends.append(plan.writeEnded(error: error, dirty: true))
         }
         plan.fired()
         plan.writeStarted()
-        ends.append(plan.writeEnded(error: nil))
-        let after = plan.changed()
+        ends.append(plan.writeEnded(error: nil, dirty: true))
+        let after = plan.changed(dirty: true)
         #expect(during == nil)
         #expect(ends.map(\.log) == [true, false, true, false])
         #expect(ends.map(\.schedule) == [120, 240, 480, nil])
@@ -196,11 +236,25 @@ import Testing
         #expect(after == 60)
     }
 
+    @Test func aLateCallbackForSavedDataSchedulesNothing() {
+        var plan = MetricsFlushPlan()
+        let late = plan.changed(dirty: false)
+        let next = plan.changed(dirty: true)
+        #expect(late == nil)
+        #expect(next == 60, "nothing stuck: the next real change schedules")
+        var during = MetricsFlushPlan()
+        during.writeStarted()
+        _ = during.changed(dirty: true)
+        let end = during.writeEnded(error: nil, dirty: false)
+        #expect(end.schedule == nil)
+        #expect(during.changed(dirty: true) == 60)
+    }
+
     @Test func aSyncFailureSchedulesWhenTheCallbackComes() {
         var plan = MetricsFlushPlan()
         plan.writeStarted()
-        let end = plan.writeEnded(error: "x")
-        let next = plan.changed()
+        let end = plan.writeEnded(error: "x", dirty: true)
+        let next = plan.changed(dirty: true)
         #expect(end.log == true && end.schedule == nil)
         #expect(next == 120)
     }
@@ -219,6 +273,16 @@ import Testing
     }
 
     final class LogBox { var lines: [String] = [] }
+
+    final class HopBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bodies: [@MainActor @Sendable () -> Void] = []
+        func add(_ body: @escaping @MainActor @Sendable () -> Void) { lock.withLock { bodies.append(body) } }
+        @MainActor func run() {
+            let all = lock.withLock { let b = bodies; bodies = []; return b }
+            for body in all { body() }
+        }
+    }
 
     struct Rig {
         let store: MetricsStore
@@ -297,6 +361,30 @@ import Testing
         #expect(!MetricsFlusher.describe(a).contains("0x"))
     }
 
+    /// E4: in the app the callback comes on a later main queue pass, after a forced sync write saved the change.
+    @Test func aForcedSyncFlushLeavesNoTimer() {
+        let dir = Self.folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = MetricsStore(directory: dir, appVersion: "test")
+        let timers = Timers()
+        let hops = HopBox()
+        let flusher = MetricsFlusher(store: store,
+                                     schedule: { delay, body in timers.delays.append(delay); timers.pending.append(body) },
+                                     background: { $0() },
+                                     toMain: { body in hops.add(body) },
+                                     log: { _ in })
+        flusher.connect()
+        flusher.beforeWrite = { store.recordActive(seconds: 5) }
+        flusher.flush(sync: true, force: true)
+        hops.run()
+        #expect(Self.dayFiles(dir).count == 1)
+        #expect(!store.hasUnsavedChanges)
+        #expect(timers.delays.isEmpty)
+        store.record(command: .focusLeft, source: .hotkey)
+        hops.run()
+        #expect(timers.delays == [60])
+    }
+
     @Test func offRecordsAndWritesNothing() {
         let dir = Self.folder()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -325,6 +413,7 @@ import Testing
         #expect(before == 1)
         #expect(Self.dayFiles(dir).count == 1)
         #expect(!r.store.hasUnsavedChanges)
+        #expect(r.timers.delays.isEmpty, "the cost that beforeWrite records goes into this write, not a new timer")
     }
 }
 
@@ -390,6 +479,18 @@ import Testing
         counts.reset()
         seen.append(counts.changed("b", to: 3))
         #expect(seen == [true, false, true, true, true, true])
+    }
+
+    @Test func targetsChange() {
+        let a = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let b = CGRect(x: 100, y: 0, width: 100, height: 100)
+        #expect(Engine.targetsChange(nil, to: [1: a]))
+        var anim = FrameAnimator(response: 0.3, enabled: true)
+        anim.setTargets([1: a, 2: b], at: 0, animate: true)
+        #expect(!Engine.targetsChange(anim, to: [1: a, 2: b]), "the same targets move nothing")
+        #expect(Engine.targetsChange(anim, to: [1: b, 2: a]))
+        #expect(Engine.targetsChange(anim, to: [1: a]))
+        #expect(Engine.targetsChange(anim, to: [1: a, 3: b]))
     }
 
     @Test func dragFriction() {

@@ -218,7 +218,9 @@ public final class FrameApplier: @unchecked Sendable {
     /// A frame merged into an app that was already busy is waited for too, but frames of later calls are not.
     /// The time is nil when `forgetApp` or `reset` dropped a frame of this call, or when no frame of this call
     /// needed a write (each one equal to the frame the window has): it is not a frame-write time.
-    public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double?) -> Void)? = nil) {
+    /// Returns true when a frame of this call was queued or is in flight (this call waits for a window write).
+    @discardableResult
+    public func apply(_ writes: [FrameWrite], completion: (@Sendable (Double?) -> Void)? = nil) -> Bool {
         let dropped = Flag()
         let start = DispatchTime.now().uptimeNanoseconds
         let group = DispatchGroup()
@@ -274,14 +276,15 @@ public final class FrameApplier: @unchecked Sendable {
         for (pid, queue, generation) in toStart {
             queue.async { [self] in drain(pid, generation) }
         }
-        guard let completion else { return }
+        guard let completion else { return !queuedFor.isEmpty }
         guard !queuedFor.isEmpty else {
             DispatchQueue.global(qos: .userInteractive).async { completion(nil) }
-            return
+            return false
         }
         group.notify(queue: .global(qos: .userInteractive)) {
             completion(dropped.isSet ? nil : Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         }
+        return true
     }
 
     private final class Flag: @unchecked Sendable {

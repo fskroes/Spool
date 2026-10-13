@@ -5,39 +5,50 @@ import StripleCore
 // can drive them. Engine+Metrics.swift connects them to the engine.
 
 /// The start of the command that waits for its first frame, and of the command whose animation runs.
-/// Feeds command latency and settle (`striple stats` and the metrics). Only commands set it: a swipe does not.
+/// Feeds command latency and settle (`striple stats` and the metrics). Only a command that moves a window gives
+/// a sample: a command that changes nothing, a command during a swipe, and a swipe give none.
 struct CommandClock: Equatable {
-    /// Taken by the first tick that writes frames.
+    /// Waits for the first tick that queues a window write.
     private(set) var pending: Double?
-    /// Set when that tick writes; read when the animation settles.
+    /// Set when that tick queues; read when the animation settles.
     private(set) var settling: Double?
 
-    mutating func commandStarted(at t: Double) { pending = t }
+    /// A command starts. During a swipe the swipe's frames are not the command's: no sample.
+    mutating func commandStarted(at t: Double, swiping: Bool) {
+        guard !swiping else { return }
+        pending = t
+    }
 
-    /// A tick writes frames: the start of the command for the latency, if one waits.
-    mutating func framesWritten() -> Double? {
-        guard let start = pending else { return nil }
+    /// The end of `perform`. A command that changed no target frame (focus-left at the first column, a move at an
+    /// edge, toggle-float without a window) has no latency, also while an animation runs: the start must not go to
+    /// a later or older animation. The settle of the command before it stays.
+    mutating func performEnded(changedTargets: Bool) {
+        if !changedTargets { pending = nil }
+    }
+
+    /// A tick: `queued` is true when it queued a window write (`FrameApplier.apply`). A tick that queued nothing
+    /// (the first one of a command at rest has dt = 0, so every frame equals the written one) leaves the start
+    /// waiting for the next tick.
+    mutating func ticked(queued: Bool) {
+        guard queued, let start = pending else { return }
         pending = nil
         settling = start
-        return start
     }
 
-    /// The end of `perform`. A command that wrote no frame (focus-left at the first column, a move at an edge,
-    /// toggle-float without a window) and left no animation running has no latency: the start must not wait
-    /// for a later, unrelated frame. While the display link runs, its next tick takes the start.
-    mutating func performEnded(tickerRunning: Bool) {
-        if !tickerRunning { pending = nil }
-    }
-
-    /// The animation settled at `t`: the settle time in ms of the command that started it, once.
+    /// The animation settled at `t`: the settle time in ms of the command whose frames were queued, once.
+    /// A command start that no tick took is dropped: it moved no window.
     mutating func settled(at t: Double) -> Double? {
+        pending = nil
         guard let start = settling else { return nil }
         settling = nil
         return max(t - start, 0) * 1000
     }
 
     /// A swipe takes over the strip: the command's animation does not end on its own, so it has no settle time.
-    mutating func swipeBegan() { settling = nil }
+    mutating func swipeBegan() {
+        pending = nil
+        settling = nil
+    }
 
     mutating func reset() { self = CommandClock() }
 }
@@ -62,8 +73,10 @@ struct MetricsFlushPlan: Equatable {
         return min(delay * pow(2, Double(min(failures, 16))), maxDelay)
     }
 
-    /// The store went from saved to unsaved: the delay of the flush to schedule, or nil.
-    mutating func changed() -> TimeInterval? {
+    /// The store went from saved to unsaved: the delay of the flush to schedule, or nil. `dirty` is the store's
+    /// `hasUnsavedChanges` now: the callback comes late, maybe after a forced write saved the change.
+    mutating func changed(dirty: Bool) -> TimeInterval? {
+        guard dirty else { return nil }
         if writes > 0 {
             wanted = true
             return nil
@@ -81,7 +94,7 @@ struct MetricsFlushPlan: Equatable {
     /// A write ended. `log` is true for the first failure with this error since the last success.
     /// `schedule` is the delay of the next flush when changes came during the write (also the data a failed write
     /// kept in memory) and none is scheduled.
-    mutating func writeEnded(error: String?) -> (log: Bool, schedule: TimeInterval?) {
+    mutating func writeEnded(error: String?, dirty: Bool) -> (log: Bool, schedule: TimeInterval?) {
         writes = max(writes - 1, 0)
         var log = false
         if let error {
@@ -94,7 +107,7 @@ struct MetricsFlushPlan: Equatable {
         }
         guard wanted, writes == 0 else { return (log, nil) }
         wanted = false
-        return (log, changed())
+        return (log, changed(dirty: dirty))
     }
 }
 
@@ -151,6 +164,12 @@ struct ColumnCounts<Key: Hashable> {
 }
 
 extension Engine {
+    /// True when `frames` are not the targets the strip's animator has now: the layout pass moves a window.
+    nonisolated static func targetsChange(_ anim: FrameAnimator?, to frames: [WindowID: CGRect]) -> Bool {
+        guard let anim, anim.windowIDs.count == frames.count else { return true }
+        return frames.contains { anim.target($0.key) != $0.value }
+    }
+
     /// Commands recorded before the running check: they work also when the engine is stopped.
     nonisolated static func recordsWhenStopped(_ command: Command) -> Bool {
         switch command {
@@ -231,7 +250,7 @@ final class MetricsFlusher {
 
     /// The store has unsaved changes.
     func changed() {
-        if let delay = plan.changed() { scheduleFlush(after: delay) }
+        if let delay = plan.changed(dirty: store.hasUnsavedChanges) { scheduleFlush(after: delay) }
     }
 
     private func scheduleFlush(after delay: TimeInterval) {
@@ -247,8 +266,9 @@ final class MetricsFlusher {
     /// time and cost first. `sync` writes before it returns; else the write runs off the main thread.
     func flush(sync: Bool, force: Bool = false) {
         guard store.isEnabled, force || store.hasUnsavedChanges else { return }
-        beforeWrite()
+        // Started first: a change that `beforeWrite` makes goes into this write, not into a new timer.
         plan.writeStarted()
+        beforeWrite()
         let store = self.store
         if sync {
             writeEnded(Self.write(store))
@@ -278,7 +298,7 @@ final class MetricsFlusher {
 
     private func writeEnded(_ error: String?) {
         let wasFailing = plan.failures > 0
-        let result = plan.writeEnded(error: error)
+        let result = plan.writeEnded(error: error, dirty: store.hasUnsavedChanges)
         if let error, result.log {
             log("metrics: could not save the day file, next try in \(Int(MetricsFlushPlan.delay(failures: plan.failures))) s: \(error)")
         } else if error == nil, wasFailing {
