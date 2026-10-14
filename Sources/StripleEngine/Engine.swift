@@ -32,6 +32,8 @@ public final class Engine: ObservableObject {
     let writer: AXFrameWriter
     let applier: FrameApplier
     let overlays = Overlays()
+    /// Tests set this to read each minimap model instead of showing a panel.
+    var minimapSink: ((MinimapModel, EngineDisplay) -> Void)?
     let recorder: StatsRecorder
     var tracker: WindowTracker?
     var hotkeys: Hotkeys?

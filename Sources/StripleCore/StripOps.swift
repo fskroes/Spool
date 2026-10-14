@@ -367,4 +367,10 @@ extension Strip {
         }!
         return best
     }
+
+    /// The column that gets focus if a swipe stops at `scroll` and the fingers lift with no speed.
+    /// The minimap highlights it while the swipe runs.
+    public func swipeTarget(at scroll: Double, settings: LayoutSettings, metrics: StripMetrics) -> Int {
+        snappedScroll(from: scroll, velocity: 0, settings: settings, metrics: metrics).column
+    }
 }

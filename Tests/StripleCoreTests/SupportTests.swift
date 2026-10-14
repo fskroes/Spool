@@ -393,7 +393,7 @@ import Testing
         let st = strip([1, 2, 3, 4], focus: 3)
         let m = MinimapModel.make(strip: st, display: d, settings: s, scroll: 600)
         #expect(m.items.count == 4)
-        #expect(m.items.filter(\.focused).count == 1)
+        #expect(m.items.filter(\.highlighted).count == 1)
         for item in m.items {
             #expect(item.rect.minX >= -1e-9 && item.rect.maxX <= 1 + 1e-9)
             #expect(item.rect.minY >= -1e-9 && item.rect.maxY <= 1 + 1e-9)
@@ -408,6 +408,84 @@ import Testing
         _ = st.apply(.stackLeft, settings: s, metrics: d.metrics(s))
         _ = st.apply(.toggleTabbed, settings: s, metrics: d.metrics(s))
         #expect(MinimapModel.make(strip: st, display: d, settings: s).items.count == 1)
+    }
+
+    /// The IDs of the highlighted items. Items come column by column, one per visible window.
+    func highlightedIDs(_ m: MinimapModel, _ st: Strip) -> [WindowID] {
+        let visible = st.columns.flatMap { c in c.isTabbed ? [c.activeWindow] : c.windows }
+        return zip(visible, m.items).filter { $0.1.highlighted }.map(\.0.id)
+    }
+
+    @Test func aSwipeHighlightsTheColumnItWillSettleOn() {
+        let d = display(), s = layoutSettings(.always)
+        let st = strip([1, 2, 3, 4], focus: 0)
+        let m = d.metrics(s)
+        // Every column, scrolled to its centred position, is the swipe target and is the one highlighted.
+        for column in st.columns.indices {
+            let p = st.columnPositions(metrics: m)
+            let scroll = p.x[column] - (m.usableWidth - p.width[column]) / 2
+            let target = st.swipeTarget(at: scroll, settings: s, metrics: m)
+            #expect(target == column)
+            let model = MinimapModel.make(strip: st, display: d, settings: s, scroll: scroll, highlightColumn: target)
+            #expect(highlightedIDs(model, st) == [st.columns[column].activeWindow.id])
+        }
+    }
+
+    @Test func aSwipeTargetIsWhereTheReleaseWithNoSpeedSettles() {
+        let d = display(), s = layoutSettings(.onOverflow)
+        let st = strip([1, 2, 3, 4, 5], focus: 1)
+        let m = d.metrics(s)
+        for scroll in stride(from: -300.0, through: 3000, by: 37) {
+            #expect(st.swipeTarget(at: scroll, settings: s, metrics: m)
+                    == st.snappedScroll(from: scroll, velocity: 0, settings: s, metrics: m).column)
+        }
+    }
+
+    @Test func theSwipeHighlightReplacesTheFocusedWindow() {
+        let d = display(), s = layoutSettings()
+        let st = strip([1, 2, 3, 4], focus: 0)
+        let m = MinimapModel.make(strip: st, display: d, settings: s, highlightColumn: 2)
+        #expect(highlightedIDs(m, st) == [3], "only the swipe target, not also the old focus")
+    }
+
+    @Test func aHighlightColumnOutsideTheStripFallsBackToTheFocus() {
+        let d = display(), s = layoutSettings()
+        let st = strip([1, 2, 3], focus: 1)
+        for bad in [-1, 3, 99] {
+            let m = MinimapModel.make(strip: st, display: d, settings: s, highlightColumn: bad)
+            #expect(highlightedIDs(m, st) == [2])
+        }
+        #expect(highlightedIDs(MinimapModel.make(strip: st, display: d, settings: s), st) == [2])
+    }
+
+    @Test func aStackedColumnHighlightsOnlyItsActiveWindow() {
+        let d = display(), s = layoutSettings()
+        var st = strip([1, 2, 3], focus: 1)
+        _ = st.apply(.stackLeft, settings: s, metrics: d.metrics(s))
+        // Now column 0 holds windows 1 and 2; window 2 is active.
+        let m = MinimapModel.make(strip: st, display: d, settings: s, highlightColumn: 0)
+        #expect(highlightedIDs(m, st) == [st.columns[0].activeWindow.id])
+        #expect(m.items.filter(\.highlighted).count == 1)
+    }
+
+    @Test func itemsCarryTheAppOfTheirWindow() {
+        let d = display(), s = layoutSettings()
+        var st = Strip()
+        st.insert(WindowInfo(id: 1, pid: 11, bundleID: "com.a"), width: .proportion(0.5), focus: true)
+        st.insert(WindowInfo(id: 2, pid: 22, bundleID: "com.b"), width: .proportion(0.5), focus: true)
+        let m = MinimapModel.make(strip: st, display: d, settings: s)
+        #expect(m.items.map(\.pid) == [11, 22])
+        #expect(m.items.map(\.bundleID) == ["com.a", "com.b"])
+    }
+
+    @Test func iconSideFitsTheItemOrIsLeftOut() {
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 80, height: 37)) == 20)
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 22, height: 37)) == 16)
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 80, height: 17)) == 11)
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 16, height: 37)) == 10)
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 15.9, height: 37)) == nil)
+        #expect(MinimapModel.iconSide(itemSize: CGSize(width: 80, height: 15)) == nil)
+        #expect(MinimapModel.iconSide(itemSize: .zero) == nil)
     }
 }
 

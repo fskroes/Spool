@@ -94,8 +94,16 @@ test in `Tests/`.
 
 ### F9 Strip minimap
 - While the user navigates, a small map of the strip shows the columns, the
-  visible area and the focused column. It fades out after a short delay.
+  visible area and the highlighted window (the focused window, or during a
+  swipe the window described below). It fades out after a short delay.
   It can be switched off.
+- Each block shows the app icon of its window, if the block is large enough
+  (at least 16 x 16 points). The icon is up to 20 points. The icon is made in
+  the background, so the first time an app is shown its icon comes a moment
+  later. An app with no icon shows a plain block.
+- During a trackpad swipe, the highlighted block is the window that gets focus
+  if the fingers stop and lift now. After a fast flick, the strip can settle on
+  another column; the highlight moves there on release.
 
 ### F10 Trackpad swipe
 - A 3- or 4-finger horizontal swipe (configurable, or off) scrolls the strip and follows the fingers.

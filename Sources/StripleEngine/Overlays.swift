@@ -12,7 +12,20 @@ final class Overlays {
     private var minimaps: [String: (panel: NSPanel, view: MinimapView)] = [:]
     private var minimapHide: [String: DispatchWorkItem] = [:]
     private var tabBars: [Int: (panel: NSPanel, view: TabBarView)] = [:]
+    let appIcons: AppIconCache
     var onTabClick: ((WindowID) -> Void)?
+
+    /// `appIcons` nil uses a cache that makes icons on a background queue; tests pass their own.
+    init(appIcons: AppIconCache? = nil) {
+        let appIcons = appIcons ?? AppIconCache()
+        self.appIcons = appIcons
+        // An icon that was made in the background is drawn at once, also while the minimap does not move.
+        // A hidden minimap draws only when it is shown again, so marking it costs nothing.
+        appIcons.onLoad = { [weak self] in
+            guard let self else { return }
+            for entry in minimaps.values { entry.view.needsDisplay = true }
+        }
+    }
 
     static func appKitRect(_ r: CGRect) -> CGRect {
         let h = NSScreen.screens.first?.frame.height ?? 0
@@ -84,15 +97,21 @@ final class Overlays {
 
     // MARK: Minimap
 
+    /// The minimap panel of a display, made on first use. It is not shown here.
+    func minimapEntry(_ uuid: String) -> (panel: NSPanel, view: MinimapView) {
+        if let e = minimaps[uuid] { return e }
+        let p = Self.makePanel(level: .statusBar)
+        let v = MinimapView()
+        let icons = appIcons
+        v.icon = { icons.icon(pid: $0, bundleID: $1) }
+        p.contentView = v
+        let e = (p, v)
+        minimaps[uuid] = e
+        return e
+    }
+
     func showMinimap(_ model: MinimapModel, on display: EngineDisplay, seconds: Double) {
-        let entry = minimaps[display.uuid] ?? {
-            let p = Self.makePanel(level: .statusBar)
-            let v = MinimapView()
-            p.contentView = v
-            let e = (p, v)
-            minimaps[display.uuid] = e
-            return e
-        }()
+        let entry = minimapEntry(display.uuid)
         let u = display.geometry.usable
         let height: CGFloat = 54
         let width = min(max(u.width * 0.28, 220), 520)
@@ -181,8 +200,20 @@ private final class BorderView: NSView {
     }
 }
 
-private final class MinimapView: NSView {
+final class MinimapView: NSView {
     var model = MinimapModel(items: [], viewport: .zero) { didSet { needsDisplay = true } }
+    /// The app icon for a pid and bundle ID, or nil.
+    var icon: ((Int32, String) -> NSImage?)?
+    /// How often the view was asked to draw again. AppKit does not let a test read this from `needsDisplay`:
+    /// a hidden panel keeps it true once set, and a panel of zero size drops it. So tests count the requests.
+    private(set) var displayRequests = 0
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if newValue { displayRequests += 1 }
+            super.needsDisplay = newValue
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let bg = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
@@ -195,14 +226,108 @@ private final class MinimapView: NSView {
                    width: r.width * inner.width, height: r.height * inner.height)
         }
         for item in model.items {
-            let p = NSBezierPath(roundedRect: rect(item.rect).insetBy(dx: 0.75, dy: 0.75), xRadius: 2, yRadius: 2)
-            (item.focused ? NSColor.controlAccentColor : NSColor(white: 0.55, alpha: 0.9)).setFill()
+            let r = rect(item.rect).insetBy(dx: 0.75, dy: 0.75)
+            let p = NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2)
+            (item.highlighted ? NSColor.controlAccentColor : NSColor(white: 0.55, alpha: 0.9)).setFill()
             p.fill()
+            if let side = MinimapModel.iconSide(itemSize: r.size), let image = icon?(item.pid, item.bundleID) {
+                // Aligned to whole pixels, so the edges of the small icon stay sharp.
+                let s = side.rounded(.down)
+                let target = backingAlignedRect(CGRect(x: r.midX - s / 2, y: r.midY - s / 2, width: s, height: s),
+                                                options: .alignAllEdgesNearest)
+                image.draw(in: target, from: .zero, operation: .sourceOver, fraction: item.highlighted ? 1 : 0.7)
+            }
         }
         let vp = NSBezierPath(roundedRect: rect(model.viewport).insetBy(dx: -2, dy: -3), xRadius: 4, yRadius: 4)
         vp.lineWidth = 1.5
         NSColor.white.withAlphaComponent(0.85).setStroke()
         vp.stroke()
+    }
+}
+
+/// App icons for the minimap, made once per app as a small bitmap.
+/// A cold app icon costs 1 to 90 ms to look up and draw (measured on 8 running apps), which is too much for the
+/// main thread during a swipe. So the cache makes each icon on a background queue. Until the icon is ready, `icon`
+/// returns nil and the minimap draws the block with no icon; `onLoad` then asks for a redraw.
+/// A ready icon is a 20 pt bitmap, so each minimap draw stays cheap.
+@MainActor
+final class AppIconCache {
+    private struct Key: Hashable { var pid: Int32; var bundleID: String }
+    /// Moves a finished icon from the background queue to the main thread. The queue does not use it after that.
+    private struct Made: @unchecked Sendable { let image: NSImage? }
+    private var images: [Key: NSImage?] = [:]
+    private var pending: Set<Key> = []
+    /// Icons that the background queue makes now.
+    var pendingCount: Int { pending.count }
+    let queue: DispatchQueue?
+    private let lookup: @Sendable (Int32, String) -> NSImage?
+    /// Called on the main thread when an icon is ready.
+    var onLoad: (() -> Void)?
+    /// The cache is emptied when it grows past this, so icons of quit apps do not stay forever.
+    static let limit = 64
+    private(set) var lookups = 0
+
+    /// `queue` nil makes each icon at once on the calling thread; tests use that.
+    init(queue: DispatchQueue? = DispatchQueue(label: "striple.icons", qos: .utility, autoreleaseFrequency: .workItem),
+         lookup: @escaping @Sendable (Int32, String) -> NSImage? = { AppIconCache.liveIcon(pid: $0, bundleID: $1) }) {
+        self.queue = queue
+        self.lookup = lookup
+    }
+
+    /// The icon if it is ready, else nil (and the icon is made once, in the background).
+    /// The bundle ID is part of the key, so a pid that a new app reuses does not get the old icon.
+    func icon(pid: Int32, bundleID: String) -> NSImage? {
+        guard pid > 0 else { return nil }
+        let key = Key(pid: pid, bundleID: bundleID)
+        if let cached = images[key] { return cached }
+        if pending.contains(key) { return nil }
+        if images.count >= Self.limit { images.removeAll() }
+        lookups += 1
+        let lookup = self.lookup
+        let make: @Sendable () -> Made = { Made(image: lookup(pid, bundleID).flatMap { Self.bitmap($0, side: MinimapModel.maxIconSide) }) }
+        guard let queue else {
+            images[key] = .some(make().image)
+            return images[key] ?? nil
+        }
+        pending.insert(key)
+        queue.async { [weak self] in
+            let made = make()
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.finish(key, made.image) } }
+        }
+        return nil
+    }
+
+    /// The icon of the app with this pid, if that app still has this bundle ID. The lookup runs later than the
+    /// request, so the app can have quit and another app can have the pid now.
+    nonisolated static func liveIcon(pid: Int32, bundleID: String) -> NSImage? {
+        guard let app = NSRunningApplication(processIdentifier: pid), (app.bundleIdentifier ?? "") == bundleID else { return nil }
+        return app.icon
+    }
+
+    private func finish(_ key: Key, _ image: NSImage?) {
+        pending.remove(key)
+        images[key] = .some(image)
+        if image != nil { onLoad?() }
+    }
+
+    /// Draws `icon` into a bitmap of `side` points at 2x, for Retina displays. Safe on any thread: the context
+    /// belongs to the bitmap. Nil if the bitmap cannot be made.
+    nonisolated static func bitmap(_ icon: NSImage, side: CGFloat) -> NSImage? {
+        let pixels = Int(side * 2)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        // Set the size before the context is made: the context takes its point-to-pixel scale from it.
+        rep.size = NSSize(width: side, height: side)
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
     }
 }
 

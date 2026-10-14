@@ -206,3 +206,171 @@ private func distance(_ a: CGRect, _ b: CGRect) -> CGFloat { hypot(a.minX - b.mi
                 "steps 48 Hz \(slow), 60 Hz \(normal), 120 Hz \(fast), 240 Hz \(fastest)")
     }
 }
+
+/// The minimap during a trackpad swipe: it highlights the window that gets focus if the fingers stop and
+/// lift there, not the window that had focus when the swipe started.
+@MainActor
+@Suite struct EngineSwipeMinimapTests {
+    @Test func aSwipeHighlightsTheWindowThatGetsFocusOnRelease() throws {
+        let t = TestEngine(ids: [1, 2, 3, 4])
+        defer { t.stop() }
+        t.engine.config.appearance.minimap = true
+        t.engine.config.gestures.natural = false
+        var shown: [MinimapModel] = []
+        t.engine.minimapSink = { model, _ in shown.append(model) }
+        let start = try #require(t.engine.strips[t.a]).scroll
+        #expect(t.engine.strips[t.a]?.focusedColumn == 0)
+        t.engine.swipe = .init(key: t.a, raw: start, shown: start)
+        // Positive dx with natural scrolling off scrolls towards the later columns. Go one step at a time
+        // until the swipe target is past column 1, so it cannot be the column that has focus.
+        var target = 0
+        for _ in 0..<40 where target < 2 {
+            t.engine.swipeEvent(.changed(dx: 0.05))
+            let strip = try #require(t.engine.strips[t.a])
+            let metrics = try #require(t.engine.metrics(t.a))
+            target = strip.swipeTarget(at: strip.scroll, settings: t.engine.config.layout, metrics: metrics)
+        }
+        #expect(target >= 2, "the swipe reached column \(target)")
+        #expect(t.engine.strips[t.a]?.focusedColumn == 0, "the focus moves only on release")
+        let last = try #require(shown.last)
+        #expect(last.items.filter(\.highlighted).count == 1)
+        #expect(last.items.firstIndex(where: \.highlighted) == target, "the minimap highlights the swipe target")
+        // Release with no speed: the highlighted window gets focus.
+        let count = shown.count
+        t.engine.swipeEvent(.ended(velocity: 0))
+        let strip = try #require(t.engine.strips[t.a])
+        #expect(strip.focusedColumn == target)
+        #expect(shown.count == count + 1, "the release shows the minimap again")
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == target, "the release keeps the highlight")
+    }
+
+    /// A command, a new window or an app that takes focus can show the minimap in the middle of a swipe. The
+    /// highlight then stays on the swipe target, also when the command scrolls the strip, and the release
+    /// with no speed focuses that column.
+    @Test func aCommandDuringASwipeKeepsTheSwipeHighlight() throws {
+        let t = TestEngine(ids: [1, 2, 3, 4])
+        defer { t.stop() }
+        t.engine.config.appearance.minimap = true
+        t.engine.config.gestures.natural = false
+        var shown: [MinimapModel] = []
+        t.engine.minimapSink = { model, _ in shown.append(model) }
+        let start = try #require(t.engine.strips[t.a]).scroll
+        t.engine.swipe = .init(key: t.a, raw: start, shown: start)
+        var target = 0
+        for _ in 0..<40 where target < 2 {
+            t.engine.swipeEvent(.changed(dx: 0.05))
+            let strip = try #require(t.engine.strips[t.a])
+            let metrics = try #require(t.engine.metrics(t.a))
+            target = strip.swipeTarget(at: strip.scroll, settings: t.engine.config.layout, metrics: metrics)
+        }
+        #expect(target >= 2)
+        #expect(t.engine.strips[t.a]?.focusedColumn == 0)
+        let fingers = try #require(t.engine.swipe).shown
+        let count = shown.count
+        t.engine.perform(.focusRight, source: .hotkey)
+        let strip = try #require(t.engine.strips[t.a])
+        let metrics = try #require(t.engine.metrics(t.a))
+        #expect(strip.focusedColumn == 1, "the command ran")
+        #expect(strip.scroll != fingers, "the command scrolled the strip away from the fingers")
+        #expect(strip.swipeTarget(at: strip.scroll, settings: t.engine.config.layout, metrics: metrics) != target,
+                "at the new scroll the target differs, so the test can tell the two apart")
+        #expect(shown.count > count, "the command showed the minimap")
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == target, "the highlight stays on the swipe target")
+        t.engine.swipeEvent(.ended(velocity: 0))
+        #expect(t.engine.strips[t.a]?.focusedColumn == target, "the release focuses the highlighted column")
+        t.engine.showMinimap(t.a)
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == target, "after the swipe it is the focus")
+    }
+
+    /// A swipe on one strip does not change the highlight in the minimap of another strip.
+    @Test func aSwipeOnOneStripDoesNotMoveTheHighlightOfAnother() throws {
+        let t = TestEngine(ids: [1, 2, 3, 4])
+        defer { t.stop() }
+        t.engine.config.appearance.minimap = true
+        t.engine.config.gestures.natural = false
+        var other = Strip()
+        for id: WindowID in [11, 12, 13, 14] {
+            other.insert(WindowInfo(id: id, pid: 1, bundleID: "com.example.b", title: "W\(id)"), width: .proportion(0.5), focus: true)
+        }
+        other.setFocus(11)
+        t.engine.strips[t.b] = other
+        var shown: [MinimapModel] = []
+        t.engine.minimapSink = { model, _ in shown.append(model) }
+        let start = try #require(t.engine.strips[t.a]).scroll
+        t.engine.swipe = .init(key: t.a, raw: start, shown: start)
+        var target = 0
+        for _ in 0..<40 where target < 2 {
+            t.engine.swipeEvent(.changed(dx: 0.05))
+            let strip = try #require(t.engine.strips[t.a])
+            let metrics = try #require(t.engine.metrics(t.a))
+            target = strip.swipeTarget(at: strip.scroll, settings: t.engine.config.layout, metrics: metrics)
+        }
+        let fingers = try #require(t.engine.swipe).shown
+        let metricsB = try #require(t.engine.metrics(t.b))
+        #expect(other.swipeTarget(at: fingers, settings: t.engine.config.layout, metrics: metricsB) != 0,
+                "the fingers of strip A point at another column of strip B, so the test can tell them apart")
+        t.engine.showMinimap(t.b)
+        #expect(shown.last?.items.count == 4, "the minimap of strip B")
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == 0, "strip B highlights its focused window")
+    }
+
+    /// Changing the finger setting drops a running swipe without an end event. The engine then ends the swipe
+    /// itself: the strip settles on the swipe target, and later minimaps highlight the focused window.
+    @Test func aFingerSettingChangeEndsTheSwipeHighlight() throws {
+        let t = TestEngine(ids: [1, 2, 3, 4])
+        defer { t.stop() }
+        t.engine.config.appearance.minimap = true
+        t.engine.config.gestures.natural = false
+        var shown: [MinimapModel] = []
+        t.engine.minimapSink = { model, _ in shown.append(model) }
+        let start = try #require(t.engine.strips[t.a]).scroll
+        t.engine.swipe = .init(key: t.a, raw: start, shown: start)
+        var target = 0
+        for _ in 0..<40 where target < 2 {
+            t.engine.swipeEvent(.changed(dx: 0.05))
+            let last = try #require(shown.last)
+            target = try #require(last.items.firstIndex { $0.highlighted })
+        }
+        #expect(target >= 2)
+        #expect(t.engine.strips[t.a]?.focusedColumn == 0)
+        let count = shown.count
+        var config = t.engine.config
+        config.gestures.fingers = .off
+        t.engine.configChanged(config)
+        #expect(t.engine.swipe == nil, "the swipe ended")
+        let strip = try #require(t.engine.strips[t.a])
+        let metrics = try #require(t.engine.metrics(t.a))
+        #expect(strip.focusedColumn == target, "the strip settled on the swipe target")
+        #expect(strip.scroll == strip.snappedScroll(from: strip.scroll, velocity: 0, settings: t.engine.config.layout,
+                                                    metrics: metrics).scroll, "the strip is snapped")
+        #expect(shown.count == count + 1, "the minimap on screen was updated")
+        // Move the focus back to window 1 (column 0): with no stale swipe the minimap follows it.
+        t.engine.strips[t.a]?.setFocus(1)
+        t.engine.showMinimap(t.a)
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == 0, "later minimaps highlight the focus")
+    }
+
+    /// A flick settles further than the column the minimap showed during the swipe. On release the highlight
+    /// moves to the column that really gets focus.
+    @Test func aFlickMovesTheHighlightToTheColumnThatGetsFocus() throws {
+        let t = TestEngine(ids: [1, 2, 3, 4])
+        defer { t.stop() }
+        t.engine.config.appearance.minimap = true
+        t.engine.config.gestures.natural = false
+        var shown: [MinimapModel] = []
+        t.engine.minimapSink = { model, _ in shown.append(model) }
+        let start = try #require(t.engine.strips[t.a]).scroll
+        t.engine.swipe = .init(key: t.a, raw: start, shown: start)
+        t.engine.swipeEvent(.changed(dx: 0.05))
+        let during = try #require(shown.last)
+        let target = try #require(during.items.firstIndex { $0.highlighted })
+        #expect(target == 0, "a small step keeps the target on the first column")
+        let count = shown.count
+        t.engine.swipeEvent(.ended(velocity: 20))
+        let strip = try #require(t.engine.strips[t.a])
+        #expect(strip.focusedColumn != target, "the flick went past the swipe target")
+        #expect(shown.count == count + 1, "the release shows the minimap again")
+        #expect(shown.last?.items.firstIndex(where: \.highlighted) == strip.focusedColumn,
+                "the highlight follows the focus after the flick")
+    }
+}

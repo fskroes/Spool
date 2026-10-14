@@ -310,8 +310,19 @@ public enum WindowRules {
 public struct MinimapModel: Equatable, Sendable {
     public struct Item: Equatable, Sendable {
         public var rect: CGRect
-        public var focused: Bool
-        public init(rect: CGRect, focused: Bool) { self.rect = rect; self.focused = focused }
+        /// Drawn in the accent colour: the focused window, or during a swipe the window that gets focus if the
+        /// fingers stop and lift there.
+        public var highlighted: Bool
+        /// The app of the window, for its icon. 0 if not known.
+        public var pid: Int32
+        public var bundleID: String
+
+        public init(rect: CGRect, highlighted: Bool, pid: Int32 = 0, bundleID: String = "") {
+            self.rect = rect
+            self.highlighted = highlighted
+            self.pid = pid
+            self.bundleID = bundleID
+        }
     }
 
     public var items: [Item]
@@ -319,7 +330,23 @@ public struct MinimapModel: Equatable, Sendable {
 
     public init(items: [Item], viewport: CGRect) { self.items = items; self.viewport = viewport }
 
-    public static func make(strip: Strip, display: DisplayGeometry, settings: LayoutSettings, scroll: Double? = nil) -> MinimapModel {
+    /// The largest app icon the minimap draws, in points.
+    public static let maxIconSide: CGFloat = 20
+    /// Below this size an icon is not readable, so the minimap draws no icon.
+    public static let minIconSide: CGFloat = 10
+
+    /// The side of the app icon in an item of `size` points, or nil if the item is too small for an icon.
+    /// The icon keeps a margin of 3 points to the edges of the item.
+    public static func iconSide(itemSize size: CGSize) -> CGFloat? {
+        let side = min(maxIconSide, size.width - 6, size.height - 6)
+        return side >= minIconSide ? side : nil
+    }
+
+    /// `highlightColumn` overrides the focused column for the highlight. A swipe uses it to show
+    /// the column that gets focus on release, before the focus changes. An index that is not
+    /// in the strip falls back to the focused window.
+    public static func make(strip: Strip, display: DisplayGeometry, settings: LayoutSettings, scroll: Double? = nil,
+                            highlightColumn: Int? = nil) -> MinimapModel {
         let metrics = display.metrics(settings)
         let layout = Layout.compute(strip, display: display, settings: settings, scroll: 0)
         let area = display.workArea(settings)
@@ -329,7 +356,8 @@ public struct MinimapModel: Equatable, Sendable {
         let maxX = max(total, scroll + metrics.usableWidth)
         let width = max(maxX - minX, 1)
         let height = Double(area.height)
-        let focused = strip.focusedWindow?.id
+        let highlighted = highlightColumn.flatMap { strip.columns.indices.contains($0) ? strip.columns[$0].activeWindow.id : nil }
+            ?? strip.focusedWindow?.id
         var items: [Item] = []
         for column in strip.columns {
             for window in column.windows {
@@ -338,7 +366,7 @@ public struct MinimapModel: Equatable, Sendable {
                 let x = Double(f.minX - area.minX) - minX
                 let y = Double(f.minY - area.minY)
                 items.append(Item(rect: CGRect(x: x / width, y: y / height, width: Double(f.width) / width, height: Double(f.height) / height),
-                                  focused: window.id == focused))
+                                  highlighted: window.id == highlighted, pid: window.pid, bundleID: window.bundleID))
             }
         }
         let viewport = CGRect(x: (scroll - minX) / width, y: 0, width: metrics.usableWidth / width, height: 1)

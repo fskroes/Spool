@@ -180,9 +180,17 @@ extension Engine {
         updateOverlays()
     }
 
+    /// Highlights the focused window. During a swipe on this strip it highlights the swipe target instead: the
+    /// column that the release with no speed focuses. That column comes from the fingers (`swipe.shown`), not
+    /// from `strip.scroll`, because a command in the middle of a swipe can scroll the strip.
     func showMinimap(_ key: StripKey) {
         guard config.appearance.minimap, let d = display(key.display), let strip = strips[key], strip.columns.count > 1 else { return }
-        let model = MinimapModel.make(strip: strip, display: d.geometry, settings: config.layout)
+        var highlight: Int?
+        if let s = swipe, s.key == key, let m = metrics(key) {
+            highlight = strip.swipeTarget(at: s.shown, settings: config.layout, metrics: m)
+        }
+        let model = MinimapModel.make(strip: strip, display: d.geometry, settings: config.layout, highlightColumn: highlight)
+        if let sink = minimapSink { sink(model, d); return }
         overlays.showMinimap(model, on: d, seconds: config.appearance.minimapSeconds)
     }
 
@@ -493,7 +501,7 @@ extension Engine {
             if let store = metricsStore {
                 store.record(.swipe)
                 // A fling: the speed of the fingers, not only where they stopped, picked the column.
-                if snap.column != strip.snappedScroll(from: s.shown, velocity: 0, settings: config.layout, metrics: m).column {
+                if snap.column != strip.swipeTarget(at: s.shown, settings: config.layout, metrics: m) {
                     store.record(.fling)
                 }
             }
@@ -566,6 +574,9 @@ extension Engine {
         if old.bindings != new.bindings { registerHotkeys() }
         guard status == .running else { return }
         if old.gestures.fingers != new.gestures.fingers {
+            // The gesture tracker drops a running swipe without an end event, so end it here: the strip snaps
+            // to the swipe target and the minimap shows the focus again, not a stale target.
+            if swipe != nil { swipeEvent(.ended(velocity: 0)) }
             if new.gestures.fingers == .off {
                 gestureTap?.stop()
                 gestureTap = nil
