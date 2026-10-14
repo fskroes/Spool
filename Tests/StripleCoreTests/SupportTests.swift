@@ -429,6 +429,17 @@ import Testing
         #expect(status(c, "other-wm") == .ok)
     }
 
+    // On 2026-10-14 the switch showed on, but the entry held the cdhashes of an old ad hoc build.
+    // The fix text must name the way out, because turning the switch off and on does not help.
+    @Test func accessibilityFixNamesResetWhenTheSwitchIsOn() {
+        let off = MacSetupInputs(accessibilityTrusted: false, swipeFingers: .four, osMajorVersion: 26)
+        let fix = MacSetup.evaluate(off).first { $0.id == "accessibility" }?.fix ?? ""
+        #expect(fix.contains("Privacy & Security › Accessibility"))
+        #expect(fix.contains("Reset Permission"))
+        let on = MacSetupInputs(accessibilityTrusted: true, swipeFingers: .four, osMajorVersion: 26)
+        #expect(MacSetup.evaluate(on).first { $0.id == "accessibility" }?.fix == "")
+    }
+
     @Test func cleanSetupIsAllGreen() {
         let i = MacSetupInputs(accessibilityTrusted: true, swipeFingers: .four, osMajorVersion: 15, fourFingerHorizSwipe: 0,
                                threeFingerHorizSwipe: 0, threeFingerDrag: true, mruSpaces: false, spansDisplays: false,

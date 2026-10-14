@@ -2,8 +2,8 @@
 # Creates a self-signed code signing identity "Striple Local Signing" in its own keychain,
 # ~/Library/Keychains/striple-signing.keychain-db, and writes an encrypted backup of it.
 #
-# Why: an ad hoc signature changes on every build, so macOS forgets the Accessibility
-# permission after each rebuild. With this identity the designated requirement of the app
+# Why: an ad hoc signature changes on every build, so after each rebuild the Accessibility
+# entry no longer matches (the switch still shows on). With this identity the designated requirement of the app
 # (bundle ID + certificate hash) stays the same, so the permission stays.
 # scripts/build-app.sh uses this identity automatically when it exists.
 #
@@ -23,7 +23,8 @@
 #          ~/Striple-signing-identity-passphrase.txt. Only you can read both files.
 #          When a pin is set, this stops: restore the backup with --import.
 #          --new-identity makes a new identity anyway, to change the identity of the
-#          releases on purpose. Installed copies then ask for the Accessibility permission again.
+#          releases on purpose. Installed copies then lose the Accessibility permission after the
+#          next update, while the switch still shows on (fix: Settings > Mac Setup > Reset Permission).
 #        scripts/make-signing-cert.sh --import FILE
 #          Restore the identity from a backup. The passphrase is read from the terminal, or
 #          from STRIPLE_SIGNING_P12_PASSWORD.
@@ -135,7 +136,7 @@ if [[ $MODE == remove ]]; then
         cat >&2 <<WARN
 This deletes the private key of "$STRIPLE_SIGNING_NAME" for good.
 Installed copies of Striple and published releases are signed with it. An update signed with
-another identity makes macOS ask for the Accessibility permission again on every Mac.
+another identity takes the Accessibility permission away on every Mac, while the switch still shows on.
 Only the backup brings it back: scripts/make-signing-cert.sh --import <backup file>
 To delete it, run: scripts/make-signing-cert.sh --remove --yes
 WARN
@@ -170,7 +171,11 @@ Nothing was deleted."
     fi
     "$STRIPLE_SECURITY" delete-generic-password -s "$STRIPLE_SIGNING_PASSWORD_ITEM" -a "$USER" >/dev/null 2>&1 \
         && say "Deleted the password item \"$STRIPLE_SIGNING_PASSWORD_ITEM\" from the login keychain"
-    say "Done. The next 'make app' signs ad hoc."
+    if [[ -n "$PIN" ]]; then
+        say "Done. 'make app' stops until you import the pinned identity again (or use SIGN_IDENTITY=- for an ad hoc test build)."
+    else
+        say "Done. The next 'make app' signs ad hoc."
+    fi
     exit 0
 fi
 
@@ -231,8 +236,8 @@ Then run this script again (with --import <backup file> to keep the identity of 
 When $UPDATES_ENV pins an identity, --remove needs that backup too: add --backup <backup file>."
 fi
 if [[ $MODE == make && -n "$PIN" && $NEW_IDENTITY -eq 0 ]]; then
-    die "$UPDATES_ENV pins the identity $PIN. A new identity would make every installed copy ask
-for the Accessibility permission again. Restore the pinned identity from its backup:
+    die "$UPDATES_ENV pins the identity $PIN. With a new identity, every installed copy would lose the
+Accessibility permission after the next update, while the switch still shows on. Restore the pinned identity from its backup:
   scripts/make-signing-cert.sh --import <backup file>
 To change the identity of the releases on purpose: scripts/make-signing-cert.sh --new-identity"
 fi
@@ -283,7 +288,8 @@ CNF
     cat <<BACKUP_NOTE
 
 Back up the identity now. Without the backup, a new Mac or a lost keychain means a new identity,
-and every installed Striple asks for the Accessibility permission again after the next update.
+and every installed Striple loses the Accessibility permission after the next update, while the
+switch still shows on.
   File:       $BACKUP
   Passphrase: in $PASSPHRASE_FILE
   SHA-1:      $NEW_HASH
@@ -327,7 +333,8 @@ if [[ -n "$PIN" ]] && striple_sha1_equal "$HASH" "$PIN"; then
 elif [[ -n "$PIN" ]]; then
     STEP1="Set STRIPLE_SIGNING_CERT_SHA1=$HASH in $UPDATES_ENV (it pins $PIN now).
      This changes the identity of the releases. After the next update, every installed copy
-     asks for the Accessibility permission again."
+     loses the Accessibility permission while the switch still shows on. Tell the users in the
+     release notes: click Settings > Mac Setup > Reset Permission, then turn Striple on."
 else
     STEP1="Set STRIPLE_SIGNING_CERT_SHA1=$HASH in $UPDATES_ENV if releases use this identity."
 fi
@@ -336,5 +343,9 @@ cat <<NEXT
 Done. Next steps:
   1. $STEP1
   2. make install    (build-app.sh now signs with "$STRIPLE_SIGNING_NAME")
-  3. Give Accessibility permission to Striple one more time. Later rebuilds keep it.
+  3. Open the new Striple. If it says "Accessibility permission needed", make a new Accessibility
+     entry: turning the switch off and on is not enough, because the old entry keeps the requirement
+     of the old build. Click Settings > Mac Setup > Reset Permission
+     (or run: tccutil reset Accessibility com.fskroes.Striple, then click Request Permission).
+     Turn Striple on. Later rebuilds keep the permission.
 NEXT

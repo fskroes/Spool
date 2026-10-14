@@ -176,9 +176,13 @@ import Testing
         let r = try Self.runWithStatus(["--dry-run", "--app", app.path], home: home, env: ["STRIPLE_UPDATES_ENV": env.path])
 
         #expect(r.status == 0, "\(r.output)")
-        #expect(r.output.contains("\(app.path) \(Self.pinWarning) B608FA4F3D9A1FC14CDBAB47421A660E429053DC"), "\(r.output)")
-        #expect(r.output.contains("macOS asks for the Accessibility permission again"))
+        #expect(!r.output.contains(Self.pinWarning), "\(r.output)")
+        #expect(r.output.contains("is signed ad hoc, not with the pinned identity B608FA4F3D9A1FC14CDBAB47421A660E429053DC"), "\(r.output)")
+        #expect(r.output.contains("Reset Permission"), "\(r.output)")
+        #expect(r.output.contains("Other builders sign with an Apple Development"), "\(r.output)")
         #expect(r.output.contains("Installing \(app.path)"))
+        // The reported case: the switch is on, so Striple does not ask. Next steps must name the reset.
+        #expect(r.output.contains("If the switch is on already, but Striple says \"Accessibility permission needed\""), "\(r.output)")
     }
 
     @Test(arguments: ["/dev/null", "empty pin"])
@@ -192,6 +196,7 @@ import Testing
 
         #expect(r.status == 0, "\(r.output)")
         #expect(!r.output.contains(Self.pinWarning), "\(r.output)")
+        #expect(!r.output.contains("not with the pinned identity"), "\(r.output)")
     }
 
     // A wrong STRIPLE_UPDATES_ENV must not turn off the check without a word.

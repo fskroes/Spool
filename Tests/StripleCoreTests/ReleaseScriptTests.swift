@@ -201,16 +201,49 @@ import Testing
     }
 
     // build-app.sh signs with the pinned identity only. Another local identity stops the build.
+    // A missing identity with a pin also stops it: an ad hoc build there gets a cdhash grant that no
+    // later build matches. SIGN_IDENTITY=- still makes an ad hoc build on purpose.
     @Test func buildIdentityFollowsThePin() throws {
         let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
         let other = "0123456789ABCDEF0123456789ABCDEF01234567"
         #expect(try Self.call("striple_build_identity", pin, other, "Developer ID").output == "explicit")
         #expect(try Self.call("striple_build_identity", pin, other, "-").output == "explicit")
-        #expect(try Self.call("striple_build_identity", pin, "", "").output == "adhoc")
+        #expect(try Self.call("striple_build_identity", pin, "", "-").output == "explicit")
+        #expect(try Self.call("striple_build_identity", pin, "", "").output == "missing")
         #expect(try Self.call("striple_build_identity", "", "", "").output == "adhoc")
         #expect(try Self.call("striple_build_identity", "", other, "").output == "local")
         #expect(try Self.call("striple_build_identity", pin, pin.lowercased(), "").output == "local")
         #expect(try Self.call("striple_build_identity", pin, other, "").output == "refuse")
+    }
+
+    // With a pin, make-signing-cert.sh stops without the backup. Only the maintainer has it, so the
+    // hint must not send other builders there.
+    @Test func stableIdentityHintFollowsThePin() throws {
+        let noPin = try Self.call("striple_stable_identity_hint", "").output
+        #expect(noPin.contains("run scripts/make-signing-cert.sh once"))
+        let pinned = try Self.call("striple_stable_identity_hint", "B608FA4F3D9A1FC14CDBAB47421A660E429053DC").output
+        #expect(!pinned.contains("make-signing-cert.sh once"), "\(pinned)")
+        #expect(pinned.contains("make-signing-cert.sh --import <backup file>"), "\(pinned)")
+        #expect(pinned.contains("Apple Development"), "\(pinned)")
+    }
+
+    // The stop for a missing pinned identity is the first thing a builder who is not the maintainer sees.
+    @Test func missingIdentityMessageGivesEveryBuilderAPath() throws {
+        let m = try Self.call("striple_missing_identity_message", "B608FA4F3D9A1FC14CDBAB47421A660E429053DC").output
+        #expect(m.contains("pins the identity B608FA4F3D9A1FC14CDBAB47421A660E429053DC"), "\(m)")
+        #expect(m.contains("The maintainer: check it"), "\(m)")
+        #expect(m.contains("--import <backup file>"), "\(m)")
+        #expect(m.contains("Other builders: SIGN_IDENTITY=\"<name or SHA-1>\" make install, with an Apple Development"), "\(m)")
+        #expect(m.contains("SIGN_IDENTITY=- make app (or make e2e)"), "\(m)")
+        #expect(!m.contains("make-signing-cert.sh once"), "\(m)")
+    }
+
+    // build-app.sh gives the pin to both messages, so a pinned checkout gets the pinned advice.
+    @Test func buildAppPassesThePinToItsAdvice() throws {
+        let text = try String(contentsOf: Self.lib.deletingLastPathComponent().appendingPathComponent("build-app.sh"), encoding: .utf8)
+        #expect(text.contains("missing) die \"$(striple_missing_identity_message \"$PIN\")\" ;;"))
+        #expect(text.contains("warn \"$(striple_stable_identity_hint \"$PIN\")\""))
+        #expect(text.contains("\nPIN=$(striple_updates_value \"$UPDATES_ENV\" STRIPLE_SIGNING_CERT_SHA1)\n"))
     }
 
     @Test func installSignatureComparesTheAppWithThePin() throws {
@@ -222,7 +255,10 @@ import Testing
         #expect(try Self.call("striple_install_signature", "", adHoc, bundle).output == "nopin")
         #expect(try Self.call("striple_install_signature", pin, pinned, bundle).output == "pinned")
         #expect(try Self.call("striple_install_signature", pin, other, bundle).output == "other")
-        #expect(try Self.call("striple_install_signature", pin, adHoc, bundle).output == "other")
+        #expect(try Self.call("striple_install_signature", pin, adHoc, bundle).output == "adhoc")
+        // The real codesign output of an ad hoc app: the requirement is a comment.
+        #expect(try Self.call("striple_install_signature", pin, "Executable=/x/Striple\n# designated => cdhash H\"a7ca7a79\"", bundle).output == "adhoc")
+        #expect(try Self.call("striple_install_signature", pin, "Executable=/x/Striple\n# designated => cdhash H\"aa\" or cdhash H\"bb\"", bundle).output == "adhoc")
         #expect(try Self.call("striple_install_signature", pin, pinned, "com.fskroes.Other").output == "other")
     }
 

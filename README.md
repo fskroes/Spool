@@ -87,7 +87,14 @@ open /Applications/Striple.app
 
 At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Striple needs.
 
-An ad hoc signed build gets a new signature with each rebuild, and macOS then forgets the permission. To keep it, make a local signing certificate once. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild).
+An ad hoc signed build gets a new signature with each rebuild. Then the Accessibility entry no longer matches: the switch still shows on, but Striple has no permission. A stable signing identity prevents this. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild).
+
+`Packaging/updates.env` pins the signing identity of the Striple releases. Only the maintainer has it. When it is not on your Mac, `make install` stops with "the local signing identity is not found". Then do one of these:
+
+- The maintainer: restore the identity with `scripts/make-signing-cert.sh --import <backup file>`.
+- Other builders: sign with an Apple Development or Developer ID identity (from Xcode), `SIGN_IDENTITY="<name or SHA-1>" make install`. Another self-signed identity does not work here: `build-app.sh` then adds the hardened runtime, and that blocks Sparkle.framework. Sparkle updates are signed with the pin. Each time the app changes between your build and an update, click Settings > Mac Setup > **Reset Permission**. Or sign ad hoc, `SIGN_IDENTITY=- make install`, and after each rebuild click Settings > Mac Setup > **Reset Permission** and turn Striple on.
+
+If System Settings shows Striple on, but Striple says "Accessibility permission needed", click Settings > Mac Setup > **Reset Permission**, then turn Striple on. See [docs/INSTALL.md](docs/INSTALL.md#the-switch-is-on-but-striple-has-no-permission).
 
 ## Use
 

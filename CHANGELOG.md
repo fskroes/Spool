@@ -14,3 +14,4 @@ The first release of Striple.
 - Per-app rules, smart floating for dialogs, and no focus stealing.
 - A `striple` CLI, a URL scheme and Raycast scripts. `striple stats` shows writes to a window that closed during a move apart from AX errors, and the engine log names the window, app and error code of a failed write.
 - Updates with Sparkle. The app is signed with a stable local identity, so macOS keeps the Accessibility permission after an update.
+- If System Settings shows Striple on but Striple still asks for the Accessibility permission, click Settings > Mac Setup > Reset Permission. Striple removes its own old entry and asks again.

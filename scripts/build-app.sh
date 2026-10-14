@@ -4,8 +4,9 @@
 # Environment (all optional):
 #   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when
 #                          scripts/make-signing-cert.sh made it, else "-" (ad hoc).
-#                          When the local identity is not the one Packaging/updates.env pins
-#                          (STRIPLE_SIGNING_CERT_SHA1), the build stops.
+#                          When Packaging/updates.env pins an identity (STRIPLE_SIGNING_CERT_SHA1)
+#                          and the local identity is another one or is not found, the build stops.
+#                          SIGN_IDENTITY=- makes an ad hoc test build on purpose.
 #   STRIPLE_ARCHS          architectures to build. Default: "arm64 x86_64" (universal).
 #   STRIPLE_FEED_URL       Sparkle appcast URL (https). Default: from Packaging/updates.env.
 #   STRIPLE_ED_PUBLIC_KEY  Sparkle EdDSA public key. Default: from Packaging/updates.env.
@@ -69,14 +70,17 @@ case "$(striple_build_identity "$PIN" "$LOCAL_HASH" "${SIGN_IDENTITY:-}")" in
     explicit) IDENTITY=$SIGN_IDENTITY ;;
     local) IDENTITY=$LOCAL_HASH; LOCAL=1 ;;
     adhoc) IDENTITY="-" ;;
+    missing) die "$(striple_missing_identity_message "$PIN")" ;;
     *) die "the local signing identity is $LOCAL_HASH, but Packaging/updates.env pins $PIN.
 An app with this identity loses the Accessibility permission of the installed copies.
 Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>.
 For a test build only: SIGN_IDENTITY=- make app (ad hoc)." ;;
 esac
-if [[ -n "$PIN" && $LOCAL -eq 0 ]]; then
+if [[ -n "$PIN" && $LOCAL -eq 0 && "$IDENTITY" != "-" ]]; then
     warn "this build is not signed with the pinned identity $PIN (signed with: $IDENTITY).
-An installed copy of it asks for the Accessibility permission again. See docs/INSTALL.md."
+Updates are signed with the pinned identity. After an update, the Accessibility entry of an installed
+copy stops working, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission.
+See docs/INSTALL.md."
 fi
 # Hardened runtime and secure timestamps need an Apple-issued identity (Developer ID or
 # Apple Development). With ad hoc or the self-signed local identity there is no Team ID,
@@ -162,8 +166,9 @@ done
 
 # Sign inside-out. No --deep (Sparkle and Apple both advise against it for signing).
 if [[ "$IDENTITY" == "-" ]]; then
-    warn "signing ad hoc. macOS forgets the Accessibility grant after each rebuild."
-    warn "run scripts/make-signing-cert.sh once to get a stable local identity (see docs/INSTALL.md)."
+    warn "signing ad hoc. An Accessibility grant for this build stops working after the next build,"
+    warn "and the switch in System Settings still shows on. Then use Settings > Mac Setup > Reset Permission."
+    warn "$(striple_stable_identity_hint "$PIN")"
 fi
 if [[ $LOCAL -eq 1 ]]; then
     log "Signing with identity: $STRIPLE_SIGNING_NAME ($IDENTITY)"

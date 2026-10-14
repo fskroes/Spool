@@ -218,6 +218,7 @@ struct SigningScriptTests {
         #expect(r.status == 0)
         #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix(Self.keychainName) })
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password -s Striple Local Signing keychain") })
+        #expect(r.output.contains("The next 'make app' signs ad hoc."), "\(r.output)")
         let set = r.calls.first { $0.hasPrefix("list-keychains -d user -s") }
         #expect(set == "list-keychains -d user -s /Users/x/Library/Keychains/login.keychain-db")
     }
@@ -443,6 +444,7 @@ struct SigningScriptTests {
         let r = try Self.run(k, [], env: try Self.pinned(Self.pin, in: dir).merging(["STRIPLE_SIGNING_BACKUP": backup.path]) { $1 })
         #expect(r.status == 1)
         #expect(r.output.contains("pins the identity \(Self.pin)"), "\(r.output)")
+        #expect(r.output.contains("while the switch still shows on"), "\(r.output)")
         #expect(r.output.contains("scripts/make-signing-cert.sh --import <backup file>"))
         #expect(r.output.contains("--new-identity"))
         #expect(r.calls.isEmpty, "\(r.calls)")
@@ -474,7 +476,11 @@ struct SigningScriptTests {
         #expect(r.status == 0, "\(r.output)")
         #expect(r.output.contains("signs with no prompt"))
         #expect(r.output.contains("(it pins \(Self.pin) now)"), "\(r.output)")
-        #expect(r.output.contains("asks for the Accessibility permission again"))
+        #expect(r.output.contains("loses the Accessibility permission while the switch still shows on"), "\(r.output)")
+        #expect(r.output.contains("Reset Permission, then turn Striple on"), "\(r.output)")
+        // A toggle keeps the old requirement, so the next step must make a new entry.
+        #expect(r.output.contains("turning the switch off and on is not enough"), "\(r.output)")
+        #expect(r.output.contains("tccutil reset Accessibility com.fskroes.Striple"), "\(r.output)")
         #expect(try Self.run(k, ["--import", "x.p12", "--new-identity"], env: env).output.contains("--new-identity is only for"))
     }
 
@@ -619,6 +625,8 @@ struct SigningScriptTests {
         #expect(r.status == 0, "\(r.output)")
         #expect(r.calls.contains { $0.hasPrefix("delete-keychain ") && $0.hasSuffix(Self.keychainName) })
         #expect(r.calls.contains { $0.hasPrefix("delete-generic-password ") })
+        // With a pin, the next build stops; it does not sign ad hoc.
+        #expect(r.output.contains("'make app' stops until you import the pinned identity again"), "\(r.output)")
     }
 
     // MARK: security -i lines

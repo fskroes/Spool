@@ -30,7 +30,8 @@ release:
 	swift build -c release
 
 # Builds dist/Striple.app. Signs with "Striple Local Signing" when that identity exists
-# (scripts/make-signing-cert.sh), else ad hoc. SIGN_IDENTITY overrides. See docs/INSTALL.md.
+# (scripts/make-signing-cert.sh), else ad hoc. With a pin in Packaging/updates.env, a missing
+# identity stops the build. SIGN_IDENTITY overrides (SIGN_IDENTITY=- for ad hoc). See docs/INSTALL.md.
 app:
 	./scripts/build-app.sh
 

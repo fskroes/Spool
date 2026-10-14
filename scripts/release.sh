@@ -21,8 +21,9 @@
 #   --finish        only step 5 after the publish: when a run published the release but stopped
 #                   before the tag. It uses the files in dist/release/<version>/ of that run.
 #   --new-identity  the published release has another signing identity, and this is on purpose
-#                   (the pinned identity was lost, see docs/RELEASING.md). Installed copies ask
-#                   for the Accessibility permission again after this update.
+#                   (the pinned identity was lost, see docs/RELEASING.md). Installed copies lose
+#                   the Accessibility permission after this update, while the switch still
+#                   shows on. Tell the users to click Settings > Mac Setup > Reset Permission.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -103,7 +104,8 @@ Import your backup: $SPARKLE_BIN/generate_keys --account $ACCOUNT -f <private-ke
 
 HASH=$(striple_signing_identity) || die "no local signing identity. Restore it from your backup:
 scripts/make-signing-cert.sh --import <backup file>
-An update with another signature makes macOS ask for the Accessibility permission again."
+After an update with another signature, every installed copy loses the Accessibility permission
+while the switch still shows on."
 striple_sha1_equal "$HASH" "$CERT" || die "the local signing identity is $HASH, but Packaging/updates.env pins $CERT.
 Releases must keep one identity, else every installed copy loses its Accessibility permission.
 Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>"
@@ -172,7 +174,8 @@ run: scripts/release.sh --finish. Else increase VERSION."
             [[ $NEW_IDENTITY -eq 0 ]] || die "the published $PREV_VERSION is signed with $HASH already. Run without --new-identity."
         elif [[ $NEW_IDENTITY -eq 1 ]]; then
             warn "the published $PREV_VERSION has another signing identity than $HASH (--new-identity).
-Every installed copy asks for the Accessibility permission again after this update. Say so in the release notes."
+After this update, every installed copy loses the Accessibility permission while the switch still shows on.
+Tell the users in the release notes: click Settings > Mac Setup > Reset Permission in Striple, then turn Striple on."
         else
             die "the published $PREV_VERSION is not signed with $HASH. Restore its identity from your backup
 (scripts/make-signing-cert.sh --import <file>), else every installed copy loses its Accessibility permission.

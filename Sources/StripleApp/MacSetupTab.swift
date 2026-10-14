@@ -47,7 +47,7 @@ struct MacSetupTab: View {
                 MacSetupRow(check: check)
             }
 
-            Note("Striple only reads these settings. It never changes macOS settings. You decide what to change.")
+            Note("Striple only reads these settings, and you decide what to change. One exception: Reset Permission removes Striple's own entry from the Accessibility list, so that macOS makes a new one.")
                 .padding(12)
         }
         .onAppear { model.startPolling { [store] in store.config.gestures.fingers } }
@@ -83,6 +83,8 @@ struct MacSetupRow: View {
             if check.status != .ok {
                 if check.pane == .accessibility {
                     Button("Request Permission") { Permissions.prompt() }
+                    Button("Reset Permission") { Permissions.resetAndPrompt() }
+                        .help("Removes Striple's own entry from the Accessibility list and asks again. Use it when the switch is on but Striple still has no permission.")
                 }
                 if check.pane != .none {
                     Button("Open Settings") { Permissions.openSettings(check.pane) }

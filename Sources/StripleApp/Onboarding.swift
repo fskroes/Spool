@@ -93,8 +93,10 @@ private struct PermissionStep: View {
                 HStack {
                     Button("Request Permission") { Permissions.prompt() }
                     Button("Open System Settings") { Permissions.openSettings(.accessibility) }
+                    Button("Reset Permission") { Permissions.resetAndPrompt() }
                 }
                 Note("Turn on Striple in the list. This page updates by itself.")
+                Note("Is Striple on in the list already, but this page still says not granted? Click Reset Permission, then turn Striple on again.")
             } else if engine.status == .running {
                 Note("Striple is running.")
             }

@@ -14,6 +14,9 @@ make e2e
 This builds `dist/Striple.app` (`make app`), the runner `striple-e2e` and the test app `striple-e2e-windows`,
 then runs the test. One run takes about 20 seconds after the build.
 
+Without the pinned signing identity, `make app` stops. Then run `SIGN_IDENTITY=- make e2e`. The signature
+of the app does not matter for the E2E test: the Accessibility permission belongs to the terminal.
+
 Options go in `E2E_ARGS`:
 
 ```sh

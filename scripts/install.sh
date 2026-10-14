@@ -176,15 +176,20 @@ if same_file "$SOURCE_APP" "$DEST"; then
 fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"
 codesign --verify --deep --strict "$SOURCE_APP" || die "$SOURCE_APP has a bad code signature. Run 'make app' again."
-# Another signature than the pinned one: macOS asks for the Accessibility permission again now,
-# and again after the next update (releases have the pinned signature).
+# Another signature than the pinned one: an Accessibility entry for it stops working, while the switch
+# still shows on. For an ad hoc app after the next build, for another identity after an update
+# (releases have the pinned signature).
 striple_updates_env_usable "$UPDATES_ENV" || die "$UPDATES_ENV not found. Set STRIPLE_UPDATES_ENV to the settings file."
 PIN=$(striple_updates_value "$UPDATES_ENV" STRIPLE_SIGNING_CERT_SHA1)
-if [[ "$(striple_install_signature "$PIN" "$(codesign -d -r - "$SOURCE_APP" 2>&1)" "$BUNDLE_ID")" == other ]]; then
-    warn "$SOURCE_APP is not signed with the pinned identity $PIN.
-After the install, macOS asks for the Accessibility permission again, and again after the next update.
-Build with the pinned identity: docs/INSTALL.md, \"Keep the Accessibility permission after a rebuild\"."
-fi
+case "$(striple_install_signature "$PIN" "$(codesign -d -r - "$SOURCE_APP" 2>&1)" "$BUNDLE_ID")" in
+    adhoc) warn "$SOURCE_APP is signed ad hoc, not with the pinned identity $PIN.
+If you give it the Accessibility permission, that entry stops working after the next build,
+while the switch still shows on. Then click Settings > Mac Setup > Reset Permission again.
+$(striple_stable_identity_hint "$PIN")" ;;
+    other) warn "$SOURCE_APP is not signed with the pinned identity $PIN.
+Updates are signed with the pinned identity. After an update, the Accessibility entry stops working,
+while the switch still shows on. Then click Settings > Mac Setup > Reset Permission." ;;
+esac
 
 [[ $DRY_RUN -eq 1 ]] && say "Dry run. Nothing is changed."
 say "Installing $SOURCE_APP to $DEST"
@@ -207,5 +212,7 @@ Done. Next steps:
   1. Open Striple:  open "$DEST"
   2. Give Accessibility permission when Striple asks:
      System Settings > Privacy & Security > Accessibility > Striple (on).
+     If the switch is on already, but Striple says "Accessibility permission needed", click
+     Settings > Mac Setup > Reset Permission in Striple, then turn Striple on.
   3. Check the CLI: striple --version
 EOF

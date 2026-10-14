@@ -430,7 +430,7 @@ public enum MacSetup {
         out.append(MacSetupCheck(
             id: "accessibility", title: "Accessibility permission",
             status: i.accessibilityTrusted ? .ok : .problem,
-            fix: i.accessibilityTrusted ? "" : "Turn on Striple in System Settings › Privacy & Security › Accessibility.",
+            fix: i.accessibilityTrusted ? "" : "Turn on Striple in System Settings › Privacy & Security › Accessibility. Is the switch on already? Click Reset Permission, then turn Striple on again.",
             pane: .accessibility))
 
         let four = i.fourFingerHorizSwipe ?? 2

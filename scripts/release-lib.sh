@@ -264,27 +264,62 @@ striple_updates_env_usable() { [[ -f "$1" || "$1" == /dev/null ]]; }
 # identity (empty: there is none). $3: SIGN_IDENTITY (empty: not set). Prints one word:
 #   explicit  SIGN_IDENTITY is set: sign with it. The pin does not apply.
 #   local     sign with the local identity: it is the pinned one, or there is no pin.
-#   adhoc     there is no local identity: sign ad hoc.
+#   adhoc     there is no local identity and no pin: sign ad hoc.
+#   missing   a pin is set, but the local identity is not found (not made, not imported, or its
+#             keychain does not unlock). An ad hoc build here is a trap: a grant given to it stores
+#             cdhashes, and turning the switch off and on keeps them, so no later build matches.
 #   refuse    the local identity is not the pinned one. A build with it loses the Accessibility
 #             permission of the installed copies, and release.sh refuses it.
 striple_build_identity() {
     local pin=$1 hash=$2 explicit=$3
     if [[ -n "$explicit" ]]; then echo explicit
+    elif [[ -z "$hash" && -n "$pin" ]]; then echo missing
     elif [[ -z "$hash" ]]; then echo adhoc
     elif [[ -z "$pin" ]] || striple_sha1_equal "$hash" "$pin"; then echo local
     else echo refuse
     fi
 }
 
+# How to get a signature that keeps the Accessibility permission after a rebuild. $1: the pinned SHA-1
+# (empty: no pin). With a pin, make-signing-cert.sh stops without the backup of the pinned identity, so
+# it is advice only for the maintainer.
+striple_stable_identity_hint() {
+    if [[ -z "$1" ]]; then
+        echo "To keep the permission after a rebuild: run scripts/make-signing-cert.sh once (see docs/INSTALL.md)."
+    else
+        echo "To keep the permission after a rebuild: the maintainer imports the pinned identity
+(scripts/make-signing-cert.sh --import <backup file>). Other builders sign with an Apple Development
+or Developer ID identity: SIGN_IDENTITY=\"<name or SHA-1>\" make install. See docs/INSTALL.md."
+    fi
+}
+
+# The message when Packaging/updates.env pins an identity and build-app.sh does not find it. $1: the pin.
+# An ad hoc build is not the default here: a grant for it stops working after the next build.
+striple_missing_identity_message() {
+    echo "Packaging/updates.env pins the identity $1, but the local signing identity is not found.
+The maintainer: check it with scripts/make-signing-cert.sh (it changes nothing when the identity works),
+or restore it with scripts/make-signing-cert.sh --import <backup file>.
+Other builders: SIGN_IDENTITY=\"<name or SHA-1>\" make install, with an Apple Development or Developer ID identity.
+Do not use an ad hoc build as your normal build: when you give it the Accessibility permission, macOS
+stores its cdhash, and no later build matches, even when the switch shows on. See docs/INSTALL.md.
+For a test build or the E2E test only: SIGN_IDENTITY=- make app (or make e2e)."
+}
+
 # How an app to install is signed, against the pin. $1: the pinned SHA-1 (empty: no pin). $2: the
 # designated requirement of the app (the output of `codesign -d -r -`). $3: the bundle ID. Prints one word:
 #   nopin   no pin is set.
 #   pinned  the app is signed with the pinned identity.
-#   other   the app is signed ad hoc or with another identity: macOS asks for the Accessibility
-#           permission again, and a later update signed with the pin asks again.
+#   adhoc   the app is signed ad hoc (its requirement is only cdhashes): an Accessibility entry for it
+#           stops working after the next build, while the switch still shows on.
+#   other   the app is signed with another identity: an Accessibility entry for it stops working after
+#           an update (releases are signed with the pin), while the switch still shows on.
 striple_install_signature() {
+    local dr
+    # codesign prints an ad hoc requirement as a comment: "# designated => cdhash H\"...\"".
+    dr=$(sed -n 's/^#* *designated => //p' <<<"$2")
     if [[ -z "$1" ]]; then echo nopin
     elif striple_dr_is_local "$2" "$3" "$1"; then echo pinned
+    elif [[ "$dr" == "cdhash "* ]]; then echo adhoc
     else echo other
     fi
 }

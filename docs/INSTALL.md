@@ -20,7 +20,7 @@ make dmg
 
 - `make test` runs the tests, except `SigningScriptTests`. `make test-signing` runs those (see the README).
 - On a managed Mac, use `make test-quiet` in place of `make test`. It runs only the suites that start no process and make no executable file. `scripts/quiet-tests.sh --list` shows which files are in the lane and why the others are not.
-- `make app` builds and signs `dist/Striple.app`.
+- `make app` builds and signs `dist/Striple.app`. `Packaging/updates.env` pins the signing identity of the releases. When that identity is not on your Mac, `make app` stops. The maintainer imports it (see "Keep the Accessibility permission after a rebuild"). Other builders sign with an Apple Development or Developer ID identity (`SIGN_IDENTITY="<name or SHA-1>" make app`; another self-signed identity does not work there, because the hardened runtime blocks Sparkle.framework), or ad hoc (`SIGN_IDENTITY=- make app`) and click Settings > Mac Setup > **Reset Permission** after each rebuild.
 - `make dmg` is optional. It makes `dist/Striple-<version>.dmg`.
 
 To publish a release on GitHub: `make publish-dry`, then `make publish`. See [RELEASING.md](RELEASING.md).
@@ -37,7 +37,7 @@ You can change the build with these environment variables:
 
 | Variable | Default | Use |
 |---|---|---|
-| `SIGN_IDENTITY` | the local identity from `make-signing-cert.sh` if it exists, else `-` (ad hoc) | The codesign identity. |
+| `SIGN_IDENTITY` | the local identity from `make-signing-cert.sh`. When `Packaging/updates.env` pins an identity and it is not on this Mac, the build stops. Without a pin and without a local identity: `-` (ad hoc) | The codesign identity. |
 | `STRIPLE_ARCHS` | `arm64 x86_64` | For example `STRIPLE_ARCHS=arm64 make app` for a faster build. |
 | `STRIPLE_FEED_URL` | from `Packaging/updates.env` | The Sparkle appcast URL (https). See "Updates". |
 | `STRIPLE_ED_PUBLIC_KEY` | from `Packaging/updates.env` | The Sparkle public EdDSA key. See "Updates". |
@@ -115,7 +115,7 @@ The block has no `#` comments: zsh, the default shell of macOS, does not accept 
 
 Why: a browser adds the quarantine flag (`com.apple.quarantine`) to a download. For an app with that flag, Gatekeeper accepts only Apple and Developer ID signatures. Striple is signed with the local certificate, so `spctl -a -t exec` says `rejected` and macOS does not open it. `curl` does not add the flag. Gatekeeper checks only apps with the flag, so the app opens. If you downloaded with a browser: System Settings > Privacy & Security > "Open Anyway" (needs an admin password), or `xattr -dr com.apple.quarantine /Applications/Striple.app`.
 
-The Accessibility permission stays after you replace the app: macOS stores it with the bundle ID and the signing certificate, not with the files.
+The Accessibility permission stays after you replace the app: macOS stores it with the bundle ID and the signing certificate, not with the files. If the old copy was an ad hoc build, its entry does not match the new copy. Then click Settings > Mac Setup > **Reset Permission** once, and turn Striple on.
 
 Sparkle updates do not have this problem: Sparkle removes the quarantine flag from the update before it installs it.
 
@@ -125,7 +125,7 @@ Sparkle updates do not have this problem: Sparkle removes the quarantine flag fr
 2. Striple asks for Accessibility permission. It needs this permission to move and resize windows.
 3. Open System Settings > Privacy & Security > Accessibility and turn on Striple.
 
-If Striple is in the list but does not work, remove it from the list with the minus button, then add it again.
+If Striple is in the list but does not work, click Settings > Mac Setup > **Reset Permission** in Striple, then turn Striple on again. See [The switch is on, but Striple has no permission](#the-switch-is-on-but-striple-has-no-permission).
 
 ## Keep the Accessibility permission after a rebuild
 
@@ -137,7 +137,7 @@ macOS stores the Accessibility permission with the "designated requirement" of t
 
 Source: [TN3127: Inside Code Signing: Requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
 
-An ad hoc signature is a hash of the code (a cdhash). Each build has a new hash. Thus macOS forgets the permission after each `make app`. `build-app.sh` shows a warning when it signs ad hoc. You can see this on an ad hoc build:
+An ad hoc signature is a hash of the code (a cdhash). Each build has a new hash. Thus after each `make app` the Accessibility entry no longer matches: the switch still shows on, but Striple has no permission. Then click Settings > Mac Setup > **Reset Permission** (see "The switch is on, but Striple has no permission"). `build-app.sh` shows a warning when it signs ad hoc. You can see this on an ad hoc build:
 
 ```sh
 codesign -d -r - dist/Striple.app
@@ -160,7 +160,7 @@ Make a self-signed code signing certificate one time. Then each build has the sa
 
 The first command shows the steps. It reads and changes no keychain. The second command makes the identity "Striple Local Signing" and its backup.
 
-When `Packaging/updates.env` has a pin (`STRIPLE_SIGNING_CERT_SHA1`), the second command stops and makes nothing. A new identity would make every installed copy ask for the Accessibility permission again. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `STRIPLE_UPDATES_ENV` sets another file than `Packaging/updates.env`. If that file is not there, the script stops: a missing file would turn the pin off.
+When `Packaging/updates.env` has a pin (`STRIPLE_SIGNING_CERT_SHA1`), the second command stops and makes nothing. With a new identity, every installed copy would lose the Accessibility permission after the next update, while the switch still shows on. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `STRIPLE_UPDATES_ENV` sets another file than `Packaging/updates.env`. If that file is not there, the script stops: a missing file would turn the pin off.
 
 The script:
 
@@ -176,7 +176,7 @@ The script:
 
 The script does not ask for your login password. It does not change trust settings. A self-signed certificate does not have to be trusted for `codesign` to use it: the designated requirement uses the certificate hash, not a trust chain. Passwords go to `security` on stdin (`security -i`) and to `openssl` in the environment, so they are not in the argument list that `ps` or a monitoring tool can see. A passphrase can contain `"` and `\`: the script escapes them for `security -i`. It cannot contain a line break, and each `security -i` command must be shorter than 4000 bytes: `security -i` reads 4096 bytes at a time and runs the rest of a longer line as a second command. The script refuses such a value and runs nothing with it.
 
-**Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete both files. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and macOS asks every installed Striple for the Accessibility permission again.
+**Back up the identity.** Put the `.p12` file and its passphrase in your password manager, then delete both files. The key cannot be exported from the keychain later: macOS asks for the password of the Striple keychain, which only the script knows. Without the backup, a new Mac or a lost keychain means a new identity, and every installed Striple loses the Accessibility permission after the next update, while the switch still shows on.
 
 Restore the identity from the backup (on a new Mac, or after `--remove`):
 
@@ -193,7 +193,7 @@ With a pin, the script accepts only the pinned identity. It stops and changes no
 - the backup that you import has another SHA-1, or has no private key (also without a pin),
 - the keychain has another identity. Remove it with `--remove --yes`, then import the backup of the pinned identity.
 
-After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. When the keychain has another identity than the pin, `make app` stops. Without a local identity it signs ad hoc and warns. `SIGN_IDENTITY=- make app` makes an ad hoc test build on purpose. `make install` warns when the app is not signed with the pinned identity, because macOS then asks for the Accessibility permission again. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. Give the Accessibility permission one more time after the first build with the new identity.
+After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. When the keychain has another identity than the pin, `make app` stops. When `Packaging/updates.env` has a pin and `make app` does not find the local identity (not made, not imported, or its keychain does not unlock), `make app` also stops: an ad hoc build there gets a grant that no later build matches (see below). Without a pin and without a local identity, it signs ad hoc and warns. `SIGN_IDENTITY=- make app` makes an ad hoc test build on purpose. If you give such a build the Accessibility permission, the entry stops working after the next build, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission. `make install` warns when the app is not signed with the pinned identity: a grant for an ad hoc app stops working after the next build, and a grant for an app with another identity stops working after an update. In both cases the switch still shows on. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. After the first build with the new identity, remove the old Striple entry and give the permission again (see below). Turning the switch off and on is not enough.
 
 Check the identity:
 
@@ -228,7 +228,37 @@ Notes:
 
 - The local identity has no Apple Team ID. Thus `build-app.sh` does not use the hardened runtime with it. With the hardened runtime, library validation would block Sparkle.framework.
 - The certificate is only on your Mac. Other people cannot check it. To give Striple to other people, use a Developer ID certificate and notarization: `SIGN_IDENTITY="Developer ID Application: ..." make app`. With a Developer ID identity, `build-app.sh` adds `--options runtime --timestamp`. Notarization (`xcrun notarytool`) is not in the scripts.
-- On this Mac (Intune managed) the script works: no MDM profile stops a user keychain or user Accessibility grants. If a Mac has rules that stop it, use ad hoc signing and give the permission again after each build.
+- On this Mac (Intune managed) the script works: no MDM profile stops a user keychain or user Accessibility grants. If a Mac has rules that stop it, use ad hoc signing (`SIGN_IDENTITY=- make app`). Then after each build, click Settings > Mac Setup > Reset Permission and turn Striple on again.
+
+### The switch is on, but Striple has no permission
+
+Symptom: System Settings > Privacy & Security > Accessibility shows Striple on, but the Striple menu says "Accessibility permission needed", and Mac Setup shows the Accessibility check in red.
+
+Cause: macOS stores an entry with the code requirement of the build that was on screen when the entry was made. Turning the switch off and on changes only the switch, not the stored requirement. When the entry was made for an ad hoc build (before the local identity existed, or with `SIGN_IDENTITY=-`), it stores the cdhashes of that build. No later build matches them.
+
+Check it. `tccd` logs the failed match about once each time Striple starts. Quit Striple and open it again, then run this command. It names the stored requirement and the requirement of the current build:
+
+```sh
+/usr/bin/log show --last 5m --style compact \
+  --predicate 'process == "tccd" AND eventMessage CONTAINS "Failed to match existing code requirement"' \
+  | grep -A2 com.fskroes.Striple
+```
+
+The output is similar to this. The first indented line is the stored requirement. The second is the requirement of the current build:
+
+```
+Failed to match existing code requirement for subject com.fskroes.Striple and service kTCCServiceAccessibility
+	cdhash H"9cba34a0..." or cdhash H"e26922bc..."
+	identifier "com.fskroes.Striple" and certificate leaf = H"75929cf2..."
+```
+
+Fix: remove the entry, so that macOS makes a new one with the requirement of the current build. Do one of these:
+
+- In Striple: Settings > Mac Setup > **Reset Permission**. Striple removes only its own entry, asks again, and opens System Settings. Turn Striple on. If Striple is not in the list, add `Striple.app` with the plus button. Striple starts in a few seconds, and you do not have to open it again.
+- In a terminal: `tccutil reset Accessibility com.fskroes.Striple`. No admin password is necessary. Striple is then not in the list. Click Settings > Mac Setup > **Request Permission** in Striple (opening Striple again does not ask), or add `Striple.app` with the plus button. Then turn Striple on.
+- In System Settings: select Striple, click the minus button, then add `Striple.app` again with the plus button.
+
+Do this with a build that is signed with the local identity. Check the copy that runs (`/Applications/Striple.app` after `make install`, `dist/Striple.app` after `make app`): `codesign -d -r - /Applications/Striple.app` must name `certificate leaf`. Then the new entry stores the certificate, and the permission stays after each rebuild. Tested on macOS 26.7.1 on 2026-10-14: a test app signed with the local identity stayed trusted after a rebuild with a new cdhash. The certificate needs no trust setting for this. On an ad hoc build, Reset Permission asks first: a new entry for that build stops working after the next build.
 
 ## Launch at login and restart after a crash
 
@@ -257,7 +287,7 @@ Findings (not tested on this Mac, because the build must not register login item
 - No Apple document says yes or no for ad hoc signatures. Apple DTS is reported to say that ad hoc signing causes lost approvals for background items, and to tell people to sign with an Apple-issued identity: Apple Developer Forums [thread 799910](https://developer.apple.com/forums/thread/799910) and [thread 782645](https://developer.apple.com/forums/thread/782645). These forum pages need a browser check, so the quotes were not read directly. They come from the research notes in [jnsdls/slopwatch#32](https://github.com/jnsdls/slopwatch/issues/32).
 - Notarization is necessary only for apps with launch daemons, not for launch agents (SMAppService.h: "Apps that contain LaunchDaemons must be notarized").
 
-What this means: an ad hoc build can probably register the agent, but macOS can forget the approval after a rebuild, the same as the Accessibility permission. Use the local signing certificate (above) or a Developer ID. To check the result on your Mac: turn on "Launch at login", then run `sfltool dumpbtm | grep -A8 com.fskroes.Striple` and `launchctl print gui/$(id -u)/com.fskroes.Striple.agent`.
+What this means: an ad hoc build can probably register the agent, but the approval can stop matching after a rebuild, the same as the Accessibility entry. Use the local signing certificate (above) or a Developer ID. To check the result on your Mac: turn on "Launch at login", then run `sfltool dumpbtm | grep -A8 com.fskroes.Striple` and `launchctl print gui/$(id -u)/com.fskroes.Striple.agent`.
 
 ### After an update
 
