@@ -33,6 +33,27 @@ public enum Command: Equatable, Hashable, Sendable {
         .toggleTabbed, .toggleFloat, .sendToNextDisplay, .toggleEngine, .mark,
     ]
 
+    /// The group on the Shortcuts page. Only bindable commands have one.
+    public var group: ShortcutGroup? {
+        switch self {
+        case .focusLeft, .focusRight, .focusUp, .focusDown, .focusFirst, .focusLast, .focusIndex: return .focus
+        case .moveLeft, .moveRight, .moveUp, .moveDown, .moveFirst, .moveLast, .moveToIndex: return .move
+        case .cycleWidth, .toggleFullWidth, .centerColumn, .wider, .narrower, .taller, .shorter, .equalizeHeights: return .size
+        case .stackLeft, .stackRight, .popLeft, .popRight, .toggleTabbed: return .stacks
+        case .toggleFloat, .sendToNextDisplay: return .windows
+        case .toggleEngine, .mark: return .striple
+        case .focusWindow, .start, .stop, .restart: return nil
+        }
+    }
+
+    /// The place of `focusIndex` and `moveToIndex`. The Shortcuts page folds these nine-command runs into one row.
+    public var placeIndex: Int? {
+        switch self {
+        case .focusIndex(let n), .moveToIndex(let n): return n
+        default: return nil
+        }
+    }
+
     /// Stable name used in the config file, the CLI and URLs, for example `focus-left` or `focus-index-3`.
     public var name: String {
         switch self {
@@ -145,6 +166,38 @@ public enum Command: Equatable, Hashable, Sendable {
         if let n = suffixNumber("move-to-index-"), (1...9).contains(n) { self = .moveToIndex(n); return }
         if let n = suffixNumber("focus-window-"), n >= 0, n <= Int(UInt32.max) { self = .focusWindow(WindowID(n)); return }
         return nil
+    }
+}
+
+/// The sections of the Shortcuts page, in the order it shows them.
+public enum ShortcutGroup: String, CaseIterable, Sendable {
+    case focus, move, size, stacks, windows, striple
+
+    public var title: String {
+        switch self {
+        case .focus: return "Focus"
+        case .move: return "Move"
+        case .size: return "Width and height"
+        case .stacks: return "Stacks and tabs"
+        case .windows: return "Windows and displays"
+        case .striple: return "Striple"
+        }
+    }
+
+    /// Title of the folded row with the nine place commands, for example "Focus place 1 to 9".
+    public var placesTitle: String? {
+        switch self {
+        case .focus: return "Focus place 1 to 9"
+        case .move: return "Move column to place 1 to 9"
+        default: return nil
+        }
+    }
+
+    /// The bindable commands of this group in `Command.bindable` order: `single` without the place commands,
+    /// `places` the place commands (empty when the group has none).
+    public var commands: (single: [Command], places: [Command]) {
+        let all = Command.bindable.filter { $0.group == self }
+        return (all.filter { $0.placeIndex == nil }, all.filter { $0.placeIndex != nil })
     }
 }
 

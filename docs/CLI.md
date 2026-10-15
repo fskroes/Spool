@@ -251,6 +251,10 @@ The last URL is the same as `striple focus-index 3`.
 
 A URL opens Striple if it is not running. Queries (`ping`, `state`, `stats`) and `report` are not available as URLs.
 
+`striple://settings/<page>` opens a page of the settings window, for example `open "striple://settings/shortcuts"`.
+The pages are `general`, `layout`, `appearance`, `trackpad` (Mouse & Trackpad), `displays`, `rules`, `shortcuts`,
+`mac-setup` and `help`. `striple://settings` and `striple://open` open the page that was open last (General after Striple starts).
+
 ## Raycast
 
 The folder `Integrations/Raycast` has Raycast Script Commands for the main commands, and a "Striple State" command.

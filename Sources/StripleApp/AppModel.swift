@@ -10,20 +10,35 @@ final class AppModel: ObservableObject {
     let store: ConfigStore
     let engine: Engine
     let recorder: ShortcutRecorder
-    @Published var tab: SettingsTab = .general
+    /// Which place groups are open on the Shortcuts page. Kept here so a group you closed stays closed when you
+    /// change page or close Settings.
+    let placeFolds = PlaceFoldState()
+    @Published var tab: SettingsTab = .general {
+        didSet { settingsWindow.title = tab.title }
+    }
+    private var dock = DockPresence()
 
     private lazy var settingsWindow: HostedWindow = {
-        let window = HostedWindow(title: "Striple", autosaveName: "StripleSettings", resizable: true) { [unowned self] in
-            AnyView(SettingsView(store: store, engine: engine).environmentObject(self))
+        let window = HostedWindow(title: tab.title, autosaveName: "StripleSettings", resizable: true, content: .split(
+            sidebar: { [unowned self] in AnyView(SettingsSidebar().environmentObject(self)) },
+            detail: { [unowned self] in AnyView(SettingsDetail(store: store, engine: engine).environmentObject(self)) }))
+        window.onShow = { [weak self] in self?.windowOpened("settings") }
+        window.onClose = { [weak self] in
+            self?.recorder.stop()
+            // The colour panel belongs to the border colour in Settings. It must not stay without a Dock icon.
+            if NSColorPanel.sharedColorPanelExists { NSColorPanel.shared.orderOut(nil) }
+            self?.windowClosed("settings")
         }
-        window.onClose = { [weak self] in self?.recorder.stop() }
         return window
     }()
 
     private lazy var guideWindow: HostedWindow = {
-        HostedWindow(title: "Welcome to Striple", autosaveName: "StripleGuide", resizable: false) { [unowned self] in
+        let window = HostedWindow(title: "Welcome to Striple", autosaveName: "StripleGuide", resizable: false) { [unowned self] in
             AnyView(OnboardingView(store: store, engine: engine).environmentObject(self))
         }
+        window.onShow = { [weak self] in self?.windowOpened("guide") }
+        window.onClose = { [weak self] in self?.windowClosed("guide") }
+        return window
     }()
 
     init(store: ConfigStore, engine: Engine) {
@@ -34,13 +49,68 @@ final class AppModel: ObservableObject {
 
     func openSettings(_ tab: SettingsTab? = nil) {
         if let tab { self.tab = tab }
-        if !settingsWindow.isVisible { LoginItem.syncConfig(store) }
+        if !settingsWindow.isOpen { LoginItem.syncConfig(store) }
         settingsWindow.show()
     }
 
     func openGuide() { guideWindow.show() }
 
     func closeGuide() { guideWindow.close() }
+
+    /// A click on the Dock icon, or Striple opened again: the open windows come to the front, the guide above
+    /// Settings and an update window above all. A minimized window comes back from the Dock.
+    /// With no window open, Settings opens.
+    func reopen() {
+        guard dock.hasOpenWindow else { return openSettings() }
+        App.activate()
+        // Also About and the Sparkle windows, which Striple does not own as a HostedWindow.
+        for window in NSApp.windows where window.isMiniaturized { window.deminiaturize(nil) }
+        if settingsWindow.isOpen { settingsWindow.show() }
+        if guideWindow.isOpen { guideWindow.show() }
+        if dock.open.contains(UpdateWindows.window) { Updater.shared.showPendingUpdate() }
+    }
+
+    private var aboutObserver: NSObjectProtocol?
+
+    /// The standard About panel. Striple counts it as an open window, so the Dock icon and the menu bar stay
+    /// while it is on screen.
+    func showAbout() {
+        let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
+        // The policy changes before the app activates, as in HostedWindow.show, so the menu bar comes with it.
+        windowOpened("about")
+        App.activate()
+        NSApp.orderFrontStandardAboutPanel(nil)
+        guard aboutObserver == nil else { return }
+        guard let panel = Self.newWindow(NSApp.windows, isVisible: \.isVisible, before: visible) else {
+            return windowClosed("about")
+        }
+        aboutObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let observer = self.aboutObserver { NotificationCenter.default.removeObserver(observer) }
+                self.aboutObserver = nil
+                self.windowClosed("about")
+            }
+        }
+    }
+
+    /// The first window in `windows` that is visible and was not visible `before`: the panel that just opened.
+    nonisolated static func newWindow<W: AnyObject>(_ windows: [W], isVisible: (W) -> Bool,
+                                                    before: Set<ObjectIdentifier>) -> W? {
+        windows.first { isVisible($0) && !before.contains(ObjectIdentifier($0)) }
+    }
+
+    func windowOpened(_ id: String) {
+        if let policy = dock.opened(id) { NSApp.setActivationPolicy(policy) }
+    }
+
+    func windowClosed(_ id: String) {
+        if let policy = dock.closed(id) { NSApp.setActivationPolicy(policy) }
+        // Also when Striple is in the back (a background window closed from its title bar): Sparkle shows the
+        // update of a regular app only on activation, so without this the Dock icon stays with no window.
+        if dock.onlyUpdateLeft(after: id) { Updater.shared.showPendingUpdate() }
+    }
 
     /// Starts tiling when auto-start is on and the engine is not running yet.
     func autoStartIfNeeded() {

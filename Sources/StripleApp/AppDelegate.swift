@@ -4,7 +4,7 @@ import StripleCore
 import StripleEngine
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMenuItemValidation {
     private var model: AppModel!
     private var statusMenu: StatusMenu?
     private var ipc: IPCServer?
@@ -24,9 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        _ = Updater.shared
+        Updater.shared.windows.opened = { [weak model] in model?.windowOpened($0) }
+        Updater.shared.windows.closed = { [weak model] in model?.windowClosed($0) }
         LoginItem.refreshAfterUpdate()
-        MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings))
+        MainMenu.install(target: self)
         statusMenu = StatusMenu(app: model)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(otherInstanceOpened),
                                                             name: SingleInstance.reopenNotification, object: nil,
@@ -46,8 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !model.store.config.behavior.onboardingDone, !model.store.fileHasError { model.openGuide() }
     }
 
+    // `hasVisibleWindows` also counts the overlay panels (border, tab bars), so it does not tell if Settings is open.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        model.openSettings()
+        model.reopen()
         return false
     }
 
@@ -86,9 +88,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func openSettings() { model.openSettings() }
+    @objc func showAbout() { model.showAbout() }
+    @objc func checkForUpdates() { Updater.shared.checkForUpdates() }
+    @objc func openSettings() { model.openSettings() }
+    @objc func openHelp() { model.openSettings(.help) }
+    @objc func openGuide() { model.openGuide() }
+    @objc func openMacSetup() { model.openSettings(.macSetup) }
+    @objc func openConfig() { model.openConfigFile() }
+    @objc func revealLog() { model.revealLog() }
 
-    @objc private func otherInstanceOpened() { model.openSettings() }
+    @objc private func otherInstanceOpened() { model.reopen() }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action == #selector(checkForUpdates) ? Updater.shared.canCheckForUpdates : true
+    }
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,

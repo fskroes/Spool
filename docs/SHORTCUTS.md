@@ -3,7 +3,10 @@
 All default shortcuts use Control-Option (`⌃⌥`), so plain Option stays free for typing accented characters.
 Shift adds "move" to a "focus" shortcut. Command adds "to the end".
 
-You can change every shortcut in **Settings > Shortcuts**. Click a shortcut and press the new keys.
+You can change every shortcut in **Settings > Shortcuts**. Click `+` next to an action and press the new keys.
+The page shows the actions in groups (Focus, Move, Width and height, and more). The nine "place" shortcuts of a group
+are in one row, for example "Focus place 1 to 9". Click the row to open it. The row opens by itself when you search,
+record one of its shortcuts, or when one of its shortcuts has a problem.
 A shortcut needs `⌃`, or `⌥` and `⌘` together, or a function key (F1 to F20). The recorder refuses `⌘` alone
 (apps use it, for example `⌘W`) and `⌥` alone (it types characters, for example `⌥2` is € and `⌥L` is @ on a German layout).
 The page shows a warning when two actions use the same keys, or when macOS or another app already owns a combination.
@@ -84,7 +87,7 @@ later is kept. If you upgrade from macOS 14 to macOS 15, the removal runs once a
 
 | Gesture | Action |
 |---|---|
-| Swipe left or right with 3 or 4 fingers (Settings > General) | Scroll the strip. Lift with speed to fling; the strip stops on a column edge. |
+| Swipe left or right with 3 or 4 fingers (Settings > Mouse & Trackpad) | Scroll the strip. Lift with speed to fling; the strip stops on a column edge. |
 
 When Striple uses a finger count, turn off the macOS gesture that uses the same fingers
 (Settings > Mac Setup shows which one and opens the right System Settings page).

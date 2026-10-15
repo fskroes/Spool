@@ -436,6 +436,21 @@ extension Engine {
             scanApp(pid)
         case .appTerminated(let pid):
             removeApp(pid)
+        case .ownActiveChanged:
+            // Striple came to the front (Settings, a Dock click, ⌘Tab, a click on one of its windows): AppKit
+            // brought its windows forward (all of them, or only the one you clicked) and the overlay panels too, so
+            // put the overlays back in place. With the dimming on, also bring the other Striple windows along. That
+            // waits one turn of the main loop: at a click AppKit raises the window you clicked only after this
+            // notification, and a raise before it would leave that window behind.
+            // Striple went to the back: its windows no longer keep the dim below them (`Overlays.ownBackWindow`),
+            // so order the dim again.
+            updateFocusOverlays()
+            guard NSApp.isActive, config.appearance.dimInactive else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.status == .running else { return }
+                self.overlays.raiseOwnWindows(dimming: self.config.appearance.dimInactive)
+                self.updateFocusOverlays()
+            }
         case .appActivated(let pid):
             // An app that was given up on (it did not answer for a long time), or that has held windows, is
             // scanned again when it is used.

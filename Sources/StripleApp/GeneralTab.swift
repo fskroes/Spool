@@ -2,7 +2,7 @@ import SwiftUI
 import StripleCore
 import StripleEngine
 
-/// General settings. Every change applies at once.
+/// General settings: Striple itself, focus and metrics. Every change applies at once.
 struct GeneralTab: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var engine: Engine
@@ -16,74 +16,9 @@ struct GeneralTab: View {
                 LaunchAtLoginRow(store: store)
             }
 
-            Section("Animation") {
-                Toggle("Animate window moves", isOn: store.binding(\.animation.enabled))
-                SliderRow(title: "Duration", value: store.binding(\.animation.response), range: 0.10...0.50, step: 0.01) {
-                    String(format: "%.2f s", $0)
-                }
-                .disabled(!store.config.animation.enabled)
-                Note("A shorter duration makes the windows move faster.")
-            }
-
-            Section("Strip") {
-                Picker("Center the focused column", selection: store.binding(\.layout.centerMode)) {
-                    ForEach(CenterMode.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                PercentRow(title: "Width of a new window", fraction: store.binding(\.layout.defaultWidth), range: 5...100)
-                PercentRow(title: "Wider and narrower step", fraction: store.binding(\.layout.widthStep), range: 1...50, step: 1)
-                PercentRow(title: "Taller and shorter step", fraction: store.binding(\.layout.heightStep), range: 1...50, step: 1)
-                PresetWidthsEditor(store: store)
-                NumberRow(title: "Tab bar height", value: store.binding(\.layout.tabBarHeight), range: 16...60)
-            }
-
-            Section("Gaps") {
-                NumberRow(title: "Between windows", value: store.binding(\.layout.innerGap), range: 0...200)
-                NumberRow(title: "Top edge", value: store.binding(\.layout.outerGaps.top), range: 0...400)
-                NumberRow(title: "Bottom edge", value: store.binding(\.layout.outerGaps.bottom), range: 0...400)
-                NumberRow(title: "Left edge", value: store.binding(\.layout.outerGaps.left), range: 0...400)
-                NumberRow(title: "Right edge", value: store.binding(\.layout.outerGaps.right), range: 0...400)
-            }
-
-            Section("Trackpad") {
-                Picker("Swipe to scroll the strip", selection: store.binding(\.gestures.fingers)) {
-                    ForEach(SwipeFingers.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Toggle("Natural direction (the strip moves with your fingers)", isOn: store.binding(\.gestures.natural))
-                    .disabled(store.config.gestures.fingers == .off)
-                SliderRow(title: "Sensitivity", value: store.binding(\.gestures.sensitivity), range: 0.25...3, step: 0.05) {
-                    String(format: "%.2f×", $0)
-                }
-                .disabled(store.config.gestures.fingers == .off)
-                if store.config.gestures.fingers != .off {
-                    Note("macOS can use the same swipe to change Spaces. Mac Setup tells you what to change.")
-                }
-            }
-
-            Section("Appearance") {
-                Toggle("Border around the focused window", isOn: store.binding(\.appearance.focusBorder))
-                Group {
-                    NumberRow(title: "Border width", value: store.binding(\.appearance.borderWidth), range: 1...20)
-                    ColorPicker("Border colour", selection: borderColor, supportsOpacity: true)
-                }
-                .disabled(!store.config.appearance.focusBorder)
-                Toggle("Dim the other windows", isOn: store.binding(\.appearance.dimInactive))
-                SliderRow(title: "Dim amount", value: store.binding(\.appearance.dimAmount), range: 0.05...0.8, step: 0.05) {
-                    "\(Int(($0 * 100).rounded())) %"
-                }
-                .disabled(!store.config.appearance.dimInactive)
-                Toggle("Show the strip map while you move", isOn: store.binding(\.appearance.minimap))
-                SliderRow(title: "Map stays for", value: store.binding(\.appearance.minimapSeconds), range: 0.3...5, step: 0.1) {
-                    String(format: "%.1f s", $0)
-                }
-                .disabled(!store.config.appearance.minimap)
-            }
-
-            Section("Behavior") {
-                Toggle("Focus follows the mouse", isOn: store.binding(\.behavior.focusFollowsMouse))
-                Toggle("Mouse follows the focus", isOn: store.binding(\.behavior.mouseFollowsFocus))
-                Toggle("Drag a window to change its place on the strip", isOn: store.binding(\.behavior.dragToReorder))
+            Section("Focus") {
                 Toggle("Apps in the background cannot take the focus", isOn: store.binding(\.behavior.preventFocusStealing))
+                Note("When an app opens a window on its own while you work in another app, Striple gives the focus back to you.")
             }
 
             Section("Metrics") {
@@ -102,14 +37,6 @@ struct GeneralTab: View {
         let folder = StriplePaths.metricsDirectory
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(folder)
-    }
-
-    private var borderColor: Binding<CGColor> {
-        Binding(get: { ColorHex.cgColor(store.config.appearance.borderColor) },
-                set: { color in
-                    guard let hex = ColorHex.string(color) else { return }
-                    store.update { $0.appearance.borderColor = hex }
-                })
     }
 }
 

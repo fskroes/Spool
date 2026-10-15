@@ -121,7 +121,7 @@ Sparkle updates do not have this problem: Sparkle removes the quarantine flag fr
 
 ## First run
 
-1. Open Striple: `open /Applications/Striple.app`. Striple has no Dock icon. It shows in the menu bar.
+1. Open Striple: `open /Applications/Striple.app`. Striple shows in the menu bar. It has a Dock icon and a menu bar only while one of its windows is open: Settings, the guide, About or an update window. A minimized window counts as open.
 2. Striple asks for Accessibility permission. It needs this permission to move and resize windows.
 3. Open System Settings > Privacy & Security > Accessibility and turn on Striple.
 

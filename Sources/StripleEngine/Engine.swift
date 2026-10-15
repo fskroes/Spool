@@ -216,6 +216,8 @@ public final class Engine: ObservableObject {
         startGestures()
         installMouseMonitors()
         startHealthChecks()
+        // Striple windows behind other apps' windows (a click raised only one) come along before the first dim.
+        overlays.raiseOwnWindows(dimming: config.appearance.dimInactive)
         relayoutAll(animate: false)
         syncFocusWithSystem()
         log.log("engine: started with \(windows.count) windows on \(strips.count) strips, \(displays.count) displays")

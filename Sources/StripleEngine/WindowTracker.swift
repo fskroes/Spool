@@ -8,6 +8,8 @@ enum TrackerEvent {
     case appLaunched(pid_t)
     case appTerminated(pid_t)
     case appActivated(pid_t)
+    /// Striple itself became active or stopped being active. `NSApp.isActive` is already up to date.
+    case ownActiveChanged
     case appHidden(pid_t)
     case appShown(pid_t)
     case windowCreated(AXUIElement, pid_t)
@@ -76,6 +78,12 @@ final class WindowTracker {
     /// `STRIPLE_MANAGE_ONLY`, read once at launch. nil in normal use.
     static let manageOnly = Policy.manageOnlyBundleIDs(environment: ProcessInfo.processInfo.environment)
 
+    /// The event for the workspace activation of `pid`. None for Striple itself: the workspace tells about that
+    /// before AppKit makes Striple active, so Striple's own activation comes from AppKit (`ownActiveChanged`).
+    nonisolated static func activationEvent(pid: pid_t, ownPID: pid_t) -> TrackerEvent? {
+        pid == ownPID ? nil : .appActivated(pid)
+    }
+
     func start() {
         let nc = NSWorkspace.shared.notificationCenter
         func on(_ name: Notification.Name, _ make: @escaping (NSRunningApplication?) -> TrackerEvent?) {
@@ -94,7 +102,9 @@ final class WindowTracker {
             return .appLaunched(app.processIdentifier)
         }
         on(NSWorkspace.didTerminateApplicationNotification) { $0.map { .appTerminated($0.processIdentifier) } }
-        on(NSWorkspace.didActivateApplicationNotification) { $0.map { .appActivated($0.processIdentifier) } }
+        on(NSWorkspace.didActivateApplicationNotification) { app in
+            app.flatMap { Self.activationEvent(pid: $0.processIdentifier, ownPID: getpid()) }
+        }
         on(NSWorkspace.didHideApplicationNotification) { $0.map { .appHidden($0.processIdentifier) } }
         on(NSWorkspace.didUnhideApplicationNotification) { $0.map { .appShown($0.processIdentifier) } }
         on(NSWorkspace.activeSpaceDidChangeNotification) { _ in .spaceChanged }
@@ -109,6 +119,14 @@ final class WindowTracker {
                                                              object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onEvent(.displaysChanged) }
         })
+        // While Striple is active the dimming keeps Striple's windows bright (`Overlays.ownBackWindow`). Both
+        // changes order the dimming again: another app that comes to the front does not always do it (the desktop
+        // has no focused window).
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onEvent(.ownActiveChanged) }
+            })
+        }
         for app in Self.manageableApps() { watch(app.processIdentifier) }
     }
 

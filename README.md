@@ -19,15 +19,15 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 | | Feature | Where |
 |---|---|---|
 | F1 | Endless horizontal strip per display and per Space | always on |
-| F2 | Spring animations; a new shortcut press retargets the running animation | Settings > General |
+| F2 | Spring animations; a new shortcut press retargets the running animation | Settings > Appearance |
 | F3 | Stacks: more windows in one column, up and down | `⌃⌥[` `⌃⌥]`, `⌃⌥J` `⌃⌥K` |
 | F4 | Tabbed columns | `⌃⌥⇧T` |
 | F5 | Preset widths, full width, wider and narrower, heights in a stack | `⌃⌥R` `⌃⌥F` `⌃⌥=` `⌃⌥-` |
-| F6 | Inner and outer gaps, sizes that respect the Dock and the menu bar | Settings > General |
-| F7 | Center the focused column: never, on overflow, always | Settings > General, `⌃⌥C` |
-| F8 | Focus border and dimming of other windows | Settings > General |
-| F9 | Minimap of the strip when the view moves | Settings > General |
-| F10 | Trackpad swipe with 3 or 4 fingers, with fling and snap | Settings > General |
+| F6 | Inner and outer gaps, sizes that respect the Dock and the menu bar | Settings > Layout |
+| F7 | Center the focused column: never, on overflow, always | Settings > Layout, `⌃⌥C` |
+| F8 | Focus border and dimming of other windows | Settings > Appearance |
+| F9 | Minimap of the strip when the view moves | Settings > Appearance |
+| F10 | Trackpad swipe with 3 or 4 fingers, with fling and snap | Settings > Mouse & Trackpad |
 | F11 | Drag a window to a new place in the strip; resize from an edge sets the column width | mouse |
 | F12 | Multi-monitor, one strip each, turn Striple off per display | Settings > Displays, `⌃⌥N` |
 | F13 | The strips come back after a restart of the app, also on Spaces not on screen (restored when you go there) and after a start while the screen is locked | automatic |
@@ -37,7 +37,7 @@ Striple is a clean-room app. It follows the public descriptions of niri, PaperWM
 | F17 | Sparkle updates, engine log, restart after a crash; repairs a dead app observer and stops cleanly when the Accessibility permission is removed | menu bar menu |
 | F18 | Native fullscreen windows leave the strip and come back | automatic |
 | F19 | No focus stealing by apps that open windows on their own | Settings > General |
-| F20 | Focus follows mouse, mouse follows focus | Settings > General |
+| F20 | Focus follows mouse, mouse follows focus | Settings > Mouse & Trackpad |
 | F21 | Guided start and a Mac Setup check | first launch, Settings > Mac Setup |
 | F22 | Every shortcut can be changed | Settings > Shortcuts, [docs/SHORTCUTS.md](docs/SHORTCUTS.md) |
 | F23 | Every setting applies at once; `config.json` edits load automatically | always on |

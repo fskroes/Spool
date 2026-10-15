@@ -467,7 +467,7 @@ public enum MacSetup {
         switch i.swipeFingers {
         case .off:
             out.append(MacSetupCheck(id: "swipe", title: "Swipe to scroll the strip", status: .warning,
-                                     fix: "The swipe is off. Pick 3 or 4 fingers in Striple › Configuration to scroll the strip with the trackpad.",
+                                     fix: "The swipe is off. Pick 3 or 4 fingers in Settings › Mouse & Trackpad to scroll the strip with the trackpad.",
                                      pane: .none))
         case .four:
             out.append(MacSetupCheck(

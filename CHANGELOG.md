@@ -2,6 +2,15 @@
 
 Each release has a section here. `scripts/release.sh` copies the section into the update window and into the GitHub release, so write for the person who uses Striple.
 
+## Unreleased
+
+- The settings window looks like System Settings. The sidebar goes to the top of the window, each page has a coloured icon, and the page name shows above the page.
+- The General page is now four pages: General, Layout, Appearance, and Mouse & Trackpad. Each page fits on the screen with less scrolling.
+- Shortcuts are in groups: Focus, Move, Width and height, Stacks and tabs, Windows and displays, and Striple. The nine "place" shortcuts of a group are folded into one row, for example "Focus place 1 to 9 ⌃⌥1 to ⌃⌥9". The row opens when you click it, search, record one of them, or when one of them has a conflict or macOS refuses it.
+- While a Striple window is open (Settings, the guide, About or an update window), Striple has a Dock icon, a place in ⌘Tab, and a menu bar with About, Check for Updates, Settings, Hide, Quit, the Edit and Window menus, and a Help menu. A click on the Dock icon brings the open window to the front, also when it is minimized. When you close the last window, Striple is a menu bar app again. Hide Striple does not hide the focus border, the dimming or the tab bars.
+- Settings and Mac Setup come to the front when you open them from the Striple menu in the menu bar. When Striple comes to the front, the dimming stays below the window that had the focus. With the dimming on, all open Striple windows come along, also when you click only one of them, so none of them stays dimmed.
+- New `striple://settings/` pages: `layout`, `appearance` and `trackpad`.
+
 ## 0.1.0
 
 The first release of Striple.

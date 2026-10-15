@@ -374,3 +374,29 @@ private func distance(_ a: CGRect, _ b: CGRect) -> CGFloat { hypot(a.minX - b.mi
                 "the highlight follows the focus after the flick")
     }
 }
+
+/// When Striple itself becomes active, AppKit orders all its windows forward, the overlay panels too. The engine
+/// must then order them again (the dimming goes back below the focused window). Before this, `focusChanged`
+/// skipped Striple's own pid and nothing put the panels back. The same when Striple goes to the back.
+@MainActor
+@Suite struct EngineOwnActivationTests {
+    @Test func ownActivationOrdersTheOverlaysAgain() {
+        let t = TestEngine()
+        defer { t.engine.overlays.hideDim(); t.stop() }
+        t.engine.config.appearance.dimInactive = true
+        t.engine.config.appearance.dimAmount = 0
+        t.engine.focusedID = 1
+        #expect(t.engine.overlays.dims.isEmpty)
+        t.engine.handle(.ownActiveChanged)
+        #expect(Set(t.engine.overlays.dims.keys) == ["A", "B"])
+    }
+
+    /// The workspace reports Striple's own activation before `NSApp.isActive` is true; only AppKit's report counts.
+    @Test func theWorkspaceActivationOfStripleItselfIsIgnored() {
+        #expect(WindowTracker.activationEvent(pid: 42, ownPID: 42) == nil)
+        guard case .appActivated(7) = WindowTracker.activationEvent(pid: 7, ownPID: 42) else {
+            Issue.record("another app must give .appActivated")
+            return
+        }
+    }
+}

@@ -573,6 +573,10 @@ extension Engine {
         if old.metrics != new.metrics { metricsSettingChanged() }
         if old.bindings != new.bindings { registerHotkeys() }
         guard status == .running else { return }
+        // Striple windows behind other apps' windows (a click raised only one) come along before the first dim.
+        if Overlays.dimmingTurnedOn(was: old.appearance.dimInactive, now: new.appearance.dimInactive) {
+            overlays.raiseOwnWindows(dimming: true)
+        }
         if old.gestures.fingers != new.gestures.fingers {
             // The gesture tracker drops a running swipe without an end event, so end it here: the strip snaps
             // to the swipe target and the minimap shows the focus again, not a stale target.

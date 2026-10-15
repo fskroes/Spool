@@ -8,7 +8,7 @@ import StripleCore
 final class Overlays {
     private var border: NSPanel?
     private var borderView: BorderView?
-    private var dims: [String: NSPanel] = [:]
+    private(set) var dims: [String: NSPanel] = [:]
     private var minimaps: [String: (panel: NSPanel, view: MinimapView)] = [:]
     private var minimapHide: [String: DispatchWorkItem] = [:]
     private var tabBars: [Int: (panel: NSPanel, view: TabBarView)] = [:]
@@ -42,7 +42,7 @@ final class Overlays {
         return CGRect(x: r.minX, y: h - r.maxY, width: r.width, height: r.height)
     }
 
-    private static func makePanel(clickThrough: Bool = true, level: NSWindow.Level = .normal) -> NSPanel {
+    static func makePanel(clickThrough: Bool = true, level: NSWindow.Level = .normal) -> NSPanel {
         let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -51,6 +51,8 @@ final class Overlays {
         p.level = level
         p.isReleasedWhenClosed = false
         p.hidesOnDeactivate = false
+        // Hide Striple (⌘H while Settings is open) must not hide the border, the dimming or the tab bars.
+        p.canHide = false
         p.animationBehavior = .none
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
         return p
@@ -79,12 +81,102 @@ final class Overlays {
 
     // MARK: Dimming
 
-    /// Dims everything on the display except the focused window: one panel per display, ordered just below the
-    /// focused window. On other displays the panel sits on top of the normal windows.
+    /// Where the dim panel of one display goes in the window order.
+    enum DimOrder: Equatable {
+        case below(Int)
+        case front
+    }
+
+    /// On the display of the focused window: just below it. On other displays: on top of the normal windows, but
+    /// below `ownBack` (the backmost Striple window, such as Settings, while Striple is active), so no Striple window
+    /// is dimmed.
+    nonisolated static func dimOrder(display: String, focused: (window: WindowID, display: String)?,
+                                     ownBack: Int?) -> DimOrder {
+        if let f = focused, f.display == display { return .below(Int(f.window)) }
+        if let ownBack { return .below(ownBack) }
+        return .front
+    }
+
+    /// One of Striple's windows, front to back, for `ownWindowsBackToFront`. `top` is the number of the window it
+    /// belongs to (see `topLevel`); `visible` and `normal` are about that window.
+    struct OwnWindow: Equatable {
+        let number: Int
+        let top: Int
+        let visible: Bool
+        let normal: Bool
+    }
+
+    /// Striple's windows that are on screen at the normal level and are not overlays (Settings, the guide, About, an
+    /// update window), back to front, each once. A sheet or a child window counts as the window it belongs to.
+    nonisolated static func ownWindowsBackToFront(_ windows: [OwnWindow], overlays: Set<Int>) -> [Int] {
+        var seen = Set<Int>()
+        return windows.reversed()
+            .filter { !overlays.contains($0.number) && $0.visible && $0.normal }
+            .map(\.top)
+            .filter { seen.insert($0).inserted }
+    }
+
+    /// The backmost of `ownWindowsBackToFront`. After `raiseOwnWindows` all of them are in front of the other apps,
+    /// so a dim just below this one dims none of them. The front one is not enough: the guide or About in front of
+    /// Settings would put the dim between the two.
+    nonisolated static func backmostOwnWindow(_ windows: [OwnWindow], overlays: Set<Int>) -> Int? {
+        ownWindowsBackToFront(windows, overlays: overlays).first
+    }
+
+    /// Striple's windows in the order of the window server, front to back.
+    private func ownWindows() -> [OwnWindow] {
+        (NSWindow.windowNumbers(options: []) ?? []).compactMap { number -> OwnWindow? in
+            guard let w = NSApp.window(withWindowNumber: number.intValue) else { return nil }
+            let top = Self.topLevel(w)
+            return OwnWindow(number: number.intValue, top: top.windowNumber, visible: top.isVisible,
+                             normal: top.level == .normal)
+        }
+    }
+
+    private func overlayNumbers() -> Set<Int> {
+        var overlays = Set(dims.values.map(\.windowNumber))
+        overlays.formUnion(minimaps.values.map(\.panel.windowNumber))
+        overlays.formUnion(tabBars.values.map(\.panel.windowNumber))
+        if let border { overlays.insert(border.windowNumber) }
+        return overlays
+    }
+
+    /// A Dock click or ⌘Tab brings all of Striple's windows forward, a click on one window only that window. While
+    /// the dimming is on, this brings the others forward too, in their order, so the window you clicked stays in
+    /// front. Then no Striple window stays behind the focused window of another app, under the dim. Without the
+    /// dimming the windows keep the order macOS gives them.
+    func raiseOwnWindows(dimming: Bool) {
+        guard Self.raisesOwnWindows(active: NSApplication.shared.isActive, dimming: dimming) else { return }
+        for number in Self.ownWindowsBackToFront(ownWindows(), overlays: overlayNumbers()) {
+            NSApp.window(withWindowNumber: number)?.orderFront(nil)
+        }
+    }
+
+    /// `raiseOwnWindows` does something only while Striple is active and the dimming is on.
+    nonisolated static func raisesOwnWindows(active: Bool, dimming: Bool) -> Bool { active && dimming }
+
+    /// The dimming was off and is on now: the windows a click left behind other apps' windows must come along.
+    nonisolated static func dimmingTurnedOn(was: Bool, now: Bool) -> Bool { !was && now }
+
+    /// `backmostOwnWindow` for the windows on screen. Nil when Striple is not active.
+    private func ownBackWindow() -> Int? {
+        guard NSApplication.shared.isActive else { return nil }
+        return Self.backmostOwnWindow(ownWindows(), overlays: overlayNumbers())
+    }
+
+    /// The window that `window` belongs to: the parent of a sheet or a child window, up to the top.
+    static func topLevel(_ window: NSWindow) -> NSWindow {
+        var top = window
+        while let parent = top.sheetParent ?? top.parent { top = parent }
+        return top
+    }
+
+    /// Dims everything on the display except the focused window: one panel per display (see `dimOrder`).
     func updateDim(displays: [EngineDisplay], focused: (window: WindowID, display: String)?, appearance: AppearanceSettings) {
         guard appearance.dimInactive else { hideDim(); return }
         let live = Set(displays.map(\.uuid))
         for (id, p) in dims where !live.contains(id) { p.orderOut(nil); dims[id] = nil }
+        let ownBack = ownBackWindow()
         for d in displays {
             let p = dims[d.uuid] ?? {
                 let p = Self.makePanel()
@@ -95,10 +187,9 @@ final class Overlays {
             }()
             p.contentView?.layer?.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(appearance.dimAmount)).cgColor
             p.setFrame(Self.appKitRect(d.geometry.frame), display: false)
-            if let f = focused, f.display == d.uuid {
-                p.order(.below, relativeTo: Int(f.window))
-            } else {
-                p.orderFront(nil)
+            switch Self.dimOrder(display: d.uuid, focused: focused, ownBack: ownBack) {
+            case .below(let window): p.order(.below, relativeTo: window)
+            case .front: p.orderFront(nil)
             }
         }
     }

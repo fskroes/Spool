@@ -149,6 +149,33 @@ import StripleCore
     }
 }
 
+/// Sparkle runs only with a feed URL, a public key and the SUEnableAutomaticChecks key.
+@Suite struct UpdaterFeedTests {
+    private let full: [String: Any] = ["SUFeedURL": "https://example.com/appcast.xml", "SUPublicEDKey": "key",
+                                       "SUEnableAutomaticChecks": true]
+
+    @Test func aFeedNeedsTheURLTheKeyAndTheAutomaticChecksSetting() {
+        #expect(Updater.hasUpdateFeed(info: full))
+        // The value of the setting does not matter: Sparkle asks for permission only when the key is missing.
+        #expect(Updater.hasUpdateFeed(info: full.merging(["SUEnableAutomaticChecks": false]) { $1 }))
+        for key in full.keys {
+            #expect(!Updater.hasUpdateFeed(info: full.filter { $0.key != key }), "without \(key)")
+        }
+        #expect(!Updater.hasUpdateFeed(info: full.merging(["SUFeedURL": "  "]) { $1 }))
+    }
+
+    /// The app checks the key at launch; the build script must write it with the feed.
+    @Test func theBuildScriptWritesTheAutomaticChecksSettingWithTheFeed() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = try String(contentsOf: root.appendingPathComponent("scripts/build-app.sh"), encoding: .utf8)
+        let feed = try #require(script.range(of: "plutil -replace SUFeedURL"))
+        let tail = script[feed.upperBound...]
+        let end = try #require(tail.range(of: "\nelse"))
+        #expect(tail[..<end.lowerBound].contains("plutil -replace SUEnableAutomaticChecks -bool YES"))
+    }
+}
+
 /// A test run must not check for updates: an update window would take the focus from the test windows.
 @Suite struct UpdaterIsolationTests {
     @Test func noUpdaterInATestRun() {
