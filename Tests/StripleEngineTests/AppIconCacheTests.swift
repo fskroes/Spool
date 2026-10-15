@@ -25,6 +25,10 @@ import Testing
         AppIconCache(queue: nil, lookup: lookup)
     }
 
+    static func keys(_ pids: some Sequence<Int32>, _ bundleID: String = "b") -> Set<AppIconCache.Key> {
+        Set(pids.map { AppIconCache.Key(pid: $0, bundleID: bundleID) })
+    }
+
     @Test func eachAppIsLookedUpOnce() {
         let asked = Asked()
         let cache = Self.sync { pid, _ in asked.add(pid); return Self.image() }
@@ -56,15 +60,191 @@ import Testing
         #expect(cache.lookups == 2)
     }
 
-    @Test func theCacheEmptiesWhenItIsFull() {
-        let cache = Self.sync { _, _ in Self.image() }
-        for pid in 1...Int32(AppIconCache.limit) { _ = cache.icon(pid: pid, bundleID: "b") }
-        #expect(cache.lookups == AppIconCache.limit)
+    /// A full cache removes only the icon that was used least recently, not all of them.
+    @Test func aFullCacheRemovesTheLeastRecentlyUsedIcon() {
+        let asked = Asked()
+        let cache = Self.sync { pid, _ in asked.add(pid); return Self.image() }
+        let limit = Int32(AppIconCache.limit)
+        for pid in 1...limit { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.count == AppIconCache.limit)
         _ = cache.icon(pid: 1, bundleID: "b")
         #expect(cache.lookups == AppIconCache.limit, "still cached at the limit")
+        // Pid 1 was used last, so pid 2 is now the least recently used icon.
         _ = cache.icon(pid: 999, bundleID: "b")
+        #expect(cache.count == AppIconCache.limit, "the cache does not grow past the limit")
+        for pid in [1, 3, limit, 999] as [Int32] { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.lookups == AppIconCache.limit + 1, "only pid 999 was looked up: the other icons stayed")
+        _ = cache.icon(pid: 2, bundleID: "b")
+        #expect(asked.pids.suffix(2) == [999, 2], "pid 2 was removed, so it is looked up again")
+        #expect(cache.count == AppIconCache.limit)
+    }
+
+    /// A draw uses many icons with no new app between them. Each use counts on its own, so of those the icon
+    /// used first is removed first, not a random one of them.
+    @Test func eachUseCountsInTheOrder() {
+        let cache = Self.sync { _, _ in Self.image() }
+        let limit = Int32(AppIconCache.limit)
+        for pid in 1...limit { _ = cache.icon(pid: pid, bundleID: "b") }
+        for pid in 1...limit { _ = cache.icon(pid: pid, bundleID: "b") }
+        _ = cache.icon(pid: 999, bundleID: "b")
+        for pid in 2...limit { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.lookups == AppIconCache.limit + 1, "only pid 1, used first in the draw, was removed")
         _ = cache.icon(pid: 1, bundleID: "b")
-        #expect(cache.lookups == AppIconCache.limit + 2, "the new app emptied the cache, so pid 1 is looked up again")
+        #expect(cache.lookups == AppIconCache.limit + 2)
+    }
+
+    /// A missing icon is an entry too: it is removed by age like an icon, and then looked up again.
+    @Test func aKnownMissingIconIsRemovedByAgeToo() {
+        let cache = Self.sync { pid, _ in pid == 1 ? nil : Self.image() }
+        for pid in 1...Int32(AppIconCache.limit) + 1 { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.count == AppIconCache.limit)
+        #expect(cache.icon(pid: 1, bundleID: "b") == nil)
+        #expect(cache.lookups == AppIconCache.limit + 2, "pid 1 was the oldest entry, so it was looked up again")
+    }
+
+    /// The bug this cache had: at 64 icons, one new app emptied the whole cache, so each icon on screen was
+    /// nil for 1 to 90 ms and the minimap drew it as a grey block (a blink). Now a new app removes the oldest
+    /// icon. Each draw uses the icons on screen, so that is never one of them, also with no `shown` set.
+    @Test func theIconsOnScreenStayWhenNewAppsFillTheCache() async throws {
+        let cache = AppIconCache(queue: DispatchQueue(label: "test.icons")) { _, _ in Self.image() }
+        let onScreen = Array(Int32(1)...10)
+        for pid in onScreen { _ = cache.icon(pid: pid, bundleID: "b") }
+        try await Self.waitUntilDone(cache)
+        let lookups = cache.lookups
+        // 3 times the limit of new apps, one at a time, with a minimap draw before and after each one.
+        for pid in Int32(100)..<Int32(100 + 3 * AppIconCache.limit) {
+            for shown in onScreen { #expect(cache.icon(pid: shown, bundleID: "b") != nil, "pid \(shown) blinks at new app \(pid)") }
+            _ = cache.icon(pid: pid, bundleID: "b")
+            for shown in onScreen { #expect(cache.icon(pid: shown, bundleID: "b") != nil, "pid \(shown) blinks at new app \(pid)") }
+            try await Self.waitUntilDone(cache)
+            #expect(cache.count <= AppIconCache.limit)
+        }
+        #expect(cache.lookups == lookups + 3 * AppIconCache.limit, "no icon on screen was looked up again")
+        #expect(cache.count == AppIconCache.limit)
+    }
+
+    /// A minimap on screen draws again only when something changes. While it does not draw, its icons get old,
+    /// but the cache must not remove them: the next `onLoad` redraws it, and a removed icon would blink.
+    @Test func theIconsOfAMinimapOnScreenStayWhileItDoesNotDraw() {
+        let cache = Self.sync { _, _ in Self.image() }
+        let onA = Array(Int32(1)...10)
+        cache.shown = { Self.keys(onA, "a") }
+        for pid in onA { _ = cache.icon(pid: pid, bundleID: "a") }
+        // Another minimap shows more new apps than the limit. A does not draw in that time.
+        for pid in Int32(100)..<Int32(100 + 2 * AppIconCache.limit) { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.count == AppIconCache.limit)
+        let lookups = cache.lookups
+        for pid in onA { #expect(cache.icon(pid: pid, bundleID: "a") != nil, "icon \(pid) of A stays") }
+        #expect(cache.lookups == lookups, "no icon of A was made again")
+        // A is hidden now: its icons are old icons like the others.
+        cache.shown = { [] }
+        for pid in Int32(1000)..<Int32(1000 + AppIconCache.limit) { _ = cache.icon(pid: pid, bundleID: "b") }
+        _ = cache.icon(pid: 1, bundleID: "a")
+        #expect(cache.lookups == lookups + AppIconCache.limit + 1, "the icons of a hidden minimap are removed")
+    }
+
+    /// More apps on screen than the limit (3 or more minimaps): the cache keeps them all while they are shown,
+    /// so the icons settle after one load. A plain limit would loop: each ready icon removes the oldest icon on
+    /// screen, `onLoad` redraws, and that draw makes the removed icon again.
+    @Test func moreAppsOnScreenThanTheLimitDoNotLoop() async throws {
+        let cache = AppIconCache(queue: DispatchQueue(label: "test.icons")) { _, _ in Self.image() }
+        let loaded = Loaded()
+        cache.onLoad = { loaded.count += 1 }
+        var onScreen = Array(Int32(1)...Int32(AppIconCache.limit + 10))
+        cache.shown = { Self.keys(onScreen) }
+        for pid in onScreen { _ = cache.icon(pid: pid, bundleID: "b") }
+        try await Self.waitUntilDone(cache)
+        #expect(loaded.count == onScreen.count)
+        // The redraws that `onLoad` asks for.
+        for round in 1...3 {
+            for pid in onScreen { #expect(cache.icon(pid: pid, bundleID: "b") != nil, "pid \(pid) blinks in redraw \(round)") }
+            try await Self.waitUntilDone(cache)
+        }
+        #expect(cache.lookups == onScreen.count, "no icon was made twice")
+        #expect(loaded.count == onScreen.count, "no more redraws after the first load")
+        #expect(cache.count == onScreen.count, "the cache grew past the limit while the icons were on screen")
+        // One more app comes on screen.
+        onScreen.append(999)
+        _ = cache.icon(pid: 999, bundleID: "b")
+        try await Self.waitUntilDone(cache)
+        for pid in onScreen { #expect(cache.icon(pid: pid, bundleID: "b") != nil, "pid \(pid) blinks after the new app") }
+        #expect(cache.lookups == onScreen.count)
+        #expect(cache.count == onScreen.count)
+    }
+
+    /// When the minimaps hide, the next new app shrinks the cache back to the limit, oldest icons first.
+    @Test func theCacheShrinksToTheLimitWhenTheMinimapsHide() {
+        let cache = Self.sync { _, _ in Self.image() }
+        let over = Int32(AppIconCache.limit + 10)
+        cache.shown = { Self.keys(1...over) }
+        for pid in 1...over { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.count == Int(over), "all icons are on screen, so none is removed")
+        cache.shown = { [] }
+        _ = cache.icon(pid: 500, bundleID: "b")
+        #expect(cache.count == AppIconCache.limit, "back to the limit")
+        let lookups = cache.lookups
+        let newest = Array(over - Int32(AppIconCache.limit) + 2...over)
+        for pid in newest + [500] { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.lookups == lookups, "the newest icons stayed")
+        _ = cache.icon(pid: newest[0] - 1, bundleID: "b")
+        #expect(cache.lookups == lookups + 1, "an older icon was removed")
+    }
+
+    /// When the cache is full, it removes the least recently used icon that no minimap shows. An older icon on
+    /// screen stays, and the cache does not grow for it.
+    @Test func theOldestIconThatIsNotShownIsRemoved() {
+        let cache = Self.sync { _, _ in Self.image() }
+        cache.shown = { Self.keys([1]) }
+        for pid in 1...Int32(AppIconCache.limit) { _ = cache.icon(pid: pid, bundleID: "b") }
+        _ = cache.icon(pid: 999, bundleID: "b")
+        #expect(cache.count == AppIconCache.limit)
+        let lookups = cache.lookups
+        _ = cache.icon(pid: 1, bundleID: "b")
+        _ = cache.icon(pid: 3, bundleID: "b")
+        #expect(cache.lookups == lookups, "pid 1 is shown and pid 3 is newer than pid 2")
+        _ = cache.icon(pid: 2, bundleID: "b")
+        #expect(cache.lookups == lookups + 1, "pid 2 was removed")
+    }
+
+    /// `Overlays` tells the cache the apps of each minimap panel that is on screen, and only of those.
+    /// It orders a real panel in, so it needs a window server (a login session, not SSH only).
+    @Test(.enabled(if: CGSessionCopyCurrentDictionary() != nil, "needs a window server"))
+    func theOverlaysKeepTheIconsOfAMinimapOnScreen() throws {
+        let overlays = Overlays(appIcons: Self.sync { _, _ in Self.image() })
+        let entry = overlays.minimapEntry("D")
+        let other = overlays.minimapEntry("E")
+        entry.view.model = MinimapModel(items: (1...3).map {
+            .init(rect: CGRect(x: 0, y: 0, width: 0.1, height: 1), highlighted: false, pid: Int32($0), bundleID: "a")
+        }, viewport: CGRect(x: 0, y: 0, width: 1, height: 1))
+        other.view.model = MinimapModel(items: [
+            .init(rect: CGRect(x: 0, y: 0, width: 0.1, height: 1), highlighted: false, pid: 9, bundleID: "e"),
+        ], viewport: CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(overlays.appIcons.shown().isEmpty, "no minimap is on screen")
+        // The panel has no size, so nothing shows on the screen of the test machine.
+        entry.panel.orderFrontRegardless()
+        defer { entry.panel.orderOut(nil) }
+        try #require(entry.panel.isVisible)
+        #expect(overlays.appIcons.shown() == Self.keys(1...3, "a"), "the apps of the minimap on screen, not of E")
+        for pid in Int32(1)...3 { _ = overlays.appIcons.icon(pid: pid, bundleID: "a") }
+        for pid in Int32(100)..<Int32(100 + 2 * AppIconCache.limit) { _ = overlays.appIcons.icon(pid: pid, bundleID: "b") }
+        let lookups = overlays.appIcons.lookups
+        for pid in Int32(1)...3 { _ = overlays.appIcons.icon(pid: pid, bundleID: "a") }
+        #expect(overlays.appIcons.lookups == lookups, "the icons of the minimap on screen stayed")
+        entry.panel.orderOut(nil)
+        #expect(overlays.appIcons.shown().isEmpty, "a hidden minimap keeps no icons")
+    }
+
+    /// Icons that the background queue finishes go through the same limit: many apps at once do not grow the
+    /// cache past it.
+    @Test func manyIconsMadeAtOnceStayInTheLimit() async throws {
+        let cache = AppIconCache(queue: DispatchQueue(label: "test.icons")) { _, _ in Self.image() }
+        for pid in 1...Int32(2 * AppIconCache.limit) { _ = cache.icon(pid: pid, bundleID: "b") }
+        #expect(cache.pendingCount == 2 * AppIconCache.limit)
+        try await Self.waitUntilDone(cache)
+        #expect(cache.count == AppIconCache.limit)
+        let newest = Int32(2 * AppIconCache.limit)
+        #expect(cache.icon(pid: newest, bundleID: "b") != nil, "the icon finished last stays")
+        #expect(cache.lookups == 2 * AppIconCache.limit)
     }
 
     @Test func theIconIsASmallRetinaBitmap() throws {

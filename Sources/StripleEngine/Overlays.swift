@@ -25,6 +25,16 @@ final class Overlays {
             guard let self else { return }
             for entry in minimaps.values { entry.view.needsDisplay = true }
         }
+        appIcons.shown = { [weak self] in self?.shownIconKeys() ?? [] }
+    }
+
+    /// The apps of the blocks of each minimap that is on screen now, also while it fades out.
+    func shownIconKeys() -> Set<AppIconCache.Key> {
+        var keys: Set<AppIconCache.Key> = []
+        for entry in minimaps.values where entry.panel.isVisible {
+            for item in entry.view.model.items { keys.insert(.init(pid: item.pid, bundleID: item.bundleID)) }
+        }
+        return keys
     }
 
     static func appKitRect(_ r: CGRect) -> CGRect {
@@ -252,18 +262,31 @@ final class MinimapView: NSView {
 /// A ready icon is a 20 pt bitmap, so each minimap draw stays cheap.
 @MainActor
 final class AppIconCache {
-    private struct Key: Hashable { var pid: Int32; var bundleID: String }
+    struct Key: Hashable { var pid: Int32; var bundleID: String }
     /// Moves a finished icon from the background queue to the main thread. The queue does not use it after that.
     private struct Made: @unchecked Sendable { let image: NSImage? }
-    private var images: [Key: NSImage?] = [:]
+    /// A known icon (nil if the app has none) and the `clock` value of its last use.
+    private struct Entry { var image: NSImage?; var used: UInt64 }
+    private var images: [Key: Entry] = [:]
+    private var clock: UInt64 = 0
     private var pending: Set<Key> = []
+    /// Icons (and known missing icons) in the cache now. It is at most the larger of `limit` and (the cached
+    /// icons that the minimaps on screen show + 1). So it can be more than `limit` while they show `limit`
+    /// apps or more, until the first new icon stored after they show fewer.
+    var count: Int { images.count }
     /// Icons that the background queue makes now.
     var pendingCount: Int { pending.count }
     let queue: DispatchQueue?
     private let lookup: @Sendable (Int32, String) -> NSImage?
     /// Called on the main thread when an icon is ready.
     var onLoad: (() -> Void)?
-    /// The cache is emptied when it grows past this, so icons of quit apps do not stay forever.
+    /// The apps that a minimap on screen shows now. The cache never removes their icons. `Overlays` sets it.
+    var shown: () -> Set<Key> = { [] }
+    /// The most icons the cache keeps, so icons of quit apps do not stay forever. A new icon then removes the
+    /// icon that was used least recently, of the icons that no minimap on screen shows. So a minimap on screen
+    /// never loses its icons and does not blink. When the minimaps on screen show `limit` apps or more (in
+    /// practice 3 or more displays), the cache keeps them all, and grows past `limit` for that time: else each icon
+    /// that is ready would remove another icon on screen, and the redraw from `onLoad` would make it again.
     static let limit = 64
     private(set) var lookups = 0
 
@@ -279,15 +302,19 @@ final class AppIconCache {
     func icon(pid: Int32, bundleID: String) -> NSImage? {
         guard pid > 0 else { return nil }
         let key = Key(pid: pid, bundleID: bundleID)
-        if let cached = images[key] { return cached }
+        if images[key] != nil {
+            clock += 1
+            images[key]?.used = clock
+            return images[key]?.image
+        }
         if pending.contains(key) { return nil }
-        if images.count >= Self.limit { images.removeAll() }
         lookups += 1
         let lookup = self.lookup
         let make: @Sendable () -> Made = { Made(image: lookup(pid, bundleID).flatMap { Self.bitmap($0, side: MinimapModel.maxIconSide) }) }
         guard let queue else {
-            images[key] = .some(make().image)
-            return images[key] ?? nil
+            let image = make().image
+            store(key, image)
+            return image
         }
         pending.insert(key)
         queue.async { [weak self] in
@@ -306,8 +333,21 @@ final class AppIconCache {
 
     private func finish(_ key: Key, _ image: NSImage?) {
         pending.remove(key)
-        images[key] = .some(image)
+        store(key, image)
         if image != nil { onLoad?() }
+    }
+
+    /// Stores the icon as the most recently used one. If the cache is full, it first removes the icons that were
+    /// used least recently, of the icons that no minimap on screen shows, until there is space for one more. This
+    /// runs only for a new app, and the cache is small, so the sort is cheap.
+    private func store(_ key: Key, _ image: NSImage?) {
+        if images[key] == nil, images.count >= Self.limit {
+            let keep = shown()
+            let old = images.filter { !keep.contains($0.key) }.sorted { $0.value.used < $1.value.used }
+            for entry in old.prefix(images.count - Self.limit + 1) { images.removeValue(forKey: entry.key) }
+        }
+        clock += 1
+        images[key] = Entry(image: image, used: clock)
     }
 
     /// Draws `icon` into a bitmap of `side` points at 2x, for Retina displays. Safe on any thread: the context
