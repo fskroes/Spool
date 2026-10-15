@@ -1,16 +1,74 @@
 # Spool
 
-A scrolling window manager for macOS. Windows sit side by side on an endless horizontal strip, one strip per display and per Space. Opening a window never makes the other windows smaller. You move the view along the strip with the keyboard, a trackpad swipe or the CLI.
+**A scrolling window manager for macOS.** Your windows sit side by side on one endless strip. The screen shows a part of the strip. A new window opens next to the window you work in, and no other window gets smaller.
+
+[Website](https://spool.1yc.dev) · [Install](#install) · [Shortcuts](docs/SHORTCUTS.md) · [CLI](docs/CLI.md) · [Spec](docs/SPEC.md)
+
+<p align="center"><img src="site/strip.svg" width="720" alt="Five windows on a strip. The view moves right along the strip, a new window opens to the right, and the other windows keep their width."></p>
+
+Spool is free and the source is on GitHub. It is for people who keep many windows open on one screen and want to move between them with the keyboard or the trackpad, as niri and PaperWM do on Linux.
+
+## Why a strip
+
+Most tiling window managers cut the screen into a grid. Each new window takes space from the windows you already have, so after three or four windows every window is too small to use. Stage Manager hides the windows you do not use at that moment, so you look for them again.
+
+Spool does not divide the screen. It adds a column to the strip:
 
 ```
-            what you see (the display)
-          ┌───────────────────────────┐
- ┌──────┐ │ ┌──────────┐ ┌──────────┐ │ ┌──────┐ ┌──────┐
- │ Mail │ │ │  Editor  │ │ Terminal │ │ │ Docs │ │ Chat │   ← one strip
- └──────┘ │ └──────────┘ └──────────┘ │ └──────┘ └──────┘
-          └───────────────────────────┘
-   ⌃⌥H / ⌃⌥← focus left        ⌃⌥L / ⌃⌥→ focus right
+A grid: a new window makes every window smaller.
+
+ ┌───────────┬───────────┐               ┌───────┬───────┬───────┐
+ │  Editor   │ Terminal  │   open Docs   │Editor │Termin…│ Docs  │
+ │           │           │  ──────────▶  │       │       │       │
+ └───────────┴───────────┘               └───────┴───────┴───────┘
+
+Spool: Docs opens to the right. Editor and Terminal keep their width.
+
+          the display
+ ┌─────────────────────────┐
+ │┌───────────┐┌──────────┐│┌───────┐
+ ││  Editor   ││ Terminal │││ Docs  │   ← the strip goes on
+ │└───────────┘└──────────┘│└───────┘
+ └─────────────────────────┘
 ```
+
+Then you move the view along the strip, and the windows keep their size and their order.
+
+## What you can do
+
+These examples use the default shortcuts. All of them use `⌃⌥` (Control-Option), so plain Option stays free for typing. You can change every shortcut in Settings > Shortcuts.
+
+**Move along the strip.** `⌃⌥L` or `⌃⌥→` focuses the next window to the right, `⌃⌥H` or `⌃⌥←` the one to the left. `⌃⌥1` to `⌃⌥9` jump to a place. A swipe with 4 fingers (or 3, in Settings) scrolls the strip; lift with speed and it flings and stops on a window edge. A minimap shows where you are while the view moves.
+
+**Give a window the width it needs.** `⌃⌥R` cycles the width of the focused column through 1/3, 1/2 and 2/3 of the screen. `⌃⌥F` makes it full width and back. `⌃⌥=` and `⌃⌥-` make it wider or narrower. `⌃⌥C` puts it in the middle.
+
+**Put windows in order.** `⌃⌥⇧H` and `⌃⌥⇧L` move the column left and right. `⌃⌥[` puts the focused window in the column on its left, so two windows share one column, one above the other. `⌃⌥⇧T` shows the windows of a column as tabs.
+
+**Keep some windows out.** Per-app rules float an app, keep it tiled, or give it a fixed place on the strip. Dialogs float by themselves. `⌃⌥T` floats or tiles one window.
+
+**Script it.** The `spool` command controls the running app and shows its state:
+
+```sh
+spool focus-right
+spool state
+```
+
+```
+Engine: running. Accessibility: granted.
+Focused: VSCode "Layout.swift" (window 102)
+Display: Built-in Retina Display (on, space 3)
+  [1] mail "Inbox" | [2*] VSCode "Layout.swift" | [3] Terminal "make test" + Notes "Ideas" | [4] Safari "niri docs"
+```
+
+`[2*]` is the focused column. `+` joins the windows of a stack. Add `--json` for scripts, for example to list the apps on the strip in order:
+
+```sh
+spool state --json | jq -r '.state.displays[].columns[][].bundleID'
+```
+
+The same commands work as URLs (`open -g spool://focus-right`) and as Raycast script commands ([Integrations/Raycast](Integrations/Raycast)).
+
+**See when it is slow.** `spool stats` shows the live frame-write time and the apps that answer slowest. When something goes wrong, press `⌃⌥⇧M` or run `spool mark Safari jumped to the left`, and Spool saves the state of that moment. Nothing leaves the Mac ([docs/METRICS.md](docs/METRICS.md)).
 
 Spool had the name Striple before. `make install` replaces Striple and Spool moves your settings at its first start. See [Upgrade from Striple](docs/INSTALL.md#upgrade-from-striple).
 
@@ -165,7 +223,7 @@ make e2e
 | Target | What it does |
 |---|---|
 | `make build` | Debug build. |
-| `make test` | All unit tests (core, engine, IPC, E2E kit), except `SigningScriptTests`. |
+| `make test` | All unit tests (core, engine, IPC, E2E kit), except `SigningScriptTests` and the timing benchmarks `MetricsBenchmarkTests` and `FrameApplierBenchmarkTests` (`make bench` runs those). |
 | `make test-quiet` | The quiet lane for a managed Mac: only the suites that start no process and make no executable file (`scripts/quiet-tests.sh`). A test file that starts a process or sets an execute bit is out of the lane. `scripts/quiet-tests.sh --list` shows the selection. |
 | `make test-signing` | `SigningScriptTests` only. They run `make-signing-cert.sh` against fake tools with neutral names (`SPOOL_SECURITY`, `SPOOL_CODESIGN`), never a file named `security`. On a managed Mac the endpoint security tool can still report the keychain-like arguments. The suite runs only with `SPOOL_SIGNING_TESTS=1`, so a plain `swift test` skips it too. |
 | `make bench` | The frame-write and layout benchmarks in release mode. |
@@ -185,9 +243,32 @@ make e2e
 | `Integrations/Raycast` | Raycast script commands. |
 | `scripts`, `Packaging` | App bundle, signing, LaunchAgent, DMG, install. |
 
+## Work on Spool
+
+[AGENTS.md](AGENTS.md) is the guide for people and coding agents: how a change is made (spec, test, docs), what to run before a PR, and what never to touch. Before a PR, run:
+
+```sh
+make test
+scripts/verify smoke
+```
+
+`scripts/verify smoke` builds every product, starts an isolated copy of the app (its own settings folder, no shortcuts, no managed windows), talks to it with the `spool` command and checks the website. It ends with one JSON summary line. See [.claude/skills/verify-spool/SKILL.md](.claude/skills/verify-spool/SKILL.md) for what a pass proves.
+
+To hand a bug to an agent, open an issue with the **Agent task** template. It adds the label `agent`, and the agent queue picks it up, reproduces it on `main` and opens a PR.
+
+The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pages when `site/` changes on `main`.
+
 ## Known limits
 
 - Window focus uses private SkyLight calls, as other window managers on macOS do. A future macOS can change them; Spool then falls back to normal app activation.
 - Trackpad swipes use the private MultitouchSupport framework.
 - On a Mac that your employer manages, ask IT before you use Spool. See [Use on a managed work Mac](docs/INSTALL.md#use-on-a-managed-work-mac).
 - Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. Updates come from [fskroes/spool-releases](https://github.com/fskroes/spool-releases). See [docs/RELEASING.md](docs/RELEASING.md).
+- There is no license file yet. The source is public, but until a license is added, the default copyright rules apply.
+
+## Related projects
+
+- [niri](https://github.com/YaLTeR/niri): a scrolling tiling compositor for Wayland on Linux. The model Spool follows.
+- [PaperWM](https://github.com/paperwm/PaperWM): scrolling tiling for GNOME, where the idea started.
+- [PaperWM.spoon](https://github.com/mogenson/PaperWM.spoon): the same idea on macOS as a Hammerspoon spoon.
+- [AeroSpace](https://github.com/nikitabobko/AeroSpace): an i3-like tiling window manager for macOS, with a grid instead of a strip.

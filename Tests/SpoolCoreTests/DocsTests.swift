@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-/// Command blocks in README.md and docs/*.md must work when you paste them into zsh, the default shell of macOS.
+/// Command blocks in README.md, AGENTS.md, docs/*.md and .claude/skills/*/SKILL.md must work when you paste them into zsh, the default shell of macOS.
 /// At an interactive prompt zsh does not accept `#` comments (the `interactivecomments` option is off), so a comment
 /// becomes arguments of the command. The rule:
 ///
@@ -72,15 +72,23 @@ import Testing
         return found
     }
 
+    /// README.md, AGENTS.md, docs/*.md and the skills in .claude/skills: agents paste from all of them.
     static func docs() throws -> [URL] {
+        let fm = FileManager.default
         let folder = root.appendingPathComponent("docs")
-        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".md") }.sorted()
-        return [root.appendingPathComponent("README.md")] + names.map { folder.appendingPathComponent($0) }
+        let names = try fm.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".md") }.sorted()
+        let skills = root.appendingPathComponent(".claude/skills")
+        let skillFiles = try fm.contentsOfDirectory(atPath: skills.path).sorted()
+            .map { skills.appendingPathComponent($0).appendingPathComponent("SKILL.md") }
+            .filter { fm.fileExists(atPath: $0.path) }
+        return [root.appendingPathComponent("README.md"), root.appendingPathComponent("AGENTS.md")]
+            + names.map { folder.appendingPathComponent($0) } + skillFiles
     }
 
     @Test func commandBlocksHaveNoComments() throws {
         let files = try Self.docs()
         #expect(files.count >= 3)
+        #expect(files.contains { $0.path.hasSuffix(".claude/skills/verify-spool/SKILL.md") })
         for file in files {
             let found = Self.comments(in: try String(contentsOf: file, encoding: .utf8))
             #expect(found.isEmpty, "\(file.lastPathComponent): put the explanation after the block, not in it:\n\(found.joined(separator: "\n"))")

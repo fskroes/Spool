@@ -11,8 +11,9 @@ build:
 # SigningScriptTests run scripts/make-signing-cert.sh against a fake keychain tool (fake-keychain-tool, set
 # with SPOOL_SECURITY). On a managed Mac the endpoint security tool can still report its keychain-like
 # arguments. The suite is opt-in (SPOOL_SIGNING_TESTS=1), so `make test` and a plain `swift test` do not run it.
+# TEST_ARGS goes to swift test, for example `make test TEST_ARGS="--filter VerifyScriptTests"`.
 test:
-	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
+	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests $(TEST_ARGS)
 
 # Only the suites that start no process and make no executable file (scripts/quiet-tests.sh). Use this lane
 # on a managed Mac. `scripts/quiet-tests.sh --list` shows which files are in and why the others are out.

@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Run Spool and check that it works. One command, JSON lines out. See .claude/skills/verify-spool/SKILL.md.
+
+  scripts/verify smoke                     build, CLI, an isolated app boot, the website
+  scripts/verify smoke --only app,cli      only these layers (build runs first when cli or app is asked)
+  scripts/verify e2e                       the live E2E test (make e2e) on real test windows
+  scripts/verify site                      only the website checks (no Swift build)
+
+stdout: one {"event": "check"} line per check, then one {"event": "summary"} line. "layers" in the summary
+names the layers that ran: a PR needs the line of a full smoke run (build, cli, app, site).
+Exit: 0 pass, 1 a check failed, 2 bad usage, 3 could not run (e2e refused: no Accessibility, locked screen).
+
+The app boot is isolated: SPOOL_HOME is a new temporary folder, SPOOL_MANAGE_ONLY is empty (Spool manages
+no app, also when this terminal has the Accessibility permission), and config.json has no shortcuts, so the test
+instance never moves a window and never takes a hotkey. It runs next to the user's own Spool.
+"""
+import argparse, datetime as dt, html.parser, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+LAYERS = ["build", "cli", "app", "site"]
+SITE = os.path.join(ROOT, "site")
+SITE_HOST = "spool.1yc.dev"
+# Script hosts the site may load from. Everything else is inline.
+SCRIPT_HOSTS = ("cdnjs.cloudflare.com", "cdn.jsdelivr.net", "unpkg.com")
+# The only variables passed on to a process this script starts. An allow list, so a key, token or socket in
+# the caller's environment never reaches the build, the app or the CLI. Verify adds what Spool needs itself.
+PASSED_ENV = re.compile(r"^(PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TERM|LANG|LC_[A-Z]+|DEVELOPER_DIR|SDKROOT|TOOLCHAINS|__CF_USER_TEXT_ENCODING)$")
+
+results = []
+cleanups = []
+
+
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def check(layer, name, ok, detail="", problems=None, status=None):
+    status = status or ("pass" if ok else "fail")
+    row = {"event": "check", "layer": layer, "name": name, "status": status}
+    if detail:
+        row["detail"] = detail
+    if problems:
+        row["problems"] = problems
+    results.append(row)
+    emit(row)
+    return ok
+
+
+def child_env(extra=None, drop=()):
+    env = {k: v for k, v in os.environ.items() if PASSED_ENV.match(k) and k not in drop}
+    env.update(extra or {})
+    return env
+
+
+def run(args, out, name, timeout=900, env=None, cwd=ROOT):
+    """Run a command, write its output to out/<name>.log. A timeout or a missing binary is a failed result."""
+    log = os.path.join(out, name + ".log")
+    try:
+        with open(log, "w") as fh:
+            p = subprocess.run(args, cwd=cwd, env=env or child_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
+        code = p.returncode
+    except subprocess.TimeoutExpired:
+        code = "timeout"
+    except OSError as e:
+        with open(log, "a") as fh:
+            fh.write(str(e))
+        code = "oserror"
+    with open(log, errors="replace") as fh:
+        text = fh.read()
+    return code, text, log
+
+
+def tail(text, n=12):
+    return "\n".join(text.rstrip().splitlines()[-n:])
+
+
+def capture(args, env, timeout=20):
+    try:
+        p = subprocess.run(args, env=env, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return "timeout", "", ""
+    except OSError as e:
+        return "oserror", "", str(e)
+
+
+# ---------------------------------------------------------------- layers
+
+def layer_build(out):
+    code, text, log = run(["swift", "build"], out, "build")
+    return check("build", "swift build (debug, every product)", code == 0, log,
+                 None if code == 0 else [f"exit {code}", tail(text)])
+
+
+def bin_dir():
+    code, out, _ = capture(["swift", "build", "--show-bin-path"], child_env(), timeout=120)
+    return out.strip() if code == 0 else None
+
+
+def layer_cli(out, bins):
+    cli = os.path.join(bins, "spool")
+    env = child_env()
+    code, so, se = capture([cli, "--help"], env)
+    check("cli", "spool --help prints the usage", code == 0 and "Usage: spool" in so,
+          problems=None if code == 0 else [f"exit {code}", se.strip()])
+    code, so, se = capture([cli, "list", "--json"], env)
+    names = []
+    try:
+        names = [e["name"] for e in json.loads(so)]
+    except (ValueError, KeyError, TypeError):
+        pass
+    want = {"focus-left", "focus-right", "ping", "state", "stats"}
+    check("cli", "spool list --json has the main commands", want <= set(names),
+          f"{len(names)} commands", None if want <= set(names) else [f"missing: {sorted(want - set(names))}"])
+    code, so, se = capture([cli, "no-such-command"], env)
+    check("cli", "an unknown command exits 2 with a hint", code == 2 and "spool help" in se,
+          problems=None if code == 2 else [f"exit {code}", se.strip()])
+    # A socket that no server listens on: the CLI must say "not running" with exit 3, never hang.
+    dead = os.path.join(tempfile.mkdtemp(prefix="spool-verify-dead-"), "spool.sock")
+    cleanups.append(lambda: shutil.rmtree(os.path.dirname(dead), ignore_errors=True))
+    code, so, se = capture([cli, "ping", "--socket", dead], env, timeout=10)
+    check("cli", "ping with no Spool exits 3", code == 3, problems=None if code == 3 else [f"exit {code}", (so + se).strip()])
+
+
+def wait_for(path, seconds, proc):
+    end = time.time() + seconds
+    while time.time() < end:
+        if os.path.exists(path):
+            return True
+        if proc.poll() is not None:
+            return False
+        time.sleep(0.2)
+    return False
+
+
+def layer_app(out, bins):
+    app, cli = os.path.join(bins, "SpoolApp"), os.path.join(bins, "spool")
+    home = tempfile.mkdtemp(prefix="spool-verify-")
+    cleanups.append(lambda: shutil.rmtree(home, ignore_errors=True))
+    sock = os.path.join(home, "spool.sock")
+    config = {"version": 2, "behavior": {"onboardingDone": True, "launchAtLogin": False}, "bindings": {}}
+    with open(os.path.join(home, "config.json"), "w") as fh:
+        json.dump(config, fh)
+    env = child_env({"SPOOL_HOME": home, "SPOOL_MANAGE_ONLY": ""})
+    stdout = open(os.path.join(out, "app-stdout.log"), "w")
+    started = time.time()
+    proc = subprocess.Popen([app], env=env, stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def stop():
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(5)
+        stdout.close()
+    cleanups.insert(0, stop)
+
+    up = wait_for(sock, 20, proc)
+    check("app", "the app starts and opens its socket", up, f"{time.time() - started:.1f} s, SPOOL_HOME {home}",
+          None if up else [f"no socket after 20 s (exit {proc.poll()})", tail(open(stdout.name, errors="replace").read())])
+    if not up:
+        return
+    cenv = child_env({"SPOOL_SOCKET": sock})
+    code, so, se = capture([cli, "ping"], cenv)
+    check("app", "spool ping answers", code == 0, so.strip(), None if code == 0 else [f"exit {code}", se.strip()])
+
+    code, so, se = capture([cli, "state", "--json"], cenv)
+    state, problems = None, []
+    try:
+        state = json.loads(so).get("state")
+    except ValueError:
+        problems.append("state --json is not JSON: " + so[:200])
+    if state is not None:
+        for key, kind in (("accessibilityTrusted", bool), ("running", bool), ("displays", list), ("floating", list)):
+            if not isinstance(state.get(key), kind):
+                problems.append(f"state.{key} is missing or not {kind.__name__}")
+        managed = [w for d in state.get("displays") or [] for col in d.get("columns") or [] for w in col] + (state.get("floating") or [])
+        if managed:
+            problems.append(f"the isolated instance manages {len(managed)} window(s); SPOOL_MANAGE_ONLY must stop that")
+    check("app", "state --json is valid and manages no window", code == 0 and state is not None and not problems,
+          json.dumps({k: state.get(k) for k in ("accessibilityTrusted", "running")}) if state else "", problems or None)
+    with open(os.path.join(out, "state.json"), "w") as fh:
+        fh.write(so)
+
+    code, so, se = capture([cli, "stats", "--json"], cenv)
+    try:
+        ok = code == 0 and json.loads(so).get("ok") is True
+    except ValueError:
+        ok = False
+    check("app", "stats --json answers", ok, problems=None if ok else [f"exit {code}", (so + se).strip()[:300]])
+
+    # A window command must answer, never hang. Without the permission: exit 1 and the reason. With it, the
+    # instance manages no window, so exit 0 (nothing to do) and exit 1 (no window) are both an answer.
+    trusted = bool(state and state.get("accessibilityTrusted"))
+    code, so, se = capture([cli, "focus-right"], cenv)
+    text = (so + se).strip()
+    ok = code in (0, 1) if trusted else (code == 1 and "Accessibility" in text)
+    check("app", "a window command answers (" + ("permission given" if trusted else "no permission") + ")",
+          ok, text[:200], None if ok else [f"exit {code}"])
+
+    lastgood = os.path.exists(os.path.join(home, "config.json.lastgood"))
+    check("app", "config.json loaded (config.json.lastgood written)", lastgood)
+
+    proc.terminate()
+    try:
+        proc.wait(5)
+        stopped = True
+    except subprocess.TimeoutExpired:
+        stopped = False
+    check("app", "the app stops on SIGTERM within 5 s", stopped, f"exit {proc.returncode}")
+
+    log = os.path.join(home, "Logs", "engine.log")
+    text = open(log, errors="replace").read() if os.path.exists(log) else ""
+    shutil.copy(log, os.path.join(out, "engine.log")) if text else None
+    bad = [l for l in text.splitlines() if re.search(r"\b(fatal|crash|assertion|precondition)\b", l, re.I)]
+    check("app", "engine.log has no fatal line", not bad, f"{len(text.splitlines())} lines", bad[:5] or None)
+
+
+class SiteParser(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.refs, self.scripts, self.title, self._in_title, self.ids = [], [], "", False, set()
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if a.get("id"):
+            self.ids.add(a["id"])
+        if tag == "title":
+            self._in_title = True
+        for key in ("href", "src"):
+            if a.get(key):
+                self.refs.append(a[key])
+        if tag == "script" and a.get("src"):
+            self.scripts.append(a["src"])
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+
+
+def layer_site(out, root=SITE):
+    if not os.path.isdir(root):
+        check("site", "site/ exists", False, problems=["no site/ folder"])
+        return
+    pages = sorted(os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root) for f in fs if f.endswith(".html"))
+    check("site", "site/ has an index.html", "index.html" in pages, f"{len(pages)} page(s): {', '.join(pages)}")
+    cname = open(os.path.join(root, "CNAME")).read().strip() if os.path.exists(os.path.join(root, "CNAME")) else ""
+    check("site", f"site/CNAME is {SITE_HOST}", cname == SITE_HOST, problems=None if cname == SITE_HOST else [f"CNAME is '{cname}'"])
+    for page in pages:
+        path = os.path.join(root, page)
+        p = SiteParser()
+        p.feed(open(path, encoding="utf-8").read())
+        problems = []
+        if not p.title.strip():
+            problems.append("no <title>")
+        for ref in p.refs:
+            if ref.startswith(("mailto:", "data:")):
+                continue
+            if ref.startswith("http://"):
+                problems.append(f"plain http link: {ref}")
+                continue
+            if ref.startswith(("https://", "//")):
+                continue
+            target, _, frag = ref.partition("#")
+            if not target:
+                if frag and frag not in p.ids:
+                    problems.append(f"#{frag} has no element with that id")
+                continue
+            local = os.path.normpath(os.path.join(os.path.dirname(path), target.split("?")[0]))
+            if local.endswith(os.sep) or os.path.isdir(local):
+                local = os.path.join(local, "index.html")
+            if not (local + os.sep).startswith(root + os.sep) or not os.path.exists(local):
+                problems.append(f"broken local link: {ref}")
+        for src in p.scripts:
+            host = re.sub(r"^(https?:)?//", "", src).split("/")[0]
+            if src.startswith(("https://", "//")) and host not in SCRIPT_HOSTS:
+                problems.append(f"script from a host that is not allowed: {src}")
+        check("site", f"{page}: title, links and scripts", not problems, p.title.strip(), problems or None)
+
+
+def layer_e2e(out):
+    env = child_env({"SIGN_IDENTITY": "-", "E2E_ARGS": f"--out {os.path.join(out, 'e2e')}"})
+    code, text, log = run(["make", "e2e"], out, "e2e", timeout=1800, env=env)
+    report = os.path.join(out, "e2e", "report.md")
+    # The runner refuses with exit 2 and a "spool-e2e: <reason>" line (docs/E2E.md). A build error is a fail.
+    refusal = [l for l in text.splitlines() if l.startswith("spool-e2e: ") and "quitting a test app" not in l]
+    if code != 0 and "[e2e] Error 2" in text and refusal and not os.path.exists(report):
+        check("e2e", "make e2e", False, log, [refusal[-1]], status="skipped")
+        return
+    check("e2e", "make e2e (3 windows of the test app)", code == 0, report if os.path.exists(report) else log,
+          None if code == 0 else [f"exit {code}", tail(text)])
+
+
+# ---------------------------------------------------------------- main
+
+def finish(out, started, mode, layers):
+    for fn in cleanups:
+        try:
+            fn()
+        except Exception:
+            pass
+    cleanups.clear()
+    failed = [r for r in results if r["status"] == "fail"]
+    skipped = [r for r in results if r["status"] == "skipped"]
+    result = "fail" if failed else ("skipped" if skipped and not [r for r in results if r["status"] == "pass"] else "pass")
+    if skipped and result == "pass" and mode == "e2e":
+        result = "skipped"
+    summary = {"event": "summary", "mode": mode, "layers": layers, "result": result,
+               "passed": sum(r["status"] == "pass" for r in results), "failed": len(failed), "skipped": len(skipped),
+               "seconds": round(time.time() - started, 1), "artifacts": out,
+               "failures": [f"{r['layer']}: {r['name']}" for r in failed]}
+    with open(os.path.join(out, "summary.json"), "w") as fh:
+        json.dump({"summary": summary, "checks": results}, fh, indent=1)
+    emit(summary)
+    return {"pass": 0, "fail": 1, "skipped": 3}[result]
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="scripts/verify", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mode", choices=["smoke", "e2e", "site"])
+    ap.add_argument("--only", help="comma separated layers for smoke: " + ",".join(LAYERS))
+    ap.add_argument("--out", help="evidence folder, outside the repo (default: under the temp folder)")
+    ap.add_argument("--site", default=SITE, help=argparse.SUPPRESS)  # test seam: check another site folder
+    try:
+        args = ap.parse_args()
+    except SystemExit as e:
+        return 2 if e.code else 0
+
+    layers = list(LAYERS) if args.mode == "smoke" else (["site"] if args.mode == "site" else ["e2e"])
+    if args.only:
+        if args.mode != "smoke":
+            print("verify: --only works with smoke", file=sys.stderr)
+            return 2
+        layers = [l.strip() for l in args.only.split(",") if l.strip()]
+        unknown = set(layers) - set(LAYERS)
+        if unknown:
+            print(f"verify: unknown layer(s) {sorted(unknown)}; use {','.join(LAYERS)}", file=sys.stderr)
+            return 2
+        if {"cli", "app"} & set(layers) and "build" not in layers:
+            layers.insert(0, "build")
+    out = os.path.realpath(args.out or os.path.join(tempfile.gettempdir(), "spool-verify", dt.datetime.now().strftime("%Y%m%d-%H%M%S")))
+    if out == ROOT or out.startswith(ROOT + os.sep):
+        print("verify: --out must be outside the repository (no evidence files in git)", file=sys.stderr)
+        return 2
+    os.makedirs(out, exist_ok=True)
+    started = time.time()
+
+    def on_signal(signum, _frame):
+        check("verify", f"stopped by signal {signum}", False)
+        sys.exit(finish(out, started, args.mode, layers))
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, on_signal)
+
+    if args.mode == "e2e":
+        layer_e2e(out)
+        return finish(out, started, args.mode, layers)
+    bins = None
+    for layer in layers:
+        if layer == "build":
+            if not layer_build(out):
+                break
+            bins = bin_dir()
+            if not bins:
+                check("build", "swift build --show-bin-path", False)
+                break
+        elif layer == "cli":
+            layer_cli(out, bins)
+        elif layer == "app":
+            layer_app(out, bins)
+        elif layer == "site":
+            layer_site(out, os.path.abspath(args.site))
+    return finish(out, started, args.mode, layers)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
