@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spool: a scrolling window manager for macOS</title>
+<meta name="description" content="Spool is a free scrolling window manager for macOS. Windows sit on one endless strip. A new window never makes the others smaller. It has a CLI with JSON state. The source is on GitHub.">
+<meta name="color-scheme" content="light dark">
+<link rel="canonical" href="https://spool.1yc.dev/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1110'/%3E%3Crect x='4' y='9' width='7' height='14' rx='2' fill='%23506660'/%3E%3Crect x='13' y='9' width='9' height='14' rx='2' fill='%234fe0b5'/%3E%3Crect x='24' y='9' width='5' height='14' rx='2' fill='%23506660'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Spool">
+<meta property="og:title" content="Spool: a scrolling window manager for macOS">
+<meta property="og:description" content="Free. Windows sit on one endless strip. A new window never makes the others smaller. CLI with JSON state. Source on GitHub.">
+<meta property="og:url" content="https://spool.1yc.dev/">
+<meta name="twitter:card" content="summary">
+<style>
+:root{
+  --bg:#f5f6f3; --bg2:#e9ece7; --panel:#ffffff; --ink:#121614; --mute:#4a524e; --line:#c6cdc8;
+  --acc:#0b6e5a; --acc-ink:#ffffff; --acc-soft:#dcefe8; --code:#eef1ed;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,Helvetica,Arial,sans-serif;
+  --gut:16px; --max:1040px;
+  --shadow:0 1px 2px rgba(18,22,20,.08),0 8px 24px rgba(18,22,20,.08);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1110; --bg2:#131917; --panel:#171e1b; --ink:#e6ece9; --mute:#a1ada7; --line:#2d3833;
+    --acc:#4fe0b5; --acc-ink:#04261c; --acc-soft:#12332a; --code:#111715;
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.4);
+  }
+}
+@media (min-width:720px){:root{--gut:28px}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+[id]{scroll-margin-top:70px}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--sans);overflow-x:hidden}
+img,svg{max-width:100%}
+a{color:var(--acc);text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:3px solid var(--acc);outline-offset:3px;border-radius:4px}
+.skip{position:absolute;left:-999px;top:8px;background:var(--acc);color:var(--acc-ink);padding:8px 12px;border-radius:6px;z-index:50}
+.skip:focus{left:8px}
+.wrap{max-width:var(--max);margin:0 auto;padding-inline:var(--gut)}
+code,kbd,pre,.mono{font-family:var(--mono)}
+kbd{display:inline-block;font-size:.86em;line-height:1.35;padding:1px 7px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;background:var(--panel);white-space:nowrap}
+:not(pre)>code{font-size:.9em;background:var(--code);border:1px solid var(--line);padding:0 5px;border-radius:5px;overflow-wrap:anywhere}
+
+/* header */
+header.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+header.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:12px;height:54px}
+/* the page rule is a minimap: columns of different widths, one in focus */
+header.top::after{content:"";position:absolute;left:0;right:0;bottom:-4px;height:3px;pointer-events:none;background:
+  linear-gradient(90deg,var(--line) 0 9%,transparent 0 10%,var(--line) 0 23%,transparent 0 24%,var(--acc) 0 41%,transparent 0 42%,var(--line) 0 55%,transparent 0 56%,var(--line) 0 77%,transparent 0 78%,var(--line) 0 89%,transparent 0 90%,var(--line) 0 100%)}
+.brand{display:flex;align-items:center;gap:10px;font:600 17px var(--mono);color:var(--ink);text-decoration:none;letter-spacing:-.01em}
+.brand svg{width:26px;height:26px;flex:none}
+nav ul{display:flex;gap:4px;list-style:none;margin:0;padding:0;align-items:center}
+nav a{display:inline-block;padding:6px 10px;border-radius:8px;color:var(--mute);text-decoration:none;font-size:14px}
+nav a:hover{color:var(--ink);background:var(--bg2)}
+nav a.gh{border:1px solid var(--line);color:var(--ink)}
+@media (max-width:640px){nav li.opt{display:none}}
+
+/* hero */
+.hero{padding:20px 0 4px}
+.hero-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.hero-row .chips{margin:0}
+.eyebrow{font:500 13px var(--mono);color:var(--acc);margin:0 0 10px;letter-spacing:.02em}
+h1{font:700 clamp(28px,3.9vw,40px)/1.08 var(--mono);letter-spacing:-.045em;margin:0 0 10px}
+.lead{font-size:clamp(16px,2vw,18px);color:var(--mute);max-width:72ch;margin:0 0 14px;line-height:1.5}
+.lead strong{color:var(--ink);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 14px;padding:0}
+.chips li{font:500 13px var(--mono);padding:5px 11px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
+.chips li::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acc);margin-right:8px;vertical-align:1px}
+.cta{display:flex;flex-wrap:wrap;gap:10px}
+.btn{display:inline-flex;align-items:center;gap:8px;font:600 15px var(--sans);padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);text-decoration:none;cursor:pointer;min-height:44px}
+.btn:hover{border-color:var(--acc)}
+.btn.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.btn.primary:hover{filter:brightness(1.08)}
+
+/* demo */
+.demo{padding:10px 0 18px}
+.stage{position:relative;overflow:hidden;width:100%;touch-action:pan-y;cursor:grab;background:
+  radial-gradient(circle at 1px 1px,var(--line) 1px,transparent 0) 0 0/22px 22px,var(--bg2);
+  border-block:1px solid var(--line);outline-offset:-3px;user-select:none;-webkit-user-select:none}
+/* The same heights as layoutDims() in the script, so the page does not jump when it runs. */
+.stage{height:376px}
+@media (max-width:639px){.stage{height:276px}}
+.stage.drag{cursor:grabbing}
+.stage:focus-visible{outline:3px solid var(--acc);border-radius:0}
+.fr{position:absolute;border:1.5px dashed var(--acc);border-radius:14px;z-index:3;pointer-events:none}
+.frl{position:absolute;z-index:3;font:500 11px var(--mono);color:var(--mute);pointer-events:none;white-space:nowrap}
+.shade{position:absolute;top:0;bottom:0;background:var(--bg);opacity:.74;z-index:2;pointer-events:none}
+.win{position:absolute;top:0;left:0;z-index:1;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow);will-change:transform,width;transition:opacity .2s,outline-color .2s}
+.win.dim{opacity:.72}
+.win.focus{outline:2px solid var(--acc);outline-offset:0;opacity:1}
+.bar{flex:none;display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;background:var(--bg2);border-bottom:1px solid var(--line);white-space:nowrap}
+.bar i{width:10px;height:10px;border-radius:50%;flex:none}
+.bar i:nth-child(1){background:#ff5f57}.bar i:nth-child(2){background:#febc2e}.bar i:nth-child(3){background:#28c840}
+.bar b{font:600 12px var(--sans);color:var(--mute);margin-left:8px;overflow:hidden;text-overflow:ellipsis}
+.wb{flex:1;min-height:0;padding:12px;overflow:hidden;font-size:12px;color:var(--ink)}
+.ln{display:block;height:6px;border-radius:3px;background:var(--line);margin:0 0 9px}
+.ln.m{background:var(--bg2);border:1px solid var(--line);height:5px}
+.ln.a{background:var(--acc);opacity:.75}
+.row{display:flex;gap:9px;align-items:flex-start;margin-bottom:12px}
+.row .dot{flex:none;width:18px;height:18px;border-radius:50%;background:var(--acc-soft);border:1px solid var(--line)}
+.row span{flex:1;min-width:0}
+.code{display:flex;gap:10px;font:11px/1 var(--mono);color:var(--mute);margin-bottom:9px;align-items:center}
+.code em{font-style:normal;width:12px;text-align:right;flex:none}
+.code span{flex:1;min-width:0}
+.term{margin:0;background:none;border:0;padding:0;border-radius:0;font:11.5px/1.65 var(--mono);color:var(--ink);white-space:pre;overflow:hidden}
+.term .p{color:var(--acc)} .term .d{color:var(--mute)}
+.bub{border-radius:10px;padding:7px 9px;margin-bottom:9px;max-width:86%}
+.bub.l{background:var(--bg2)}
+.bub.r{background:var(--acc-soft);margin-left:auto}
+.h{display:block;height:11px;width:55%;border-radius:3px;background:var(--ink);opacity:.8;margin-bottom:12px}
+
+.panel{max-width:var(--max);margin:0 auto;padding:16px var(--gut) 0}
+.ctrls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.ctrls .btn{font-size:14px;padding:8px 12px;min-height:44px}
+.ctrls .btn[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+.ctrls kbd{font-size:11px;padding:0 5px}
+@media (max-width:640px){.ctrls kbd,.kb-only{display:none}}
+@media (min-width:641px){.touch-only{display:none}}
+.ctrls .sp{flex:1 0 8px}
+.ctl-top{padding-top:0}
+.ctl-top .ctrls{margin-bottom:10px}
+@media (min-width:640px){.stage{height:clamp(252px,calc(100vh - 374px),376px)}}
+/* Phones: the strip first, because a swipe on it is the main control; the buttons follow. */
+@media (max-width:639px){
+  .hero .chips{display:none}
+  .demo{display:flex;flex-direction:column}
+  .demo .ctl-top{order:1;padding-top:12px}
+  .demo .panel:not(.ctl-top){order:2}
+}
+.mmwrap{display:grid;gap:10px}
+.mmlab{font:500 12px var(--mono);color:var(--mute)}
+.mm{position:relative;height:34px;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+.mm .b{position:absolute;top:8px;height:16px;border-radius:3px;background:var(--line)}
+.mm .b.f{background:var(--acc)}
+.mm .v{position:absolute;top:3px;height:26px;border:1.5px solid var(--acc);border-radius:5px;background:color-mix(in srgb,var(--acc) 12%,transparent)}
+.status{white-space:pre-wrap;font:500 13px/1.5 var(--mono);margin:0;color:var(--ink)}
+.widths{display:flex;flex-wrap:wrap;gap:6px 14px;list-style:none;padding:0;margin:0;font:12.5px var(--mono);color:var(--mute)}
+.widths b{color:var(--ink);font-weight:600}
+.widths .n b{color:var(--acc)}
+.hint{font-size:14px;color:var(--mute);margin:12px 0 0}
+
+/* sections */
+section{padding:56px 0 0}
+h2{font:700 clamp(23px,3.4vw,33px)/1.15 var(--mono);letter-spacing:-.04em;margin:0 0 12px}
+
+/* grid versus strip */
+.cmp{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:760px){.cmp{grid-template-columns:minmax(0,1fr)}}
+.cmp-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.cmp-card p{margin:0 0 12px;color:var(--mute);font-size:15px}
+.box{position:relative;height:96px;border:1.5px dashed var(--acc);border-radius:10px;padding:8px;overflow:hidden}
+.box .row3{display:flex;gap:6px;height:100%;transition:transform .35s ease}
+.tile{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:center;border:1px solid var(--line);border-radius:6px;background:var(--bg2);font:600 13px var(--mono);overflow:hidden;white-space:nowrap}
+.tile small{font:500 11px var(--mono);color:var(--mute)}
+.strip3 .tile{flex:0 0 108px}
+.cmp-ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 0}
+.cmp-note{margin:0;font:500 13px/1.5 var(--mono);color:var(--ink)}
+.fig{display:grid;gap:20px;grid-template-columns:1.3fr 1fr;align-items:center;margin-top:30px}
+.fig>*{min-width:0}
+@media (max-width:860px){.fig{grid-template-columns:1fr}}
+figure{margin:0}
+figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px}
+figcaption{font-size:14px;color:var(--mute);margin-top:8px}
+.facts{display:grid;gap:12px}
+.facts h3{margin:0 0 2px}
+.facts p{margin:0;color:var(--mute);font-size:15px}
+.fix{margin-top:16px;padding:14px 16px;border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:0 12px 12px 0;background:var(--panel);font-size:15px}
+.fix p{margin:0 0 10px;color:var(--mute)}
+.fix p:last-child{margin-bottom:0}
+.fix strong{color:var(--ink)}
+.fix pre{margin:0 0 10px;padding:10px 14px}
+h3{font-size:17px;margin:0 0 6px;letter-spacing:-.01em}
+.sub{color:var(--mute);max-width:60ch;margin:0 0 26px}
+.tag{font:500 12px var(--mono);color:var(--acc);margin:0 0 8px;letter-spacing:.04em;text-transform:uppercase}
+.three{display:grid;gap:14px;grid-template-columns:repeat(3,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card p{margin:0;color:var(--mute);font-size:15px}
+@media (max-width:760px){.three{grid-template-columns:1fr}}
+
+pre{margin:0;overflow-x:auto;background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px 18px;font-size:13.5px;line-height:1.7}
+pre .c{color:var(--mute)} pre .p{color:var(--acc)}
+.pre{position:relative}
+.pre .copy{position:absolute;top:8px;right:8px;font:500 12px var(--mono);padding:4px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);cursor:pointer;min-height:30px}
+.pre .copy:hover{border-color:var(--acc)}
+.pre pre{padding-right:78px}
+@media (max-width:640px){.pre{display:flex;flex-direction:column}.pre .copy{position:static;align-self:flex-end;margin-bottom:6px}.pre pre{padding-right:14px;white-space:pre-wrap;overflow-wrap:anywhere}}
+.split{display:grid;gap:22px;grid-template-columns:1.15fr 1fr;align-items:start}
+.split>*{min-width:0}
+@media (max-width:860px){.split{grid-template-columns:1fr}}
+ol.steps{margin:0;padding:0;list-style:none;counter-reset:s;display:grid;gap:12px}
+ol.steps li{counter-increment:s;padding-left:42px;position:relative;color:var(--mute);font-size:15px}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:28px;height:28px;border-radius:8px;border:1px solid var(--acc);color:var(--acc);font:600 13px/26px var(--mono);text-align:center}
+ol.steps strong{color:var(--ink)}
+.status-line{margin-top:16px;padding:12px 14px;border-left:3px solid var(--acc);background:var(--acc-soft);border-radius:0 10px 10px 0;font-size:15px}
+
+.keys{display:grid;gap:14px;grid-template-columns:repeat(3,1fr)}
+@media (max-width:860px){.keys{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:560px){.keys{grid-template-columns:1fr}}
+.keys dl{margin:0}
+.keys .row2{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:14.5px}
+.keys .row2:first-of-type{border-top:0}
+.keys dt{color:var(--mute)}
+.keys dd{margin:0;text-align:right;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.note{font-size:14px;color:var(--mute);margin:16px 0 0}
+
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+caption{text-align:left;color:var(--mute);padding:0 0 12px;font-size:14px}
+th,td{text-align:left;padding:12px 10px;border-top:1px solid var(--line);vertical-align:middle}
+thead th{border-top:0;font:500 12px var(--mono);color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+td.num{font:600 15px var(--mono);white-space:nowrap}
+.bars{display:block;height:8px;border-radius:4px;background:var(--bg2);border:1px solid var(--line);min-width:90px;overflow:hidden}
+.bars i{display:block;height:100%;background:var(--acc)}
+.tw{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 14px 6px}
+@media (max-width:640px){.tw{padding:12px 10px 4px} th,td{padding:10px 6px;font-size:13.5px} .hide-s{display:none}}
+
+ul.feat{display:grid;gap:10px 28px;grid-template-columns:repeat(2,1fr);list-style:none;margin:0;padding:0}
+ul.feat li{padding-left:22px;position:relative;font-size:15px}
+ul.feat li::before{content:">";position:absolute;left:0;color:var(--acc);font:600 14px var(--mono)}
+@media (max-width:700px){ul.feat{grid-template-columns:1fr}}
+
+details{border-top:1px solid var(--line);padding:14px 0}
+details:last-of-type{border-bottom:1px solid var(--line)}
+summary{cursor:pointer;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:12px}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font:500 18px var(--mono);color:var(--acc)}
+details[open] summary::after{content:"-"}
+details p{margin:10px 0 0;color:var(--mute);max-width:70ch;font-size:15px}
+
+footer{margin-top:72px;border-top:1px solid var(--line);padding:30px 0 44px;color:var(--mute);font-size:14px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:14px 28px;justify-content:space-between}
+footer ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 18px}
+footer p{margin:0;max-width:56ch}
+footer a,.note a{display:inline-block;padding:4px 0}
+
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{transition:none!important;animation:none!important}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Spool, top of page">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="8" width="7" height="16" rx="2" fill="var(--line)"/><rect x="11" y="8" width="11" height="16" rx="2" fill="var(--acc)"/><rect x="24" y="8" width="6" height="16" rx="2" fill="var(--line)"/></svg>
+      spool
+    </a>
+    <nav aria-label="Main">
+      <ul>
+        <li class="opt"><a href="#why">Idea</a></li>
+        <li><a href="#install">Install</a></li>
+        <li class="opt"><a href="#keys">Keys</a></li>
+        <li class="opt"><a href="#cli">CLI</a></li>
+        <li class="opt"><a href="#speed">Speed</a></li>
+        <li><a class="gh" href="https://github.com/fskroes/Spool">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div id="top" class="hero">
+    <div class="wrap">
+      <p class="eyebrow">$ spool focus-right</p>
+      <h1>A scrolling window manager for macOS.</h1>
+      <p class="lead">Windows sit side by side on one endless strip. <strong>A new window never makes the other windows smaller.</strong> You move the view with the keyboard, a trackpad swipe or the CLI.</p>
+      <div class="hero-row">
+        <div class="cta">
+          <a class="btn primary" href="#install">Install from source</a>
+          <a class="btn" href="https://github.com/fskroes/Spool">View on GitHub</a>
+        </div>
+        <ul class="chips" aria-label="Facts">
+          <li>Free</li>
+          <li>Source on GitHub</li>
+          <li>CLI with JSON state</li>
+          <li>macOS 13 or later</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <section class="demo" aria-labelledby="demo-h" style="padding-top:12px">
+    <h2 id="demo-h" class="wrap" style="font-size:15px;font-family:var(--mono);font-weight:500;letter-spacing:0;color:var(--mute);margin-bottom:12px">Try it. <span class="kb-only">Click the strip, then press <kbd>→</kbd> or <kbd>⌃⌥L</kbd>.</span><span class="touch-only">Swipe the strip left or right.</span></h2>
+    <div class="panel ctl-top">
+      <div class="ctrls" role="group" aria-label="Strip controls">
+        <button class="btn" id="bL" type="button" aria-label="Focus left"><span aria-hidden="true">←</span> Left <kbd>⌃⌥H</kbd></button>
+        <button class="btn" id="bR" type="button" aria-label="Focus right">Right <span aria-hidden="true">→</span> <kbd>⌃⌥L</kbd></button>
+        <button class="btn" id="bN" type="button" aria-label="New window to the right of the focused one"><span aria-hidden="true">+</span> New window <kbd>N</kbd></button>
+        <button class="btn" id="bW" type="button" aria-label="Cycle the width of the focused column">Width <kbd>⌃⌥R</kbd></button>
+        <button class="btn" id="bF" type="button" aria-label="Toggle full width for the focused column" aria-pressed="false">Full width <kbd>⌃⌥F</kbd></button>
+        <span class="sp"></span>
+        <button class="btn" id="bX" type="button" aria-label="Reset the demo">Reset</button>
+      </div>
+    </div>
+    <div class="stage" id="stage" tabindex="0" role="group" aria-label="Interactive model of the strip. Arrow keys move focus. N opens a new window. R changes the width. F toggles full width. You can also swipe.">
+      <div class="shade" id="shL"></div>
+      <div class="shade" id="shR"></div>
+      <div class="frl" id="frl">your display</div>
+      <div class="fr" id="fr"></div>
+    </div>
+    <div class="panel">
+      <div class="mmwrap">
+        <div class="mmlab">minimap</div>
+        <div class="mm" id="mm" aria-hidden="true"></div>
+        <p class="status" id="status" aria-live="polite"></p>
+        <ul class="widths" id="widths" aria-label="Column widths as a share of the display"></ul>
+      </div>
+      <p class="hint">Open a few windows. Watch the widths list: only the new column has a new width. <span class="touch-only">On a phone, swipe the strip or use the buttons. </span>This page models the idea. The real app moves real windows.</p>
+    </div>
+  </section>
+
+  <section id="why" aria-labelledby="why-h">
+    <div class="wrap">
+      <p class="tag">The idea</p>
+      <h2 id="why-h">Scroll the view. Keep the size.</h2>
+      <p class="sub">A tiling manager cuts the screen into pieces. Open one more window and every piece gets smaller. Spool does not cut. It lays windows on a strip that is wider than the display.</p>
+      <div class="cmp">
+        <div class="cmp-card">
+          <h3>Grid</h3>
+          <p>The screen is shared. Each new window takes a part.</p>
+          <div class="box" role="img" id="gridBox" aria-label="A grid of windows that get narrower"><div class="row3" id="gRow"></div></div>
+        </div>
+        <div class="cmp-card">
+          <h3>Strip</h3>
+          <p>Each window keeps its width. The view moves.</p>
+          <div class="box" role="img" id="stripBox" aria-label="A strip of windows that keep their width"><div class="row3 strip3" id="sRow"></div></div>
+        </div>
+      </div>
+      <div class="cmp-ctl">
+        <button class="btn primary" id="cmpAdd" type="button">Open a window</button>
+        <button class="btn" id="cmpDel" type="button">Close a window</button>
+        <p class="cmp-note" id="cmpNote" role="status" aria-live="polite"></p>
+      </div>
+      <div class="fig">
+        <figure>
+          <img src="strip.svg" width="700" height="280" alt="Animation of the strip. Focus moves right. A new window opens to the right of the focused one. The other windows keep their width.">
+          <figcaption>The same picture is in the README. The dashed frame is your screen.</figcaption>
+        </figure>
+        <div class="facts">
+          <div><h3>No shrinking</h3><p>Opening a window never makes the other windows smaller. The strip gets longer. Your windows keep their width.</p></div>
+          <div><h3>One strip each</h3><p>Every display and every Space has its own strip. The strips come back after you restart the app.</p></div>
+          <div><h3>Move the view</h3><p>Use a key, a trackpad swipe or a CLI command. Springs move the view. A new key press changes the target of the move in progress, so the view never stops and starts again.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <p class="tag">Install</p>
+      <h2 id="install-h">Build it. Run it. One permission.</h2>
+      <p class="sub">There is no download. You build Spool from source. You need macOS 13 or later and the Xcode Command Line Tools.</p>
+      <div class="split">
+        <div class="pre">
+          <button class="copy" type="button" data-copy="git clone https://github.com/fskroes/Spool.git&#10;cd Spool&#10;SPOOL_UPDATES=off SIGN_IDENTITY=- make install&#10;open /Applications/Spool.app" aria-label="Copy the install commands">Copy</button>
+<pre tabindex="0"><span class="c"># once: xcode-select --install</span>
+git clone https://github.com/fskroes/Spool.git
+cd Spool
+<span class="p">SPOOL_UPDATES=off SIGN_IDENTITY=- make install</span>
+<span class="p">open /Applications/Spool.app</span></pre>
+        </div>
+        <ol class="steps">
+          <li><strong>make install</strong> builds <code>dist/Spool.app</code>, signs it ad hoc and copies it to <code>/Applications</code>. When you cannot write to <code>/Applications</code>, it uses <code>~/Applications</code>: then open <code>~/Applications/Spool.app</code>. It also links the <code>spool</code> tool to <code>~/.local/bin</code>. If that folder is not on your <code>PATH</code>, the install prints the line to add to <code>~/.zshrc</code>.</li>
+          <li><strong>Open the app.</strong> The guide at first launch asks for the Accessibility permission.</li>
+          <li><strong>Grant Accessibility</strong> in System Settings &gt; Privacy &amp; Security &gt; Accessibility. It is the only permission Spool needs.</li>
+        </ol>
+      </div>
+      <div class="fix" id="sign">
+        <p><strong>Why SIGN_IDENTITY=-?</strong> The release signing identity is only on the maintainer's Mac. Without it, a plain <code>make install</code> stops with "the local signing identity is not found". <code>SIGN_IDENTITY=-</code> signs your build ad hoc instead.</p>
+        <p><strong>Why SPOOL_UPDATES=off?</strong> Every build from this repository reads <code>Packaging/updates.env</code> and checks the maintainer's update feed on github.com. An update from that feed has the maintainer's signature, so your Mac would see a different app and Spool would lose the Accessibility permission. <code>SPOOL_UPDATES=off</code> builds an app with no update feed. It makes no network requests. To update, run <code>git pull</code> and the same <code>make install</code> again.</p>
+        <p>An ad hoc build gets a new signature each time you rebuild. After each rebuild, click Settings &gt; Mac Setup &gt; <strong>Reset Permission</strong> and turn Spool on again. With an Apple Development or Developer ID identity from Xcode, use <code>SIGN_IDENTITY="&lt;name or SHA-1&gt;" make install</code> instead. Details: <a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>.</p>
+        <p><strong>Status:</strong> personal signing, not notarized, build from source. The source is public, but there is no license file yet.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="keys" aria-labelledby="keys-h">
+    <div class="wrap">
+      <p class="tag">Shortcuts</p>
+      <h2 id="keys-h">Control and Option. Plain Option stays free.</h2>
+      <p class="sub">All default shortcuts use <kbd>⌃⌥</kbd>, so Option still types accented characters. Shift means move. Command means to the end.</p>
+      <div class="keys">
+        <div class="card"><h3>Focus</h3><dl>
+          <div class="row2"><dt>Left</dt><dd><kbd>⌃⌥H</kbd> <kbd>⌃⌥←</kbd></dd></div>
+          <div class="row2"><dt>Right</dt><dd><kbd>⌃⌥L</kbd> <kbd>⌃⌥→</kbd></dd></div>
+          <div class="row2"><dt>Up in stack</dt><dd><kbd>⌃⌥K</kbd> <kbd>⌃⌥↑</kbd></dd></div>
+          <div class="row2"><dt>Down in stack</dt><dd><kbd>⌃⌥J</kbd> <kbd>⌃⌥↓</kbd></dd></div>
+          <div class="row2"><dt>First / last</dt><dd><kbd>⌃⌥⌘←</kbd> <kbd>⌃⌥⌘→</kbd></dd></div>
+          <div class="row2"><dt>Place 1 to 8</dt><dd><kbd>⌃⌥1</kbd> to <kbd>⌃⌥8</kbd></dd></div>
+          <div class="row2"><dt>Last place</dt><dd><kbd>⌃⌥9</kbd></dd></div>
+        </dl></div>
+        <div class="card"><h3>Move</h3><dl>
+          <div class="row2"><dt>Column left</dt><dd><kbd>⌃⌥⇧H</kbd></dd></div>
+          <div class="row2"><dt>Column right</dt><dd><kbd>⌃⌥⇧L</kbd></dd></div>
+          <div class="row2"><dt>Window up in stack</dt><dd><kbd>⌃⌥⇧K</kbd></dd></div>
+          <div class="row2"><dt>Window down in stack</dt><dd><kbd>⌃⌥⇧J</kbd></dd></div>
+          <div class="row2"><dt>To first place</dt><dd><kbd>⌃⌥⇧⌘←</kbd></dd></div>
+          <div class="row2"><dt>To last place</dt><dd><kbd>⌃⌥⇧⌘→</kbd></dd></div>
+        </dl></div>
+        <div class="card"><h3>Width and stacks</h3><dl>
+          <div class="row2"><dt>Cycle preset widths</dt><dd><kbd>⌃⌥R</kbd></dd></div>
+          <div class="row2"><dt>Full width</dt><dd><kbd>⌃⌥F</kbd></dd></div>
+          <div class="row2"><dt>Wider / narrower</dt><dd><kbd>⌃⌥=</kbd> <kbd>⌃⌥-</kbd></dd></div>
+          <div class="row2"><dt>Center column</dt><dd><kbd>⌃⌥C</kbd></dd></div>
+          <div class="row2"><dt>Stack into left / right</dt><dd><kbd>⌃⌥[</kbd> <kbd>⌃⌥]</kbd></dd></div>
+          <div class="row2"><dt>Tabbed column</dt><dd><kbd>⌃⌥⇧T</kbd></dd></div>
+          <div class="row2"><dt>Start / stop</dt><dd><kbd>⌃⌥Q</kbd></dd></div>
+        </dl></div>
+      </div>
+      <p class="note">Trackpad: swipe left or right with 4 fingers, or with 3 when you choose that in Settings. Lift with speed to fling. The strip stops on a column edge. Every shortcut can be changed in Settings &gt; Shortcuts. Full list: <a href="https://github.com/fskroes/Spool/blob/main/docs/SHORTCUTS.md">docs/SHORTCUTS.md</a>.</p>
+    </div>
+  </section>
+
+  <section id="cli" aria-labelledby="cli-h">
+    <div class="wrap">
+      <p class="tag">Automation</p>
+      <h2 id="cli-h">A CLI that agents and scripts can read.</h2>
+      <p class="sub">The <code>spool</code> tool sends one request to the running app. It prints nothing when a command works. Add <code>--json</code> to get the full state for a script.</p>
+      <div class="split">
+        <div class="pre">
+          <button class="copy" type="button" data-copy="spool focus-right&#10;spool state&#10;spool state --json | jq -r '.state.displays[].columns[][].bundleID'&#10;spool stats&#10;open -g spool://focus-right" aria-label="Copy the CLI commands">Copy</button>
+<pre tabindex="0"><span class="p">spool</span> focus-right
+<span class="p">spool</span> state
+<span class="p">spool</span> state --json | jq -r '.state.displays[].columns[][].bundleID'
+<span class="p">spool</span> stats
+<span class="c"># the same commands as a URL</span>
+open -g spool://focus-right
+open spool://settings/shortcuts</pre>
+        </div>
+        <div>
+          <p class="mono" style="font-size:12px;color:var(--mute);margin:0 0 8px">Example output of <code>spool state</code>, from docs/CLI.md</p>
+<pre tabindex="0" aria-label="Example output of spool state">Engine: running. Accessibility: granted.
+Focused: Terminal "zsh" (window 202)
+Display: Built-in Retina Display (on, space 5)
+  [1] Safari "Apple" | [2*] Terminal "zsh" + Notes</pre>
+        </div>
+      </div>
+      <p class="note"><code>*</code> marks the focused column. <code>+</code> joins the windows of a stacked column. <code>spool stats</code> shows live frame write times, Spool's own part of them, command latency and the slowest apps. <strong>Raycast:</strong> the folder <code>Integrations/Raycast</code> has Script Commands for the main commands and a "Spool State" command. The <code>jq</code> line needs <a href="https://jqlang.github.io/jq/">jq</a> (<code>brew install jq</code>). More: <a href="https://github.com/fskroes/Spool/blob/main/docs/CLI.md">docs/CLI.md</a>.</p>
+    </div>
+  </section>
+
+  <section id="speed" aria-labelledby="speed-h">
+    <div class="wrap">
+      <p class="tag">Speed</p>
+      <h2 id="speed-h">Measured, with the budget next to it.</h2>
+      <p class="sub">Numbers from <code>make bench</code> on 2026-10-13. Apple silicon, macOS 26, load average 4.8. Your Mac will differ, so run the bench yourself.</p>
+      <div class="tw">
+        <table>
+          <caption>Bar length is the measured time as a share of the budget from docs/SPEC.md.</caption>
+          <thead><tr><th scope="col">Metric</th><th scope="col">Budget</th><th scope="col">Measured</th><th scope="col" class="hide-s"><span class="sr-only" style="position:absolute;left:-999px">Share of budget</span></th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Layout and placement of 50 columns, per frame</th><td class="num">&lt; 50 µs</td><td class="num">6.3 µs</td><td class="hide-s"><span class="bars" aria-hidden="true"><i style="width:12.6%"></i></span></td></tr>
+            <tr><th scope="row">Frame write, 6 apps with 2 ms AX latency each, p95 of 100 rounds</th><td class="num">&lt; 4 ms</td><td class="num">3.18 ms</td><td class="hide-s"><span class="bars" aria-hidden="true"><i style="width:79.5%"></i></span></td></tr>
+            <tr><th scope="row">Spool's part of that frame write, p95</th><td class="num">&lt; 1 ms</td><td class="num">0.12 ms</td><td class="hide-s"><span class="bars" aria-hidden="true"><i style="width:12%"></i></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Writing the same six frames one after the other takes 18.1 ms. Spool writes to each app on its own queue and keeps only the newest frame for a busy app. When all windows are at rest there is no timer and no display link. The rest of a frame write is the time apps and WindowServer need to answer the AX calls. Spool cannot make that shorter. Details: <a href="https://github.com/fskroes/Spool#performance">README</a>.</p>
+    </div>
+  </section>
+
+  <section id="features" aria-labelledby="feat-h">
+    <div class="wrap">
+      <p class="tag">Features</p>
+      <h2 id="feat-h">What is in the box.</h2>
+      <ul class="feat" style="margin-top:22px">
+        <li>Endless horizontal strip per display and per Space</li>
+        <li>Spring animations that follow a new key press at once</li>
+        <li>Minimap of the strip when the view moves</li>
+        <li>Stacks and tabbed columns</li>
+        <li>Preset widths, full width, wider and narrower</li>
+        <li>Center the focused column: never, on overflow, always</li>
+        <li>Trackpad swipe with 3 or 4 fingers, with fling and snap</li>
+        <li>Drag a window to a new place; resize from an edge sets the width</li>
+        <li>Multi-monitor, one strip each</li>
+        <li>Per-app rules: tile, float, fixed place</li>
+        <li>Focus border and dimming of other windows</li>
+        <li>Launch at login; the strips come back after a restart</li>
+        <li>Every shortcut can be changed</li>
+        <li>Local metrics and <code>spool report</code></li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="honest" aria-labelledby="status-h">
+    <div class="wrap">
+      <p class="tag">Honest status</p>
+      <h2 id="status-h">What you should know first.</h2>
+      <div style="margin-top:22px">
+        <details open>
+          <summary>Is there a download?</summary>
+          <p>No. Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. You build Spool from source with <code>make install</code>.</p>
+        </details>
+        <details>
+          <summary>Why not a plain make install?</summary>
+          <p>The release signing identity is only on the maintainer's Mac, so a plain <code>make install</code> stops for everyone else. The <a href="#sign">install section</a> explains the ad hoc build.</p>
+        </details>
+        <details>
+          <summary>What does Spool send out?</summary>
+          <p>Spool measures its own speed, cost and problems on your Mac. The metrics never leave your Mac. They keep no window titles and no keys. You can turn the metrics off in Settings &gt; General. The only network use is the Sparkle update check. A plain <code>make install</code> turns it on and checks the maintainer's feed on github.com. The install command on this page uses <code>SPOOL_UPDATES=off</code>, so that build makes no network requests.</p>
+        </details>
+        <details>
+          <summary>Is it open source?</summary>
+          <p>Not yet. The source is public on GitHub, but the repository has no license file. Until a license is added, the default copyright rules apply.</p>
+        </details>
+        <details>
+          <summary>Are there known limits?</summary>
+          <p>Window focus uses private SkyLight calls, as other window managers on macOS do. Trackpad swipes use the private MultitouchSupport framework. A future macOS can change them. Spool then falls back to normal app activation for focus.</p>
+        </details>
+        <details>
+          <summary>Can I use it on a work Mac?</summary>
+          <p>If your employer manages the Mac, ask IT first. See the install guide, section "Use on a managed work Mac".</p>
+        </details>
+        <details>
+          <summary>Was it called Striple?</summary>
+          <p>Yes. Spool had the name Striple before. <code>make install</code> replaces Striple, and Spool moves your settings at its first start. See the install guide, section "Upgrade from Striple".</p>
+        </details>
+        <details>
+          <summary>Is it a copy of another app?</summary>
+          <p>No. Spool is a clean-room app. It follows the public descriptions of niri and PaperWM and the public feature pages of similar macOS apps. No third-party binary was decompiled.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><strong style="color:var(--ink)">spool</strong><br>A scrolling window manager for macOS. Free. The source is on GitHub.</p>
+    <ul>
+      <li><a href="https://github.com/fskroes/Spool">Source on GitHub</a></li>
+      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">Install guide</a></li>
+      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/SHORTCUTS.md">Shortcuts</a></li>
+      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/CLI.md">CLI</a></li>
+      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/SPEC.md">Spec</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var stage=document.getElementById("stage"),mm=document.getElementById("mm"),
+      statusEl=document.getElementById("status"),widthsEl=document.getElementById("widths"),
+      fr=document.getElementById("fr"),frl=document.getElementById("frl"),
+      shL=document.getElementById("shL"),shR=document.getElementById("shR"),
+      bL=document.getElementById("bL"),bR=document.getElementById("bR"),bN=document.getElementById("bN"),
+      bW=document.getElementById("bW"),bF=document.getElementById("bF"),bX=document.getElementById("bX");
+  var rmq=window.matchMedia("(prefers-reduced-motion: reduce)");
+  var GAP=12,PAD=12,MAXC=9,K=260,C=2*Math.sqrt(K); /* critically damped */
+  var PRESETS=[1/3,1/2,2/3];
+  var NEWNAMES=["Notes","Safari","Finder","Preview","Music","Maps","Photos","Settings"];
+  var D={FW:900,V:876,H:300,narrow:false,scale:1,left:0};
+  var cols=[],focus=1,off={p:0,v:0,t:0},nextId=0,newCount=0,msg="",burst=0,running=false,last=0,mmBlocks=[],mmView;
+
+  function L(w,c){return '<i class="ln '+(c||"")+'" style="width:'+w+'%"></i>';}
+  var BODY={
+    Mail:function(){var s="";for(var i=0;i<5;i++){s+='<div class="row"><b class="dot"></b><span>'+L(46+i*7,"a")+L(86-i*8,"m")+'</span></div>';}return s;},
+    Editor:function(){var s="",ind=[0,1,1,2,2,1,0,0,1],w=[40,60,46,70,34,50,20,44,58];for(var i=0;i<9;i++){s+='<div class="code"><em>'+(i+1)+'</em><span style="padding-left:'+(ind[i]*14)+'px">'+L(w[i],i%3===0?"a":"")+'</span></div>';}return s;},
+    Terminal:function(){return '<pre class="term"><span class="p">$</span> spool focus-right\n<span class="p">$</span> spool stats\n<span class="d">Frame write: p95 ...</span>\n<span class="p">$</span> open -g spool://\n<span class="d">  focus-left</span>\n<span class="p">$</span> _</pre>';},
+    Docs:function(){return '<i class="h"></i>'+L(92)+L(84)+L(88)+L(60)+'<i class="h" style="width:38%;margin-top:14px"></i>'+L(90)+L(72)+L(80);},
+    Chat:function(){return '<div class="bub l">'+L(80,"m")+L(52,"m")+'</div><div class="bub r">'+L(70,"a")+'</div><div class="bub l">'+L(64,"m")+'</div><div class="bub r">'+L(48,"a")+'</div>';},
+    _:function(){return L(88)+L(70)+L(80)+L(52)+L(76)+L(60);}
+  };
+  function makeCol(name,frac){
+    var el=document.createElement("div");
+    el.className="win";
+    el.setAttribute("aria-hidden","true");
+    el.innerHTML='<div class="bar"><i></i><i></i><i></i><b>'+name+'</b></div><div class="wb">'+(BODY[name]||BODY._)()+'</div>';
+    stage.insertBefore(el,shL);
+    var mb=document.createElement("i");mb.className="b";mm.appendChild(mb);
+    return {id:nextId++,name:name,frac:frac,full:false,w:{p:0,v:0,t:0},el:el,mb:mb,isNew:false};
+  }
+  function reset(){
+    cols.forEach(function(c){c.el.remove();c.mb.remove();});
+    cols=[];nextId=0;newCount=0;
+    [["Mail",.40],["Editor",.50],["Terminal",.40],["Docs",.45],["Chat",.36]].forEach(function(a){cols.push(makeCol(a[0],a[1]));});
+    focus=1;msg="Ready. Five windows, one strip.";
+    if(!mm.contains(mmView)){mmView=document.createElement("i");mmView.className="v";mm.appendChild(mmView);}
+    layoutDims();
+    cols.forEach(function(c){c.w.p=c.w.t=tw(c);});
+    off.p=off.v=0;retarget();off.p=off.t;
+    render();updateUI();
+  }
+  function tw(c){return c.full?D.V:Math.min(c.frac*D.scale,1)*D.V;}
+  function layoutDims(){
+    var sw=stage.clientWidth;
+    D.narrow=sw<640;D.scale=D.narrow?1.7:1;
+    D.FW=Math.min(sw-32,980);D.V=D.FW-2*PAD;
+    D.H=D.narrow?220:Math.max(196,Math.min(320,window.innerHeight-430));D.left=(sw-D.FW)/2;
+    stage.style.height=(D.H+56)+"px";
+    var top=30;
+    fr.style.cssText="left:"+D.left+"px;top:"+top+"px;width:"+D.FW+"px;height:"+D.H+"px";
+    frl.style.left=D.left+"px";frl.style.top="8px";
+    shL.style.width=Math.max(0,D.left)+"px";shL.style.left="0";
+    shR.style.width=Math.max(0,D.left)+"px";shR.style.left=(D.left+D.FW)+"px";
+    cols.forEach(function(c){c.el.style.top=(top+PAD)+"px";c.el.style.height=(D.H-2*PAD)+"px";});
+  }
+  /* target layout */
+  function targets(){var x=0,a=[];cols.forEach(function(c){var w=tw(c);a.push({x:x,w:w});x+=w+GAP;});return {a:a,total:x-GAP};}
+  function retarget(){
+    var T=targets(),f=T.a[focus],cur=off.t;
+    if(f.x<cur)cur=f.x;
+    else if(f.x+f.w-cur>D.V)cur=f.x+f.w-D.V;
+    cur=Math.max(0,Math.min(cur,Math.max(0,T.total-D.V)));
+    off.t=cur;
+    cols.forEach(function(c,i){c.w.t=T.a[i].w;});
+  }
+  function settled(s){return Math.abs(s.p-s.t)<.05&&Math.abs(s.v)<.5;}
+  function anyMoving(){return !settled(off)||cols.some(function(c){return !settled(c.w);});}
+  function step(s,h){var a=-K*(s.p-s.t)-C*s.v;s.v+=a*h;s.p+=s.v*h;}
+  function snapAll(){off.p=off.t;off.v=0;cols.forEach(function(c){c.w.p=c.w.t;c.w.v=0;});}
+  function go(){
+    if(running)burst++;else burst=0;
+    if(rmq.matches){snapAll();render();return;}
+    if(!running){running=true;last=performance.now();requestAnimationFrame(tick);}
+  }
+  function tick(now){
+    var dt=Math.min((now-last)/1000,.05);last=now;
+    var n=Math.max(1,Math.ceil(dt/(1/240))),h=dt/n;
+    for(var i=0;i<n;i++){step(off,h);cols.forEach(function(c){step(c.w,h);});}
+    render();
+    if(anyMoving())requestAnimationFrame(tick);
+    else{snapAll();render();running=false;}
+  }
+  function render(){
+    var x=0,total=0;
+    cols.forEach(function(c,i){
+      var w=Math.max(0,c.w.p);
+      c.el.style.width=w+"px";
+      c.el.style.transform="translate3d("+(D.left+PAD+x-off.p)+"px,0,0)";
+      c.el.style.visibility=w<2?"hidden":"visible";
+      c._x=x;c._w=w;x+=w+GAP;
+    });
+    total=Math.max(x-GAP,D.V);
+    var mw=mm.clientWidth-16,s=mw/total;
+    cols.forEach(function(c,i){
+      c.mb.style.left=(8+c._x*s)+"px";c.mb.style.width=Math.max(2,c._w*s)+"px";
+      c.mb.className="b"+(i===focus?" f":"");
+    });
+    mmView.style.left=(8+off.p*s-2)+"px";mmView.style.width=(D.V*s+4)+"px";
+  }
+  function updateUI(){
+    cols.forEach(function(c,i){c.el.className="win "+(i===focus?"focus":"dim");});
+    var n=cols[focus].name;
+    statusEl.textContent="focus: "+n+"   column "+(focus+1)+" of "+cols.length+(msg?"   "+msg:"");
+    widthsEl.innerHTML=cols.map(function(c,i){
+      var pct=Math.round(tw(c)/D.V*100);
+      return '<li'+(c.isNew?' class="n"':'')+'>'+c.name+' <b>'+pct+'%</b></li>';
+    }).join("");
+    bF.setAttribute("aria-pressed",String(!!cols[focus].full));
+    bL.setAttribute("aria-disabled",String(focus===0));
+    bR.setAttribute("aria-disabled",String(focus===cols.length-1));
+    bN.setAttribute("aria-disabled",String(cols.length>=MAXC));
+  }
+  function apply(m){msg=m;retarget();updateUI();go();}
+  function move(d){
+    var n=focus+d;
+    if(n<0||n>=cols.length){msg=d<0?"Already at the first column.":"Already at the last column.";updateUI();return;}
+    focus=n;cols.forEach(function(c){c.isNew=false;});apply("Other widths: unchanged.");
+  }
+  function addWin(){
+    if(cols.length>=MAXC){msg="The demo holds 9 windows. Press Reset.";updateUI();return;}
+    var name=NEWNAMES[newCount%NEWNAMES.length];newCount++;
+    var c=makeCol(name,.42);cols.forEach(function(o){o.isNew=false;});c.isNew=true;
+    c.w.p=0;
+    cols.splice(focus+1,0,c);focus=focus+1;
+    layoutDims();render();
+    apply("Opened "+name+". Other widths: unchanged.");
+  }
+  function cycle(){
+    var c=cols[focus],i=0,best=9;
+    PRESETS.forEach(function(p,k){var d=Math.abs(p-c.frac);if(d<best){best=d;i=k;}});
+    c.frac=c.full?PRESETS[0]:PRESETS[(i+1)%PRESETS.length];c.full=false;
+    cols.forEach(function(o){o.isNew=false;});
+    apply("Only "+c.name+" changed width.");
+  }
+  function full(){
+    var c=cols[focus];c.full=!c.full;cols.forEach(function(o){o.isNew=false;});
+    apply("Only "+c.name+" changed width.");
+  }
+  bL.addEventListener("click",function(){move(-1);});
+  bR.addEventListener("click",function(){move(1);});
+  bN.addEventListener("click",addWin);
+  bW.addEventListener("click",cycle);
+  bF.addEventListener("click",full);
+  bX.addEventListener("click",function(){reset();});
+
+  document.addEventListener("keydown",function(e){
+    if(e.metaKey)return;
+    var t=e.target,tag=t&&t.tagName;
+    var onStage=t===stage;
+    var chord=e.ctrlKey&&e.altKey;
+    if(!chord&&!onStage)return;
+    if(!chord&&(e.ctrlKey||e.altKey))return;
+    var c=e.code,done=true;
+    if(c==="ArrowLeft"||c==="KeyH")move(-1);
+    else if(c==="ArrowRight"||c==="KeyL")move(1);
+    else if(c==="KeyR")cycle();
+    else if(c==="KeyF")full();
+    else if(!chord&&c==="KeyN")addWin();
+    else done=false;
+    if(done)e.preventDefault();
+  });
+
+  /* swipe and drag */
+  var drag=null;
+  stage.addEventListener("pointerdown",function(e){
+    if(e.pointerType==="mouse"&&e.button!==0)return;
+    drag={x:e.clientX,start:off.p,on:false,id:e.pointerId};
+  });
+  stage.addEventListener("pointermove",function(e){
+    if(!drag||e.pointerId!==drag.id)return;
+    var dx=e.clientX-drag.x;
+    if(!drag.on){if(Math.abs(dx)<6)return;drag.on=true;stage.classList.add("drag");try{stage.setPointerCapture(e.pointerId);}catch(_){}}
+    off.p=drag.start-dx;off.v=0;render();
+  });
+  function endDrag(e){
+    if(!drag||e.pointerId!==drag.id)return;
+    var dx=e.clientX-drag.x,on=drag.on;drag=null;stage.classList.remove("drag");
+    if(!on){stage.focus({preventScroll:true});return;}
+    if(Math.abs(dx)>48){move(dx>0?-1:1);if(running)return;}
+    cols.forEach(function(c){c.isNew=false;});retarget();go();
+    if(!running){snapAll();render();}
+  }
+  stage.addEventListener("pointerup",endDrag);
+  stage.addEventListener("pointercancel",endDrag);
+
+  var rt;
+  function onResize(){layoutDims();retarget();snapAll();render();updateUI();}
+  window.addEventListener("resize",function(){clearTimeout(rt);rt=setTimeout(onResize,60);});
+  if(window.ResizeObserver)new ResizeObserver(function(){clearTimeout(rt);rt=setTimeout(onResize,60);}).observe(stage);
+
+  /* grid versus strip */
+  var gRow=document.getElementById("gRow"),sRow=document.getElementById("sRow"),
+      stripBox=document.getElementById("stripBox"),cmpNote=document.getElementById("cmpNote"),nCmp=3;
+  function drawCmp(){
+    var g="",s="",pct=Math.round(100/nCmp);
+    for(var i=1;i<=nCmp;i++){g+='<div class="tile">'+i+'<small>'+pct+'%</small></div>';s+='<div class="tile">'+i+'<small>same width</small></div>';}
+    gRow.innerHTML=g;sRow.innerHTML=s;
+    var shift=Math.max(0,sRow.scrollWidth-sRow.clientWidth);
+    sRow.style.transform="translateX("+(-shift)+"px)";
+    cmpNote.textContent=nCmp+(nCmp===1?" window. ":" windows. ")+"Grid: each window gets "+pct+"% of the screen. Strip: each window keeps its width"+(shift>0?", and the view moves to the newest one.":".");
+  }
+  document.getElementById("cmpAdd").addEventListener("click",function(){if(nCmp<8)nCmp++;drawCmp();});
+  document.getElementById("cmpDel").addEventListener("click",function(){if(nCmp>1)nCmp--;drawCmp();});
+  window.addEventListener("resize",drawCmp);
+  drawCmp();
+
+  /* copy buttons */
+  Array.prototype.forEach.call(document.querySelectorAll(".copy"),function(b){
+    b.addEventListener("click",function(){
+      var txt=b.getAttribute("data-copy");
+      function ok(){b.textContent="Copied";setTimeout(function(){b.textContent="Copy";},1600);}
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(ok,function(){b.textContent="Select and press ⌘C";setTimeout(function(){b.textContent="Copy";},2400);});}
+      else{var ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");ok();}catch(_){}ta.remove();}
+    });
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>

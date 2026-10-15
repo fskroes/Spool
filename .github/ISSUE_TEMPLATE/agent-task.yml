@@ -1,0 +1,44 @@
+name: Agent task
+description: A bug or a small change for an agent to fix. The label "agent" hands it to the queue on the Mac mini.
+labels: ["agent"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only issues from the owner go to an agent. An agent reads the title and the fields below, and
+        nothing else in the thread. Write what you see, not a guess at the cause.
+  - type: textarea
+    id: happens
+    attributes:
+      label: What happens
+      description: What you see. Paste the output of `spool state` or `spool stats` when it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: The result you want. Name the feature (F1 to F24 in README.md) or the spec line when you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it
+      description: Steps, shortcuts or `spool` commands. Say which apps and how many displays.
+      placeholder: |
+        1. Open three Safari windows.
+        2. Press ctrl+option+L twice.
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Spool version and macOS version
+      description: "`spool --version` and `sw_vers -productVersion`"
+  - type: textarea
+    id: mark
+    attributes:
+      label: Mark or log lines
+      description: Optional. Lines from `~/Library/Logs/Spool/engine.log` or the path of a `spool mark`. No window titles you want to keep private.

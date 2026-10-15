@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280" width="700" height="280" role="img" aria-labelledby="t d">
+<title id="t">The Spool strip</title>
+<desc id="d">Focus moves right. A new window opens to the right of the focused one. The other windows keep their width.</desc>
+<style>
+:root{--bg:#f5f6f3;--win:#ffffff;--ink:#121614;--tb:#e9ece7;--ln:#c6cdc8;--ac:#0b6e5a;--mute:#4a524e}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1110;--win:#171e1b;--ink:#e6ece9;--tb:#232c28;--ln:#2d3833;--ac:#4fe0b5;--mute:#a1ada7}}
+.bg{fill:var(--bg)}
+.win{fill:var(--win);stroke:var(--ink);stroke-width:1.5}
+.tb{fill:var(--tb)}
+.dot{fill:var(--mute)}
+.ln{fill:var(--ln)}
+.nm{fill:var(--ink);font:600 14px ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.frame{fill:none;stroke:var(--ac);stroke-width:2.5;stroke-dasharray:7 5}
+.dim{fill:var(--bg);fill-opacity:.62;fill-rule:evenodd}
+.ring{fill:none;stroke:var(--ac);stroke-width:4}
+.cap{fill:var(--ink);font:600 17px ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;text-anchor:middle}
+.lab{fill:var(--ac);font:600 12px ui-monospace,Menlo,monospace}
+.all{animation:all 12s linear infinite}
+.strip{animation:strip 12s ease-in-out infinite}
+.ring{animation:ring 12s ease-in-out infinite}
+.fresh{animation:fresh 12s ease-in-out infinite}
+.shift{animation:shift 12s ease-in-out infinite}
+.c1{animation:c1 12s linear infinite}.c2{animation:c2 12s linear infinite}.c3{animation:c3 12s linear infinite}
+@keyframes all{0%,93%{opacity:1}95%,96%{opacity:0}99%,100%{opacity:1}}
+@keyframes strip{0%,58%{transform:translateX(0)}70%,95%{transform:translateX(-152px)}95.5%,100%{transform:translateX(0)}}
+@keyframes ring{0%,14%{transform:translateX(0)}26%,36%{transform:translateX(152px)}44%,95%{transform:translateX(304px)}95.5%,100%{transform:translateX(0)}}
+@keyframes fresh{0%,34%{opacity:0}42%,95%{opacity:1}95.5%,100%{opacity:0}}
+@keyframes shift{0%,34%{transform:translateX(0)}42%,95%{transform:translateX(152px)}95.5%,100%{transform:translateX(0)}}
+@keyframes c1{0%,7%{opacity:0}10%,28%{opacity:1}31%,100%{opacity:0}}
+@keyframes c2{0%,31%{opacity:0}34%,54%{opacity:1}57%,100%{opacity:0}}
+@keyframes c3{0%,57%{opacity:0}60%,92%{opacity:1}95%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){
+.all,.strip,.ring,.fresh,.shift,.c1,.c2{animation:none}
+.c3{animation:none;opacity:1}.c1,.c2{opacity:0}
+.strip{transform:translateX(-152px)}.ring{transform:translateX(304px)}.shift{transform:translateX(152px)}.fresh{opacity:1}
+}
+</style>
+<rect class="bg" width="700" height="280"/>
+<g class="all">
+<g class="strip">
+<g class="m"><rect class="win" x="20" y="40" width="140" height="170" rx="10"/><path class="tb" d="M20 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="34" cy="51" r="3"/><circle class="dot" cx="45" cy="51" r="3"/><circle class="dot" cx="56" cy="51" r="3"/><text class="nm" x="34" y="78">Mail</text><rect class="ln" x="34" y="84" width="100" height="6" rx="3"/><rect class="ln" x="34" y="100" width="70" height="6" rx="3"/><rect class="ln" x="34" y="116" width="112" height="6" rx="3"/><rect class="ln" x="34" y="132" width="60" height="6" rx="3"/><rect class="ln" x="34" y="148" width="90" height="6" rx="3"/></g>
+<g class="e"><rect class="win" x="172" y="40" width="140" height="170" rx="10"/><path class="tb" d="M172 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="186" cy="51" r="3"/><circle class="dot" cx="197" cy="51" r="3"/><circle class="dot" cx="208" cy="51" r="3"/><text class="nm" x="186" y="78">Editor</text><rect class="ln" x="186" y="84" width="100" height="6" rx="3"/><rect class="ln" x="186" y="100" width="70" height="6" rx="3"/><rect class="ln" x="186" y="116" width="112" height="6" rx="3"/><rect class="ln" x="186" y="132" width="60" height="6" rx="3"/><rect class="ln" x="186" y="148" width="90" height="6" rx="3"/></g>
+<g class="t"><rect class="win" x="324" y="40" width="140" height="170" rx="10"/><path class="tb" d="M324 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="338" cy="51" r="3"/><circle class="dot" cx="349" cy="51" r="3"/><circle class="dot" cx="360" cy="51" r="3"/><text class="nm" x="338" y="78">Terminal</text><rect class="ln" x="338" y="84" width="100" height="6" rx="3"/><rect class="ln" x="338" y="100" width="70" height="6" rx="3"/><rect class="ln" x="338" y="116" width="112" height="6" rx="3"/><rect class="ln" x="338" y="132" width="60" height="6" rx="3"/><rect class="ln" x="338" y="148" width="90" height="6" rx="3"/></g>
+<g class="shift"><g class="d"><rect class="win" x="476" y="40" width="140" height="170" rx="10"/><path class="tb" d="M476 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="490" cy="51" r="3"/><circle class="dot" cx="501" cy="51" r="3"/><circle class="dot" cx="512" cy="51" r="3"/><text class="nm" x="490" y="78">Docs</text><rect class="ln" x="490" y="84" width="100" height="6" rx="3"/><rect class="ln" x="490" y="100" width="70" height="6" rx="3"/><rect class="ln" x="490" y="116" width="112" height="6" rx="3"/><rect class="ln" x="490" y="132" width="60" height="6" rx="3"/><rect class="ln" x="490" y="148" width="90" height="6" rx="3"/></g><g class="c"><rect class="win" x="628" y="40" width="140" height="170" rx="10"/><path class="tb" d="M628 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="642" cy="51" r="3"/><circle class="dot" cx="653" cy="51" r="3"/><circle class="dot" cx="664" cy="51" r="3"/><text class="nm" x="642" y="78">Chat</text><rect class="ln" x="642" y="84" width="100" height="6" rx="3"/><rect class="ln" x="642" y="100" width="70" height="6" rx="3"/><rect class="ln" x="642" y="116" width="112" height="6" rx="3"/><rect class="ln" x="642" y="132" width="60" height="6" rx="3"/><rect class="ln" x="642" y="148" width="90" height="6" rx="3"/></g></g>
+<g class="fresh"><g class="n"><rect class="win" x="476" y="40" width="140" height="170" rx="10"/><path class="tb" d="M476 62V50a10 10 0 0 1 10-10h120a10 10 0 0 1 10 10v12z"/><circle class="dot" cx="490" cy="51" r="3"/><circle class="dot" cx="501" cy="51" r="3"/><circle class="dot" cx="512" cy="51" r="3"/><text class="nm" x="490" y="78">New</text><rect class="ln" x="490" y="84" width="100" height="6" rx="3"/><rect class="ln" x="490" y="100" width="70" height="6" rx="3"/><rect class="ln" x="490" y="116" width="112" height="6" rx="3"/><rect class="ln" x="490" y="132" width="60" height="6" rx="3"/><rect class="ln" x="490" y="148" width="90" height="6" rx="3"/></g></g>
+<rect class="ring" x="168" y="36" width="148" height="178" rx="13"/>
+</g>
+<path class="dim" d="M0 0H700V280H0Z M160 26H620V224H160Z"/>
+<rect class="frame" x="160" y="26" width="460" height="198" rx="8"/>
+<text class="lab" x="160" y="18">YOUR SCREEN</text>
+<text class="cap c1" x="350" y="258">Focus moves right.</text>
+<text class="cap c2" x="350" y="258">A new window opens to the right.</text>
+<text class="cap c3" x="350" y="258">The other windows keep their width.</text>
+</g>
+</svg>
