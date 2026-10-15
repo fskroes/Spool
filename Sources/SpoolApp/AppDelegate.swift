@@ -1,0 +1,149 @@
+import AppKit
+import Combine
+import SpoolCore
+import SpoolEngine
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMenuItemValidation {
+    private var model: AppModel!
+    private var statusMenu: StatusMenu?
+    private var ipc: IPCServer?
+    private var signalSources: [DispatchSourceSignal] = []
+    private var didLaunch = false
+    /// What the move from Striple did before the engine log was open (`LegacyApp.takeOver`).
+    var migration = LegacyMigration.Result()
+    /// URL commands that arrive before launch is complete run after auto-start.
+    private var pending: [Command] = []
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        let store = ConfigStore()
+        model = AppModel(store: store, engine: Engine(configStore: store))
+        // Registered here, not later, so the URL that launched the app is not lost.
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:reply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass),
+                                                     andEventID: AEEventID(kAEGetURL))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Updater.shared.windows.opened = { [weak model] in model?.windowOpened($0) }
+        Updater.shared.windows.closed = { [weak model] in model?.windowClosed($0) }
+        LoginItem.refreshAfterUpdate()
+        MainMenu.install(target: self)
+        statusMenu = StatusMenu(app: model)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(otherInstanceOpened),
+                                                            name: SingleInstance.reopenNotification, object: nil,
+                                                            suspensionBehavior: .deliverImmediately)
+
+        handleQuitSignals()
+        migration.lines.forEach { EngineLog.shared.log($0) }
+        LoginItem.restoreAfterRename(movedSettings: migration.movedSettings, configOn: model.store.config.behavior.launchAtLogin)
+        // Before the engine starts, so the start is counted. Records an unclean exit of the last run by itself.
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        model.engine.enableMetrics { MetricsStore(directory: SpoolPaths.metricsDirectory, appVersion: version) }
+        startIPC()
+        if model.store.config.behavior.autoStart { model.engine.start() }
+        didLaunch = true
+        for command in pending { model.engine.perform(command, source: .url) }
+        pending.removeAll()
+
+        // With a broken config.json the guide would save over the user's file when it closes.
+        if !model.store.config.behavior.onboardingDone, !model.store.fileHasError { model.openGuide() }
+    }
+
+    // `hasVisibleWindows` also counts the overlay panels (border, tab bars), so it does not tell if Settings is open.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        model.reopen()
+        return false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.recorder.stop()
+        ipc?.stop()
+        model.engine.stop()
+        model.engine.finishMetrics()
+        // Last: if the agent started this process, unregistering it makes launchd stop the process.
+        LoginItem.finishOffAtQuit(atQuit: true)
+    }
+
+    /// launchd (logout, `launchctl bootout`) and `kill` send signals, which skip `applicationWillTerminate`.
+    /// Without this, windows parked off screen would stay there. A normal quit restores them.
+    private func handleQuitSignals() {
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    /// The `spool` CLI and Raycast scripts talk to this socket. A failure only turns off the CLI.
+    private func startIPC() {
+        let engine = model.engine
+        let server = IPCServer(socketURL: SpoolPaths.socket) { engine.handle($0) }
+        do {
+            try server.start()
+            ipc = server
+        } catch {
+            EngineLog.shared.log("IPC server did not start: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func showAbout() { model.showAbout() }
+    @objc func checkForUpdates() { Updater.shared.checkForUpdates() }
+    @objc func openSettings() { model.openSettings() }
+    @objc func openHelp() { model.openSettings(.help) }
+    @objc func openGuide() { model.openGuide() }
+    @objc func openMacSetup() { model.openSettings(.macSetup) }
+    @objc func openConfig() { model.openConfigFile() }
+    @objc func revealLog() { model.revealLog() }
+
+    @objc private func otherInstanceOpened() { model.reopen() }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action == #selector(checkForUpdates) ? Updater.shared.canCheckForUpdates : true
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: text) else {
+            reject("a URL event without a valid URL")
+            return
+        }
+        switch URLRoute(url) {
+        case .settings(let tab):
+            model.openSettings(tab)
+        case .command(let command):
+            if didLaunch { model.engine.perform(command, source: .url) } else { pending.append(command) }
+        case .unknown:
+            reject(text)
+        }
+    }
+
+    private func reject(_ what: String) {
+        NSLog("Spool: unknown URL: %@", what)
+        NSSound.beep()
+    }
+}
+
+/// What a `spool://` URL asks for. `spool://open` and `spool://settings[/tab]` open the window;
+/// all other URLs are commands.
+enum URLRoute: Equatable {
+    case settings(SettingsTab?)
+    case command(Command)
+    case unknown
+
+    init(_ url: URL) {
+        guard url.scheme?.lowercased() == SpoolURL.scheme else { self = .unknown; return }
+        let host = (url.host ?? "").lowercased()
+        if host == "open" || host == "settings" {
+            let part = url.path.split(separator: "/").first.map { String($0).lowercased() }
+            self = .settings(part.flatMap(SettingsTab.init(rawValue:)))
+            return
+        }
+        self = SpoolURL.command(from: url).map(URLRoute.command) ?? .unknown
+    }
+}

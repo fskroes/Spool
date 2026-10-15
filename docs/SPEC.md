@@ -1,6 +1,6 @@
-# Striple specification
+# Spool specification
 
-Striple is a scrolling window manager for macOS. Windows sit side by side on an
+Spool is a scrolling window manager for macOS. Windows sit side by side on an
 endless horizontal strip, one strip per display and per Space. Opening a window
 never resizes the other windows.
 
@@ -25,7 +25,7 @@ test in `Tests/`.
 - A new window never changes the width of an existing column.
 - One strip per (display, Space) pair.
   - A window always goes to the strip of the display that has its Space, also when it is moved in Mission
-    Control to a Space of another display, also when no Space on screen changes. On a display Striple does not
+    Control to a Space of another display, also when no Space on screen changes. On a display Spool does not
     manage, it floats, and it tiles again when it is moved to a managed display.
 
 ### F2 Spring animation and instant shortcuts
@@ -54,10 +54,10 @@ test in `Tests/`.
 - The app or macOS can refuse a part of a size at a position (a window may not reach past a display edge there).
   So a window that got a new size away from its final position gets that size again on the last frame of the
   animation (`Engine.sizedAway`, `FrameWrite.resize`).
-- A window can close while Striple writes to it. Until the "window destroyed" notification arrives (about 40 ms
+- A window can close while Spool writes to it. Until the "window destroyed" notification arrives (about 40 ms
   later), a write to it gets `kAXErrorInvalidUIElement`. Such a write is a closed-window write
-  (`WriteResult.gone`), not an AX error: Striple does not retry it, it does not count in `AX errors`, and
-  `striple stats` shows it as `Closed-window writes`. An app whose writes in a tick all fail or are gone still
+  (`WriteResult.gone`), not an AX error: Spool does not retry it, it does not count in `AX errors`, and
+  `spool stats` shows it as `Closed-window writes`. An app whose writes in a tick all fail or are gone still
   counts as failing for the self-healing (F17).
 - Every other failed AX write counts in `AX errors`. `engine.log` names the window, the app, the AX call and the
   code, for example `ax: frame write to window 7 of com.x (pid 42) failed: size -25200 (failure)`. It logs the
@@ -124,17 +124,17 @@ test in `Tests/`.
 - Each display has its own strip, focus and scroll position.
 - A window that is out of view next to another display is clamped so it does not spill onto that display.
 - One shortcut sends the focused window to the next display.
-- Each display can be switched off. Striple does not move windows on a switched-off display.
+- Each display can be switched off. Spool does not move windows on a switched-off display.
 
 ### F13 Session restore
-- Column order, widths, stacks and tabbed mode are saved. After a restart of Striple they
+- Column order, widths, stacks and tabbed mode are saved. After a restart of Spool they
   come back without a reshuffle. Windows are matched by window ID first, then by app and title.
 - Windows of hidden apps and minimized windows keep their slot across a restart.
 - A restored strip scrolls so its focused column is in view, also when some saved windows are gone.
 - Windows of an app that does not answer during the restore wait for it. When it answers, each goes back
   after the window that came before it on the strip.
   - Many apps answer before they make their windows again. So for 5 s after the app answers, a new window of the
-    app takes a waiting place. Then Striple looks once more and drops the places that no window took.
+    app takes a waiting place. Then Spool looks once more and drops the places that no window took.
   - A waiting window does not move the focused window on screen.
   - A waiting window goes with its strip when that strip is restored to another Space or display.
   - A new window takes a waiting place only when it is on the Space of that place.
@@ -147,12 +147,12 @@ test in `Tests/`.
 
 ### F15 Per-app window rules and smart floating
 - A rule per app (picked from a list of running and installed apps): float, or a fixed slot on the strip.
-- Fixed-size windows (cannot resize) float automatically. Striple's own windows float.
+- Fixed-size windows (cannot resize) float automatically. Spool's own windows float.
 - Dialogs, sheets and other non-standard windows float.
 
 ### F16 Automation
-- `striple://` URL scheme for every command.
-- `striple` command-line tool for every command, plus `state` and `stats` queries.
+- `spool://` URL scheme for every command.
+- `spool` command-line tool for every command, plus `state` and `stats` queries.
 - Raycast script commands for the main commands.
 
 ### F17 Automatic updates, engine log and self-healing
@@ -189,8 +189,8 @@ test in `Tests/`.
 - Every setting change shows on screen at once. There is no Save button and no restart.
 
 ### F24 Local metrics and marks
-- Striple measures its own speed, cost, problems and use, and keeps the numbers on this Mac only:
-  one JSON file per local day in `~/Library/Application Support/Striple/metrics/`, kept 90 days.
+- Spool measures its own speed, cost, problems and use, and keeps the numbers on this Mac only:
+  one JSON file per local day in `~/Library/Application Support/Spool/metrics/`, kept 90 days.
 - No window titles, no key presses, no typed text. Apps are named by bundle ID. The note of a mark is the only user text.
 - Speed: frame write, command latency (to the first frame), command settle (to the end of the animation; with animations off, to the write of the frame) and the
   time between frames while an animation runs. Only a command that moves a window gives latency and settle; a
@@ -198,12 +198,12 @@ test in `Tests/`.
   memory, from `getrusage` and `proc_pid_rusage` at each save and at each engine start and stop. Problems: unclean
   exits, observer repairs, a lost permission, the focus fallback, config errors, refused shortcuts, apps that do
   not answer. Use: commands per source, columns per strip (when the number changes), swipes. Friction per app:
-  corrections, drags that Striple puts back, resizes, float changes, early resizes, focus bounces.
-- No repeating timer: the numbers are saved once 60 s after the first change, when `striple report` asks,
+  corrections, drags that Spool puts back, resizes, float changes, early resizes, focus bounces.
+- No repeating timer: the numbers are saved once 60 s after the first change, when `spool report` asks,
   and at quit. After a failed save, the next try waits 2 min, then 4 min, and so on up to 1 h, until a save works.
   Recording does no I/O.
-- `striple report [--days <n>] [--json]` reads the files (also when Striple does not run) and checks the live budget.
-- `striple mark [<note>]`, `⌃⌥⇧M`, the menu bar menu and `striple://mark` save a mark: the state without titles,
+- `spool report [--days <n>] [--json]` reads the files (also when Spool does not run) and checks the live budget.
+- `spool mark [<note>]`, `⌃⌥⇧M`, the menu bar menu and `spool://mark` save a mark: the state without titles,
   the stats, the numbers of today and the last 60 s of the engine log.
 - On by default. Settings > General turns it off at once (F23). Off: nothing is recorded or written.
   Details: `docs/METRICS.md`.
@@ -215,20 +215,20 @@ test in `Tests/`.
 | Layout compute, 50 columns | < 50 µs | `LayoutBenchmarkTests` |
 | Frame write, 6 apps at 2 ms AX latency each | p95 < 4 ms parallel, against 12 ms serial. The test gates the applier's own part: wall time minus the slowest write, p95 < 2 ms. The fake write sleeps, and a sleep runs over its time on a busy Mac. | `FrameApplierBenchmarkTests` (`make bench`) with a fake AX writer: 100 rounds, it prints the wall p50 and p95, the applier p95, the serial time and the load average |
 | Idle | no display link and no timer when nothing moves | `AnimatorTests` |
-| Striple's part of a frame write, same load | p95 < 1 ms: the wall time minus the AX time of the slowest app (`FrameTiming.ownMs`) | `FrameApplierBenchmarkTests.theOwnPartIsUnder1ms` (`make bench`) |
-| Live frame cost | p50 and p95 reported, and Striple's part of it | `striple stats` |
+| Spool's part of a frame write, same load | p95 < 1 ms: the wall time minus the AX time of the slowest app (`FrameTiming.ownMs`) | `FrameApplierBenchmarkTests.theOwnPartIsUnder1ms` (`make bench`) |
+| Live frame cost | p50 and p95 reported, and Spool's part of it | `spool stats` |
 
 ## Live budget
 
-`striple report` checks these targets against the metrics of real use (F24). Each one is a maximum.
-The table must match `MetricsBudget.live` in `Sources/StripleCore/Metrics.swift`.
+`spool report` checks these targets against the metrics of real use (F24). Each one is a maximum.
+The table must match `MetricsBudget.live` in `Sources/SpoolCore/Metrics.swift`.
 
 | Name | Limit | Unit | What it is |
 |---|---|---|---|
 | frame-write-p95 | 8 | ms | p95 of one frame write (all windows of one frame) |
-| frame-own-p95 | 1 | ms | p95 of Striple's part of one frame write: the wall time without the AX calls |
+| frame-own-p95 | 1 | ms | p95 of Spool's part of one frame write: the wall time without the AX calls |
 | command-latency-p95 | 16.7 | ms | p95 from a command to its first frame |
 | command-settle-p95 | 400 | ms | p95 from a command to the end of its animation |
 | slow-tick-ratio | 1 | % | frames later than 1.5 times the display period, in percent of all frames |
-| cpu-while-active | 1 | % | CPU time of Striple in percent of the time the engine ran |
+| cpu-while-active | 1 | % | CPU time of Spool in percent of the time the engine ran |
 | unclean-exits | 0 | count | runs that did not end with a clean quit |

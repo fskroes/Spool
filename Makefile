@@ -1,4 +1,4 @@
-# Striple build commands. Works with the Command Line Tools only (no Xcode needed).
+# Spool build commands. Works with the Command Line Tools only (no Xcode needed).
 
 TESTING_PLUGINS := $(shell xcode-select -p)/usr/lib/swift/host/plugins/testing
 SWIFT_TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc $(TESTING_PLUGINS),)
@@ -9,8 +9,8 @@ build:
 	swift build
 
 # SigningScriptTests run scripts/make-signing-cert.sh against a fake keychain tool (fake-keychain-tool, set
-# with STRIPLE_SECURITY). On a managed Mac the endpoint security tool can still report its keychain-like
-# arguments. The suite is opt-in (STRIPLE_SIGNING_TESTS=1), so `make test` and a plain `swift test` do not run it.
+# with SPOOL_SECURITY). On a managed Mac the endpoint security tool can still report its keychain-like
+# arguments. The suite is opt-in (SPOOL_SIGNING_TESTS=1), so `make test` and a plain `swift test` do not run it.
 test:
 	swift test $(SWIFT_TEST_FLAGS) --skip SigningScriptTests
 
@@ -20,38 +20,38 @@ test-quiet:
 	scripts/quiet-tests.sh
 # Only on a Mac where keychain-like test activity is allowed.
 test-signing:
-	STRIPLE_SIGNING_TESTS=1 swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
+	SPOOL_SIGNING_TESTS=1 swift test $(SWIFT_TEST_FLAGS) --filter SigningScriptTests
 
 # Performance budgets from docs/SPEC.md, measured in an optimized build.
 bench:
-	STRIPLE_BENCH=1 swift test -c release -Xswiftc -enable-testing $(SWIFT_TEST_FLAGS) --filter 'Benchmark'
+	SPOOL_BENCH=1 swift test -c release -Xswiftc -enable-testing $(SWIFT_TEST_FLAGS) --filter 'Benchmark'
 
 release:
 	swift build -c release
 
-# Builds dist/Striple.app. Signs with "Striple Local Signing" when that identity exists
+# Builds dist/Spool.app. Signs with "Striple Local Signing" when that identity exists
 # (scripts/make-signing-cert.sh), else ad hoc. With a pin in Packaging/updates.env, a missing
 # identity stops the build. SIGN_IDENTITY overrides (SIGN_IDENTITY=- for ad hoc). See docs/INSTALL.md.
 app:
 	./scripts/build-app.sh
 
-# Live end-to-end test: runs dist/Striple.app for real against the windows of a test app and checks
-# their frames. Never part of `make test`. Exit 2: refused (another Striple runs). See docs/E2E.md.
-# E2E_ARGS passes options to the runner, for example E2E_ARGS="--out /tmp/striple/e2e/mine".
+# Live end-to-end test: runs dist/Spool.app for real against the windows of a test app and checks
+# their frames. Never part of `make test`. Exit 2: refused (another Spool runs). See docs/E2E.md.
+# E2E_ARGS passes options to the runner, for example E2E_ARGS="--out /tmp/spool/e2e/mine".
 e2e: app
-	swift build --product striple-e2e
-	swift build --product striple-e2e-windows
-	"$$(swift build --show-bin-path)/striple-e2e" --app dist/Striple.app $(E2E_ARGS)
+	swift build --product spool-e2e
+	swift build --product spool-e2e-windows
+	"$$(swift build --show-bin-path)/spool-e2e" --app dist/Spool.app $(E2E_ARGS)
 
 # Draws the app icon into .build/icon/AppIcon.icns (make app does this when needed).
 icon:
 	swift scripts/make-icon.swift .build/icon
 
-# Makes dist/Striple-<version>.dmg from dist/Striple.app.
+# Makes dist/Spool-<version>.dmg from dist/Spool.app.
 dmg: app
 	./scripts/make-dmg.sh
 
-# Copies the app to /Applications and links the CLI to ~/.local/bin/striple.
+# Copies the app to /Applications and links the CLI to ~/.local/bin/spool.
 install: app
 	./scripts/install.sh
 
@@ -72,7 +72,7 @@ publish-finish:
 	./scripts/release.sh --finish
 
 run: app
-	open dist/Striple.app
+	open dist/Spool.app
 
 # Deletes the build output. Keeps dist/release/<version>/: `make publish-finish` needs it.
 clean:

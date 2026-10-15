@@ -79,4 +79,4 @@ PLUGINS="$(xcode-select -p 2>/dev/null)/usr/lib/swift/host/plugins/testing"
 FLAGS=()
 [[ -d "$PLUGINS" ]] && FLAGS=(-Xswiftc -plugin-path -Xswiftc "$PLUGINS")
 # Never the opt-in signing suite, also when the caller has the variable set.
-exec env -u STRIPLE_SIGNING_TESTS swift test ${FLAGS[@]+"${FLAGS[@]}"} "${FILTERS[@]}"
+exec env -u SPOOL_SIGNING_TESTS swift test ${FLAGS[@]+"${FLAGS[@]}"} "${FILTERS[@]}"

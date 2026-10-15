@@ -1,0 +1,639 @@
+import AppKit
+import ApplicationServices
+import Combine
+import Foundation
+import QuartzCore
+import SpoolCore
+
+/// The public face of the window engine. The app owns one instance.
+/// Everything runs on the main thread except AX frame writes, which run on per-app queues.
+@MainActor
+public final class Engine: ObservableObject {
+    public enum Status: Equatable, Sendable {
+        case stopped
+        case running
+        /// Accessibility permission is missing. The engine starts by itself once it is granted.
+        case noPermission
+    }
+
+    @Published public internal(set) var status: Status = .stopped
+    /// Shortcuts that macOS refused because another app or the system already uses them.
+    @Published public private(set) var refusedShortcuts: [KeyCombo] = []
+    public let configStore: ConfigStore
+
+    /// While true, global shortcuts are not registered, so the shortcut recorder can capture any combo.
+    public var hotkeysSuspended = false {
+        didSet { if hotkeysSuspended != oldValue { registerHotkeys() } }
+    }
+
+    // MARK: Parts
+
+    let log = EngineLog.shared
+    let writer: AXFrameWriter
+    let applier: FrameApplier
+    let overlays = Overlays()
+    /// Tests set this to read each minimap model instead of showing a panel.
+    var minimapSink: ((MinimapModel, EngineDisplay) -> Void)?
+    let recorder: StatsRecorder
+    var tracker: WindowTracker?
+    var hotkeys: Hotkeys?
+    var gestureTap: GestureTap?
+    var ticker: FrameTicker?
+    var mouseUpMonitor: Any?
+    var mouseDownMonitor: Any?
+    var mouseDraggedMonitor: Any?
+    var healthObserver: NSObjectProtocol?
+    var mouseMovedMonitor: Any?
+    var cancellables: Set<AnyCancellable> = []
+    var permissionTimer: Timer?
+    var permissionObserver: NSObjectProtocol?
+
+    // MARK: State
+
+    struct StripKey: Hashable {
+        var display: String
+        var space: UInt64
+    }
+
+    struct ManagedWindow {
+        enum State: Equatable { case tiled, floating, minimized, hidden, fullscreen }
+        var info: WindowInfo
+        var element: AXUIElement
+        var state: State
+        /// The strip the window is on, or was on before it left (minimized, hidden, fullscreen).
+        var key: StripKey?
+        /// 1-based column and width it had before it left the strip, so it comes back to the same place.
+        var slot: Int?
+        var width: ColumnWidth?
+        /// When Spool first saw the window (media time). 0 for windows that existed before Spool started.
+        var createdAt: Double
+        /// Floated with toggle-float (kept in the session), not by a rule.
+        var userFloating = false
+        /// Floats because it is on a display Spool does not manage. It tiles again when it is on a managed one.
+        var offDisplay = false
+        /// Where the window was parked when it left the strip (hidden or minimized while out of view).
+        /// Stop moves it back into view from here.
+        var parkedFrame: CGRect?
+    }
+
+    struct SwipeState {
+        var key: StripKey
+        /// Scroll without the rubber band; the strip shows `Policy.rubberBand(raw)`.
+        var raw: Double
+        var shown: Double
+    }
+
+    struct DragState {
+        var id: WindowID
+        var resize: Bool
+    }
+
+    var windows: [WindowID: ManagedWindow] = [:]
+    var strips: [StripKey: Strip] = [:]
+    var animators: [StripKey: FrameAnimator] = [:]
+    var layouts: [StripKey: LayoutResult] = [:]
+    /// Where each tiled window is on screen now (after parking), for overlays and focus-follows-mouse.
+    var placements: [WindowID: Layout.Placement] = [:]
+    /// Windows that got a new size away from their final position during this animation (see `sizedAway`).
+    var resizeAtEnd: Set<WindowID> = []
+    var displays: [EngineDisplay] = []
+    var activeSpaces: [String: UInt64] = [:]
+    /// The config the engine runs with. `configStore.config` changes after the publisher fires, so keep our own copy.
+    var config: Config
+    var startedAt: Double = 0
+    var restarts = 0
+    var swipe: SwipeState?
+    var drag: DragState?
+    /// Command start for the latency (first frame) and the settle time (end of its animation).
+    var commandClock = CommandClock()
+    /// Counts layout passes that changed a target frame, so `perform` knows whether its command moves a window.
+    var targetChanges = 0
+    var focusedID: WindowID?
+    var floatingBorderFrame: CGRect?
+    var suppressScrollFor: WindowID?
+    var sessionSaveWork: DispatchWorkItem?
+    var correctionWork: [WindowID: DispatchWorkItem] = [:]
+    var corrections: [WindowID: [Double]] = [:]
+    var lastFocusFollow: Double = 0
+    /// Where the left button went down, and whether the mouse has moved far enough since to be a drag.
+    var mouseDownAt: CGPoint?
+    var mouseDragging = false
+    /// The window under the cursor at the last left mouse-down. Only this window can be dragged.
+    var mouseDownWindow: WindowID?
+    /// Tiled windows that moved while the button was down without being a drag. Corrected after the release.
+    var buttonMoves: Set<WindowID> = []
+    /// Saved strips of Spaces that are not on screen, and saved floating windows not found yet.
+    /// Restored when they appear; included in every save so they are not lost.
+    var laterStrips: [SessionStrip] = []
+    var laterFloating: [WindowInfo] = []
+    /// Saved tiled windows of apps that did not answer during a restore. They go back to their slot when the app
+    /// answers; included in every save.
+    var heldWindows: [HeldWindow] = []
+    /// Apps that answered and still have held windows: the token of the timer that releases them. Many apps
+    /// answer before they make their windows again, so held windows wait a moment, and new windows of these apps
+    /// take held slots by app.
+    var heldGrace: [String: Int] = [:]
+    /// Never reset, so a timer from before a restart finds no token.
+    var heldGraceSerial = 0
+    /// Apps that were watched but did not answer a scan: the attempt of the next scan.
+    var quietRescans: [pid_t: Int] = [:]
+    /// Apps whose quiet rescans stopped before the app answered. Scanned again when the app is activated.
+    var staleApps: Set<pid_t> = []
+    /// When an app was last re-watched after its AX writes kept failing.
+    var healedAt: [pid_t: Double] = [:]
+
+    // MARK: Metrics (F24, Engine+Metrics.swift)
+
+    /// Nil until `enableMetrics` and when metrics were off since launch. Every record call is a no-op while the
+    /// store is disabled.
+    var metricsStore: MetricsStore?
+    var makeMetricsStore: (() -> MetricsStore)?
+    /// The AX queues record per-app write times through this box.
+    let metricsSink = MetricsSink()
+    /// Logs the first failed AX writes of each app (docs/SPEC.md F2).
+    let writeFailures = WriteFailureLog { EngineLog.shared.log($0) }
+    /// Writes the day file. Nil while metrics are off.
+    var metricsFlusher: MetricsFlusher?
+    /// CPU time and wakeups of the running engine, not counted yet.
+    var costMeter = CostMeter()
+    /// Since when the running time is not recorded yet. Nil while the engine does not run.
+    var activeSince: Double?
+    /// So `columnsPerStrip` gets a sample only when the count of a strip changes.
+    var columnCounts = ColumnCounts<StripKey>()
+
+    public convenience init(configStore: ConfigStore) {
+        self.init(configStore: configStore, frameWriter: nil, registersHotkeys: true)
+    }
+
+    /// `frameWriter` and `registersHotkeys: false` are for tests: an engine whose frames go to a fake writer and that
+    /// takes no shortcuts from the Mac.
+    init(configStore: ConfigStore, frameWriter: FrameWriter?, registersHotkeys: Bool) {
+        self.configStore = configStore
+        config = configStore.config
+        let w = AXFrameWriter()
+        let r = StatsRecorder()
+        let sink = metricsSink
+        let failures = writeFailures
+        writer = w
+        recorder = r
+        applier = FrameApplier(writer: frameWriter ?? w) { t in
+            r.record(write: t)
+            sink.record(write: t)
+            if t.failed { failures.record(t, bundleID: sink.bundleID(for: t.pid)) }
+        }
+        overlays.onTabClick = { [weak self] id in self?.perform(.focusWindow(id), source: .tab) }
+        configStore.$config
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] new in MainActor.assumeIsolated { self?.configChanged(new) } }
+            .store(in: &cancellables)
+        if registersHotkeys { registerHotkeys() }
+    }
+
+    // MARK: Lifecycle
+
+    public func start() {
+        guard status != .running else { return }
+        guard Permissions.isTrusted else {
+            status = .noPermission
+            waitForPermission()
+            return
+        }
+        stopWaitingForPermission()
+        startedAt = CACurrentMediaTime()
+        AX.setGlobalTimeout()
+        let tracker = WindowTracker(onEvent: { [weak self] in self?.handle($0) }, log: { [weak self] in self?.log.log($0) })
+        WindowTracker.current = tracker
+        self.tracker = tracker
+        let link = Ticker { [weak self] t in self?.tick(t) }
+        link.onInterval = { [weak self] interval, period in self?.metricsStore?.recordTick(intervalMs: interval, periodMs: period) }
+        ticker = link
+        status = .running
+        metricsEngineStarted()
+        refreshDisplays()
+        tracker.start()
+        scanAll(session: loadSession())
+        startGestures()
+        installMouseMonitors()
+        startHealthChecks()
+        // Spool windows behind other apps' windows (a click raised only one) come along before the first dim.
+        overlays.raiseOwnWindows(dimming: config.appearance.dimInactive)
+        relayoutAll(animate: false)
+        syncFocusWithSystem()
+        log.log("engine: started with \(windows.count) windows on \(strips.count) strips, \(displays.count) displays")
+    }
+
+    public func stop() {
+        switch status {
+        case .stopped: return
+        case .noPermission:
+            stopWaitingForPermission()
+            status = .stopped
+            return
+        case .running: break
+        }
+        tearDown(release: true)
+        status = .stopped
+        metricsStore?.record(.engineStop)
+        log.log("engine: stopped")
+    }
+
+    /// Stops every input first, so no new frame starts. Then saves the session (synchronously: at quit the
+    /// process ends right after) and, with `release`, moves parked windows back into view and waits for it.
+    private func tearDown(release: Bool) {
+        metricsEngineStopped()
+        ticker?.stop()
+        ticker = nil
+        gestureTap?.stop()
+        gestureTap = nil
+        removeMouseMonitors()
+        stopHealthChecks()
+        tracker?.stop()
+        WindowTracker.current = nil
+        tracker = nil
+        swipe = nil
+        drag = nil
+        saveSessionNow(sync: true)
+        if release { releaseAll() }
+        overlays.hideAll()
+        clearState()
+    }
+
+    // MARK: Self-healing (F17)
+
+    /// No timer: the check runs when an animation settles and when any app's Accessibility trust changes.
+    private func startHealthChecks() {
+        stopHealthChecks()
+        healthObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { MainActor.assumeIsolated { self?.checkHealth(trustChanged: true) } }
+        }
+    }
+
+    private func stopHealthChecks() {
+        if let o = healthObserver { DistributedNotificationCenter.default().removeObserver(o) }
+        healthObserver = nil
+    }
+
+    /// Two failures the engine can repair without a restart:
+    /// - The Accessibility permission was removed: every AX call fails. Stop and wait until it is back.
+    ///   Checked when the trust notification comes, and when writes fail (macOS versions without the notification).
+    /// - All writes to one app fail: its AX observer or elements are dead (the app restarted its AX server).
+    ///   Watch it again and take fresh window elements. At most once per 30 s per app.
+    func checkHealth(trustChanged: Bool = false) {
+        guard status == .running else { return }
+        let failing = applier.failingApps(threshold: 3)
+        guard trustChanged || !failing.isEmpty else { return }
+        if !Permissions.isTrusted {
+            // Not inside the ticker callback that may have called this: tearDown releases the ticker.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.status == .running, !Permissions.isTrusted else { return }
+                    self.log.log("engine: Accessibility permission was removed, waiting until it is given again")
+                    self.metricsStore?.record(.permissionLost)
+                    self.tearDown(release: false)
+                    self.status = .noPermission
+                    self.waitForPermission()
+                }
+            }
+            return
+        }
+        let now = CACurrentMediaTime()
+        for pid in failing {
+            applier.clearFailures(pid)
+            guard now - (healedAt[pid] ?? -.infinity) > 30 else { continue }
+            healedAt[pid] = now
+            log.log("tracker: AX writes to pid \(pid) keep failing, watching the app again")
+            healApp(pid)
+        }
+    }
+
+
+    public func restart() {
+        restarts += 1
+        metricsStore?.record(.engineRestart)
+        stop()
+        start()
+    }
+
+    public func toggle() { status == .stopped ? start() : stop() }
+
+    /// Forgets every window and app in the applier and the per-app stats. Apps can quit while the engine is stopped,
+    /// and a new app can then get the same pid: it must not inherit the old app's samples.
+    /// Reset the applier first: after that, a batch that is still running records no timings. In the other order,
+    /// a batch that lands between the two calls would put its app back into the stats. `between` runs between the
+    /// two calls; only tests use it, to land a batch there.
+    nonisolated static func resetWriteState(applier: FrameApplier, recorder: StatsRecorder, between: () -> Void = {}) {
+        applier.reset()
+        between()
+        recorder.forgetAllApps()
+    }
+
+    /// The completion of a tick's frame writes: records the frame-write time, Spool's own part of it and the
+    /// command latency, but not when the applier dropped a frame (the app quit or the engine stopped): then no
+    /// frame was written. `metrics` gets the same numbers. `settleAtWrite`: the animation ended on the tick of
+    /// this write, so the window is in place when the write lands, and the command settle is the latency.
+    nonisolated static func recordTick(_ recorder: StatsRecorder, metrics: MetricsStore? = nil,
+                                       commandStart: Double?, settleAtWrite: Bool = false,
+                                       now: @escaping @Sendable () -> Double = CACurrentMediaTime)
+        -> @Sendable (FrameApplier.FrameTiming?) -> Void {
+        { timing in
+            guard let timing else { return }
+            recorder.record(frameMs: timing.wallMs, ownMs: timing.ownMs, commandStart: commandStart)
+            guard let metrics else { return }
+            metrics.recordFrameWrite(ms: timing.wallMs, ownMs: timing.ownMs)
+            guard let commandStart else { return }
+            let latency = (now() - commandStart) * 1000
+            metrics.recordCommandLatency(ms: latency)
+            if settleAtWrite { metrics.recordCommandSettle(ms: latency) }
+        }
+    }
+
+    /// Forgets all windows. Does not move them.
+    func clearState() {
+        for id in windows.keys { writer.unregister(id) }
+        for pid in Set(windows.values.map(\.info.pid)) { writer.unregisterApp(pid) }
+        for w in correctionWork.values { w.cancel() }
+        correctionWork.removeAll()
+        corrections.removeAll()
+        windows.removeAll()
+        strips.removeAll()
+        animators.removeAll()
+        layouts.removeAll()
+        placements.removeAll()
+        Self.resetWriteState(applier: applier, recorder: recorder)
+        metricsSink.forgetAllApps()
+        writeFailures.clear()
+        commandClock.reset()
+        columnCounts.reset()
+        swipe = nil
+        drag = nil
+        focusedID = nil
+        floatingBorderFrame = nil
+        suppressScrollFor = nil
+        mouseDownAt = nil
+        mouseDragging = false
+        mouseDownWindow = nil
+        buttonMoves.removeAll()
+        laterStrips.removeAll()
+        laterFloating.removeAll()
+        heldWindows.removeAll()
+        heldGrace.removeAll()
+        quietRescans.removeAll()
+        staleApps.removeAll()
+        healedAt.removeAll()
+    }
+
+    private func waitForPermission() {
+        guard permissionTimer == nil else { return }
+        // The notification comes when any app's trust changes; the timer covers macOS versions that do not send it.
+        permissionObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { MainActor.assumeIsolated { self?.checkPermission() } }
+        }
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkPermission() }
+        }
+    }
+
+    private func checkPermission() {
+        guard status == .noPermission, Permissions.isTrusted else { return }
+        log.log("engine: Accessibility permission granted")
+        status = .stopped
+        start()
+    }
+
+    private func stopWaitingForPermission() {
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        if let o = permissionObserver { DistributedNotificationCenter.default().removeObserver(o) }
+        permissionObserver = nil
+    }
+
+    // MARK: Shortcuts
+
+    func registerHotkeys() {
+        if hotkeysSuspended {
+            hotkeys?.unregisterAll()
+            return
+        }
+        if hotkeys == nil {
+            hotkeys = Hotkeys { [weak self] command in
+                guard let self, !self.hotkeysSuspended else { return }
+                self.perform(command, source: .hotkey)
+            }
+        }
+        let failed = hotkeys?.register(config.bindings) ?? []
+        // Carbon accepts combos that macOS itself uses, so those are reported too.
+        let system = Hotkeys.systemShortcuts()
+        let taken = Set(config.bindings.values.joined()).intersection(system)
+        let before = Set(refusedShortcuts)
+        refusedShortcuts = Array(Set(failed).union(taken)).sorted { $0.usLabel < $1.usLabel }
+        let newlyRefused = Set(refusedShortcuts).subtracting(before).count
+        if newlyRefused > 0 { metricsStore?.record(.hotkeyRefused, count: newlyRefused) }
+        if !refusedShortcuts.isEmpty {
+            log.log("hotkeys: macOS refused \(refusedShortcuts.map(\.usLabel).joined(separator: ", "))")
+        }
+    }
+
+    // MARK: Commands
+
+    /// Runs a command from a shortcut, the CLI, a URL, the menu or a tab click. `source` is for the metrics.
+    /// `note` is the user's note of a `mark`.
+    public func perform(_ command: Command, source: CommandSource, note: String = "") {
+        if Self.recordsWhenStopped(command) { metricsStore?.record(command: command, source: source) }
+        switch command {
+        case .start: start(); return
+        case .stop: stop(); return
+        case .toggleEngine: toggle(); return
+        case .restart: restart(); return
+        case .mark: saveMark(note: note); return
+        default: break
+        }
+        guard status == .running else { return }
+        metricsStore?.record(command: command, source: source)
+        noteFriction(before: command)
+        commandClock.commandStarted(at: CACurrentMediaTime(), swiping: swipe != nil)
+        let changesBefore = targetChanges
+        switch command {
+        case .toggleFloat: toggleFloat()
+        case .sendToNextDisplay: sendToNextDisplay()
+        case .focusWindow(let id): focusFromCommand(id)
+        default: runStripCommand(command)
+        }
+        commandClock.performEnded(changedTargets: targetChanges != changesBefore)
+    }
+
+    private func runStripCommand(_ command: Command) {
+        guard let key = currentKey(), var strip = strips[key], let d = display(key.display) else { return }
+        let metrics = d.geometry.metrics(config.layout)
+        let before = strip
+        guard case .changed(let focus) = strip.apply(command, settings: config.layout, metrics: metrics) else { return }
+        if command != .centerColumn { strip.ensureFocusVisible(settings: config.layout, metrics: metrics) }
+        strips[key] = strip
+        relayout(key)
+        if strip.scroll != before.scroll || strip.focusedColumn != before.focusedColumn { showMinimap(key) }
+        if let focus, focus != focusedID { focusWindow(focus, scroll: true, fromCommand: true) }
+        scheduleSessionSave()
+    }
+
+    private func focusFromCommand(_ id: WindowID) {
+        guard let w = windows[id] else { return }
+        if w.state == .tiled, let key = w.key, var strip = strips[key], let d = display(key.display) {
+            strip.setFocus(id)
+            strip.ensureFocusVisible(settings: config.layout, metrics: d.geometry.metrics(config.layout))
+            strips[key] = strip
+            relayout(key)
+        }
+        focusWindow(id, scroll: true, fromCommand: true)
+    }
+
+    /// Answers a CLI request.
+    public func handle(_ request: IPCRequest) -> IPCResponse {
+        if let query = request.query {
+            switch query {
+            case .ping: return IPCResponse(ok: true)
+            case .state: return IPCResponse(ok: true, state: currentState())
+            case .stats: return IPCResponse(ok: true, stats: currentStats())
+            case .flushMetrics:
+                metricsFlusher?.flush(sync: true, force: true)
+                return IPCResponse(ok: true)
+            }
+        }
+        guard let command = request.command else { return IPCResponse(ok: false, error: "empty request") }
+        switch command {
+        case .mark:
+            guard metricsStore?.isEnabled == true else {
+                return IPCResponse(ok: false, error: "Metrics are off, so Spool saves no mark. Turn them on in Settings > General.")
+            }
+            perform(.mark, source: .cli, note: request.note ?? "")
+            return IPCResponse(ok: true)
+        case .start, .stop, .toggleEngine, .restart:
+            perform(command, source: .cli)
+            if status == .noPermission {
+                return IPCResponse(ok: false, error: "Spool needs the Accessibility permission. It starts when you allow it.")
+            }
+            return IPCResponse(ok: true)
+        case .focusWindow(let id) where status == .running && windows[id] == nil:
+            return IPCResponse(ok: false, error: "No window \(id) in Spool. Run: spool state")
+        default:
+            guard status == .running else {
+                let why = status == .noPermission ? "Spool needs the Accessibility permission" : "Spool is stopped (run: spool start)"
+                return IPCResponse(ok: false, error: why)
+            }
+            perform(command, source: .cli)
+            return IPCResponse(ok: true)
+        }
+    }
+
+    // MARK: State and stats
+
+    public func currentState() -> EngineState {
+        let ds = displays.map { d -> EngineState.DisplayState in
+            let space = activeSpaces[d.uuid] ?? 0
+            let strip = strips[StripKey(display: d.uuid, space: space)] ?? Strip()
+            return .init(id: d.uuid, name: d.name, enabled: !config.disabledDisplays.contains(d.uuid), spaceID: space,
+                         focusedColumn: strip.focusedColumn, scroll: strip.scroll, columns: strip.columns.map(\.windows))
+        }
+        let floating = windows.values.filter { $0.state == .floating }.map(\.info).sorted { $0.id < $1.id }
+        return EngineState(running: status == .running, accessibilityTrusted: Permissions.isTrusted,
+                           focusedWindow: focusedID.flatMap { windows[$0]?.info }, displays: ds, floating: floating)
+    }
+
+    public func currentStats() -> EngineStats {
+        let c = applier.stats
+        let r = recorder.snapshot()
+        return EngineStats(uptimeSeconds: status == .running ? CACurrentMediaTime() - startedAt : 0, framesWritten: r.batches,
+                           windowWrites: c.windowWrites, skippedWrites: c.skipped, coalescedWrites: c.coalesced, axErrors: c.errors,
+                           closedWindowWrites: c.gone,
+                           frameWriteP50: r.frameP50, frameWriteP95: r.frameP95, frameOwnP50: r.ownP50, frameOwnP95: r.ownP95,
+                           commandLatencyP50: r.commandP50,
+                           commandLatencyP95: r.commandP95, restarts: restarts,
+                           slowestApps: StatsRecorder.slowest(r.apps, bundleIDs: Dictionary(
+                               windows.values.map { ($0.info.pid, $0.info.bundleID) }, uniquingKeysWith: { a, _ in a })))
+    }
+
+    // MARK: Helpers
+
+    func display(_ uuid: String) -> EngineDisplay? { displays.first { $0.uuid == uuid } }
+
+    func display(containing point: CGPoint) -> EngineDisplay? {
+        Policy.displayIndex(for: point, frames: displays.map(\.geometry.frame)).map { displays[$0] }
+    }
+
+    func isDisabled(_ uuid: String) -> Bool { config.disabledDisplays.contains(uuid) }
+
+    /// The strip that is on screen on a display now.
+    func activeKey(_ d: EngineDisplay) -> StripKey { StripKey(display: d.uuid, space: activeSpaces[d.uuid] ?? 0) }
+
+    func isActive(_ key: StripKey) -> Bool { activeSpaces[key.display] == key.space && !isDisabled(key.display) }
+
+    /// The strip commands act on: the focused tiled window's strip, else the strip under the mouse.
+    func currentKey() -> StripKey? {
+        if let id = focusedID, let w = windows[id], w.state == .tiled, let k = w.key, isActive(k) { return k }
+        guard let d = display(containing: mouseLocation()) ?? displays.first, !isDisabled(d.uuid) else { return nil }
+        return activeKey(d)
+    }
+
+    func mouseLocation() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
+
+    func metrics(_ key: StripKey) -> StripMetrics? { display(key.display)?.geometry.metrics(config.layout) }
+}
+
+/// Timing samples, written from the AX queues and read on the main thread.
+final class StatsRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frame = SampleWindow()
+    private var own = SampleWindow()
+    private var command = SampleWindow()
+    private var batches = 0
+
+    /// `ownMs`: Spool's own part of `frameMs` (`FrameApplier.FrameTiming.ownMs`).
+    func record(frameMs: Double, ownMs: Double, commandStart: Double?) {
+        let now = CACurrentMediaTime()
+        lock.withLock {
+            frame.add(frameMs)
+            own.add(ownMs)
+            batches += 1
+            if let commandStart { command.add((now - commandStart) * 1000) }
+        }
+    }
+
+    struct App {
+        var ax = SampleWindow(capacity: 128)
+        var latency = SampleWindow(capacity: 128)
+        var writes = 0
+    }
+
+    private var apps: [pid_t: App] = [:]
+
+    func record(write t: FrameApplier.WriteTiming) {
+        lock.withLock {
+            apps[t.pid, default: App()].ax.add(t.axMs)
+            apps[t.pid]!.latency.add(t.latencyMs)
+            apps[t.pid]!.writes += 1
+        }
+    }
+
+    func forget(pid: pid_t) { lock.withLock { _ = apps.removeValue(forKey: pid) } }
+
+    func forgetAllApps() { lock.withLock { apps.removeAll() } }
+
+    /// The `limit` apps with the highest p95 AX write time, slowest first.
+    static func slowest(_ apps: [pid_t: App], bundleIDs: [pid_t: String], limit: Int = 5) -> [AppWriteStats] {
+        apps.map { pid, a in
+            AppWriteStats(bundleID: bundleIDs[pid] ?? "", pid: pid, writes: a.writes, axP50: a.ax.percentile(50),
+                          axP95: a.ax.percentile(95), latencyP95: a.latency.percentile(95))
+        }
+        .sorted { ($0.axP95, $0.pid) > ($1.axP95, $1.pid) }
+        .prefix(limit).map { $0 }
+    }
+
+    func snapshot() -> (batches: Int, frameP50: Double, frameP95: Double, ownP50: Double, ownP95: Double, commandP50: Double,
+                        commandP95: Double, apps: [pid_t: App]) {
+        lock.withLock {
+            (batches, frame.percentile(50), frame.percentile(95), own.percentile(50), own.percentile(95),
+             command.percentile(50), command.percentile(95), apps)
+        }
+    }
+}

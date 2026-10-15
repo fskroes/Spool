@@ -1,0 +1,504 @@
+import ApplicationServices
+import CoreGraphics
+import Testing
+@testable import SpoolCore
+@testable import SpoolEngine
+
+@Suite struct PolicyTests {
+    @Test func focusSteal() {
+        // A brand-new window of a running app, no input for 3 s: stealing.
+        #expect(Policy.isFocusSteal(windowAge: 0.2, secondsSinceInput: 3, appAge: 600))
+        // The user just pressed a key or clicked: allowed.
+        #expect(!Policy.isFocusSteal(windowAge: 0.2, secondsSinceInput: 0.3, appAge: 600))
+        // An old window: allowed (the user clicked it or switched to it).
+        #expect(!Policy.isFocusSteal(windowAge: 30, secondsSinceInput: 3, appAge: 600))
+        // A slow app that the user launched a few seconds ago: allowed.
+        #expect(!Policy.isFocusSteal(windowAge: 0.2, secondsSinceInput: 4, appAge: 5))
+    }
+
+    @Test func scrollDeltaFollowsTheFingers() {
+        var g = GestureSettings()
+        g.natural = true
+        g.sensitivity = 1
+        // Fingers move left a tenth of the trackpad: the strip scrolls right by a tenth of the view.
+        #expect(Policy.scrollDelta(dx: -0.1, viewWidth: 1000, settings: g) == 100)
+        g.natural = false
+        #expect(Policy.scrollDelta(dx: -0.1, viewWidth: 1000, settings: g) == -100)
+        g.sensitivity = 2
+        #expect(Policy.scrollDelta(dx: 0.1, viewWidth: 1000, settings: g) == 200)
+    }
+
+    @Test func scrollBoundsPerCenterMode() {
+        let m = StripMetrics(usableWidth: 1000, usableHeight: 800, gap: 10)
+        let strip = Strip(columns: (1...3).map { Column(window: WindowInfo(id: WindowID($0)), width: .proportion(0.5)) })
+        var s = LayoutSettings()
+        s.innerGap = 10
+        s.centerMode = .onOverflow
+        let p = strip.columnPositions(metrics: m)
+        let b = Policy.scrollBounds(strip, settings: s, metrics: m)
+        #expect(b.lower == 0)
+        #expect(abs(b.upper - (p.total - 1000)) < 0.001)
+        s.centerMode = .always
+        let c = Policy.scrollBounds(strip, settings: s, metrics: m)
+        #expect(abs(c.lower - (p.x[0] - (1000 - p.width[0]) / 2)) < 0.001)
+        #expect(abs(c.upper - (p.x[2] - (1000 - p.width[2]) / 2)) < 0.001)
+        #expect(Policy.scrollBounds(Strip(), settings: s, metrics: m) == (0, 0))
+    }
+
+    @Test func rubberBandResistsAndIsBounded() {
+        #expect(Policy.rubberBand(50, lower: 0, upper: 100, dimension: 200) == 50)
+        let a = Policy.rubberBand(150, lower: 0, upper: 100, dimension: 200)
+        let b = Policy.rubberBand(300, lower: 0, upper: 100, dimension: 200)
+        #expect(a > 100 && a < 150)
+        #expect(b > a)
+        #expect(Policy.rubberBand(1_000_000, lower: 0, upper: 100, dimension: 200) < 300)
+        let l = Policy.rubberBand(-50, lower: 0, upper: 100, dimension: 200)
+        #expect(l < 0 && l > -50)
+    }
+
+    @Test func sameFrameTolerance() {
+        let r = CGRect(x: 10, y: 10, width: 100, height: 100)
+        #expect(Policy.same(r, r.offsetBy(dx: 1.5, dy: -1)))
+        #expect(!Policy.same(r, r.offsetBy(dx: 3, dy: 0)))
+        #expect(!Policy.same(r, nil))
+    }
+
+    @Test func rectTextForLogs() {
+        #expect(Policy.text(CGRect(x: 10.4, y: -25.6, width: 800, height: 600)) == "10,-26 800x600")
+        #expect(Policy.text(CGRect(x: CGFloat.nan, y: 0, width: .infinity, height: 1)) == "?,0 ?x1")
+    }
+
+    @Test func displayLookup() {
+        let frames = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: 1000, y: 0, width: 1000, height: 800)]
+        #expect(Policy.displayIndex(for: CGPoint(x: 1500, y: 10), frames: frames) == 1)
+        // Off every display (a parked window's centre): the nearest one.
+        #expect(Policy.displayIndex(for: CGPoint(x: 2600, y: 10), frames: frames) == 1)
+        #expect(Policy.displayIndex(for: CGPoint(x: -300, y: 900), frames: frames) == 0)
+        #expect(Policy.displayIndex(for: .zero, frames: []) == nil)
+    }
+
+    @Test func nextDisplayGoesLeftToRightAndWraps() {
+        let frames = [CGRect(x: 1000, y: 0, width: 1000, height: 800), CGRect(x: -1200, y: 0, width: 1200, height: 900),
+                      CGRect(x: 0, y: 0, width: 1000, height: 800)]
+        #expect(Policy.nextDisplay(after: 1, frames: frames) == 2)
+        #expect(Policy.nextDisplay(after: 2, frames: frames) == 0)
+        #expect(Policy.nextDisplay(after: 0, frames: frames) == 1)
+        #expect(Policy.nextDisplay(after: 0, frames: [frames[0]]) == nil)
+    }
+
+    @Test func bringIntoView() {
+        let area = CGRect(x: 0, y: 25, width: 1000, height: 775)
+        // Parked at the right edge with a 1 pt sliver.
+        let parked = CGRect(x: 999, y: 799, width: 500, height: 700)
+        #expect(Policy.bringIntoView(parked, area: area) == CGRect(x: 500, y: 100, width: 500, height: 700))
+        // Too big: shrunk to the area.
+        #expect(Policy.bringIntoView(CGRect(x: -10, y: 0, width: 2000, height: 2000), area: area) == area)
+        let inside = CGRect(x: 100, y: 100, width: 300, height: 300)
+        #expect(Policy.bringIntoView(inside, area: area) == inside)
+    }
+
+    @Test func translateKeepsRelativePlace() {
+        let a = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let b = CGRect(x: 1000, y: 0, width: 2000, height: 1000)
+        let f = CGRect(x: 900, y: 0, width: 100, height: 100) // right edge of a
+        #expect(Policy.translate(f, from: a, to: b) == CGRect(x: 2900, y: 0, width: 100, height: 100))
+        let big = CGRect(x: 0, y: 0, width: 3000, height: 100)
+        #expect(Policy.translate(big, from: b, to: a).width == 1000)
+    }
+
+    @Test func adoptedWidthIsAProportionInRange() {
+        let m = StripMetrics(usableWidth: 1000, usableHeight: 800, gap: 10)
+        guard case .proportion(let p) = Policy.adoptedWidth(495, metrics: m) else { Issue.record("not a proportion"); return }
+        #expect(abs(p - 0.5) < 0.001)
+        #expect(Policy.adoptedWidth(5000, metrics: m) == .proportion(1))
+        #expect(Policy.adoptedWidth(1, metrics: m) == .proportion(0.05))
+    }
+}
+
+@Suite struct ReleaseAndDragTests {
+    let display = DisplayGeometry(frame: CGRect(x: 0, y: 0, width: 1200, height: 900),
+                                  usable: CGRect(x: 0, y: 25, width: 1200, height: 875),
+                                  neighborLeft: false, neighborRight: false, neighborBelow: false)
+
+    @Test func releaseUsesTheAnimationTargetNotTheLastFrame() {
+        // Stopped in the middle of an animation: the window goes to the place it was moving to.
+        let target = CGRect(x: 300, y: 35, width: 500, height: 600)
+        #expect(Policy.releaseFrame(target: target, known: CGRect(x: 120, y: 35, width: 500, height: 600),
+                                    display: display, settings: LayoutSettings()) == target)
+    }
+
+    @Test func releaseBringsAParkedTargetIntoView() {
+        let r = Policy.releaseFrame(target: CGRect(x: 2000, y: 35, width: 500, height: 600), known: nil,
+                                    display: display, settings: LayoutSettings())
+        #expect(r.map { display.usable.contains($0) } == true)
+    }
+
+    @Test func releaseOfAHiddenWindowUsesItsParkedFrame() {
+        // Parked at the bottom right corner with a 1 pt sliver, then the app was hidden.
+        let parked = CGRect(x: 1199, y: 899, width: 500, height: 600)
+        let r = Policy.releaseFrame(target: nil, known: parked, display: display, settings: LayoutSettings())
+        #expect(r == CGRect(x: 700, y: 300, width: 500, height: 600))
+        #expect(Policy.releaseFrame(target: nil, known: nil, display: display, settings: LayoutSettings()) == nil)
+    }
+
+    @Test func onlyAMovedMouseIsADrag() {
+        #expect(!Policy.isDrag(from: nil, to: CGPoint(x: 50, y: 50)))
+        #expect(!Policy.isDrag(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 12, y: 13)))
+        #expect(Policy.isDrag(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 15, y: 10)))
+    }
+
+    // Round 2 finding N2: a mouse drag anywhere while the strip animates took over animating windows.
+    // Round 2 finding N3: windows of a healed app on other Spaces lost their notifications.
+    @Test func healingObservesEveryManagedWindow() {
+        let plan = Policy.healPlan(managed: [1: "old1", 2: "old2", 3: "old3"], fresh: [1: "new1", 3: "new3", 9: "unmanaged"])
+        #expect(plan.observe == [1: "new1", 2: "old2", 3: "new3"])
+        #expect(plan.renewed == [1, 3])
+    }
+
+    @Test func onlyThePressedWindowCanBeDragged() {
+        #expect(Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        #expect(Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: 7))
+        // Another window that moves because Spool animates the strip.
+        #expect(!Policy.isUserDrag(window: 8, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        // The pressed window, but at a frame Spool wrote: selecting text while it animates.
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: true, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: false, pressedWindow: 7, ownFrame: false, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: nil, ownFrame: false, currentDrag: nil))
+        #expect(!Policy.isUserDrag(window: 7, mouseMoved: true, pressedWindow: 7, ownFrame: false, currentDrag: 9))
+    }
+
+    // Round 3 finding: a resize that started outside the window edge was neither adopted nor corrected.
+    @Test func aPressJustOutsideTheEdgeBelongsToTheWindow() {
+        let a = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let b = CGRect(x: 404, y: 0, width: 400, height: 300)
+        let order: [(id: WindowID, bounds: CGRect)] = [(1, a), (2, b)]
+        // 3 pt right of A's edge, in the gap.
+        #expect(Policy.pressedWindow(at: CGPoint(x: 403, y: 100), frontToBack: order, slop: 0) == nil)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 403, y: 100), frontToBack: order, slop: 8) == 1)
+        // Inside B but within A's margin: the front window wins, as in the window server.
+        #expect(Policy.pressedWindow(at: CGPoint(x: 406, y: 100), frontToBack: order, slop: 8) == 1)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 406, y: 100), frontToBack: [(2, b), (1, a)], slop: 8) == 2)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 900, y: 100), frontToBack: order, slop: 8) == nil)
+    }
+
+    @Test func aMoveWhileTheButtonIsDownIsCorrectedUnlessItIsADragOrOurs() {
+        #expect(Policy.correctAfterRelease(isUserDrag: false, ownFrame: false))
+        #expect(!Policy.correctAfterRelease(isUserDrag: true, ownFrame: false))
+        #expect(!Policy.correctAfterRelease(isUserDrag: false, ownFrame: true))
+    }
+
+    // Round 3 finding: windows of a hidden app got columns that show nothing.
+    @Test func windowsOfHiddenAppsLeaveTheStrip() {
+        let tiled: [WindowID: pid_t] = [10: 100, 11: 100, 20: 200, 30: 300]
+        #expect(Policy.windowsToHide(tiled: tiled, hiddenApps: [100, 300]) == [10, 11, 30])
+        #expect(Policy.windowsToHide(tiled: tiled, hiddenApps: []) == [])
+    }
+
+    // Round 3 finding: healing a hung app dropped its working observer before the new one existed.
+    @Test func aRewatchKeepsTheOldObserverWhenTheNewOneFails() {
+        #expect(WindowTracker.replace(old: "old", make: { nil as String? }) == nil)
+        let plan = WindowTracker.replace(old: "old", make: { "new" })
+        #expect(plan?.install == "new")
+        #expect(plan?.drop == "old")
+        var made = 0
+        _ = WindowTracker.replace(old: nil as String?, make: { made += 1; return "first" })
+        #expect(made == 1)
+    }
+
+    @Test func spaceOfARemovedDisplay() {
+        let known: [String: Set<UInt64>] = ["A": [1, 2], "B": [5]]
+        #expect(Policy.spaceExists(2, onDisplay: "A", known: known))
+        // macOS has not moved Space 5 to display A (yet): the column must go to A's current Space.
+        #expect(!Policy.spaceExists(5, onDisplay: "A", known: known))
+        #expect(Policy.spaceExists(5, onDisplay: "Z", known: ["Main": [5]]))
+        #expect(Policy.spaceExists(9, onDisplay: "A", known: [:]))
+        #expect(Policy.spaceExists(0, onDisplay: "A", known: known))
+    }
+
+    // Round 4 finding: a restored strip kept the saved scroll, so after windows were closed the rest were parked.
+    @Test func aRestoredStripScrollsToItsFocusedColumn() {
+        let m = StripMetrics(usableWidth: 1000, usableHeight: 800, gap: 10)
+        let settings = LayoutSettings()
+        let saved = Strip(columns: (1...2).map { Column(window: WindowInfo(id: WindowID($0)), width: .proportion(0.5)) },
+                          focusedColumn: 1, scroll: 3000)
+        let strip = Policy.restoredStrip(saved, into: nil, settings: settings, metrics: m)
+        let p = strip.columnPositions(metrics: m)
+        let x = p.x[strip.focusedColumn] - strip.scroll
+        #expect(x >= 0 && x + p.width[strip.focusedColumn] <= m.usableWidth)
+        // Into a strip that has windows: the saved columns go to the end, the focus stays.
+        let existing = Strip(columns: [Column(window: WindowInfo(id: 9), width: .proportion(0.5))])
+        let merged = Policy.restoredStrip(saved, into: existing, settings: settings, metrics: m)
+        #expect(merged.allWindows.map(\.id) == [9, 1, 2])
+        #expect(merged.focusedColumn == 0)
+        #expect(merged.scroll <= 0.5)
+    }
+
+    // Round 4 finding: parked windows (1 pt slivers at the edge) took focus-follows-mouse and presses.
+    @Test func parkedWindowsAreNotUnderTheMouse() {
+        let sliver = CGRect(x: 1439, y: 0, width: 1, height: 900)
+        let visible = CGRect(x: 800, y: 0, width: 636, height: 900)
+        let order: [(id: WindowID, bounds: CGRect)] = [(5, sliver), (6, visible)]
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1439.5, y: 400), frontToBack: order, slop: 0, parked: [5]) == nil)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1434, y: 400), frontToBack: order, slop: 8, parked: [5]) == 6)
+        #expect(Policy.pressedWindow(at: CGPoint(x: 1434, y: 400), frontToBack: order, slop: 8) == 5)
+    }
+
+    // Round 4 finding: a hidden window on another Space was put back on the Space on screen.
+    @Test func aWindowGoesBackToItsOwnSpace() {
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [1], active: 2) == 1)
+        // Moved to the Space on screen, or its Space is gone: the Space on screen.
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [2], active: 2) == 2)
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [3], active: 2) == 3)
+        // Spaces cannot be read: the Space on screen. No Spaces at all: 0.
+        #expect(Policy.putBackSpace(old: 1, windowSpaces: [], active: 2) == 2)
+        #expect(Policy.putBackSpace(old: 0, windowSpaces: [], active: 0) == 0)
+    }
+
+    // Round 4 finding: a drop onto a disabled display reordered the window to the end of its own strip.
+    @Test func aDropOntoADisabledDisplayPutsTheWindowBack() {
+        #expect(Policy.dropKind(dropDisplay: "B", ownDisplay: "A", dropDisplayDisabled: true) == .putBack)
+        #expect(Policy.dropKind(dropDisplay: nil, ownDisplay: "A", dropDisplayDisabled: false) == .putBack)
+        #expect(Policy.dropKind(dropDisplay: "B", ownDisplay: "A", dropDisplayDisabled: false) == .otherDisplay)
+        #expect(Policy.dropKind(dropDisplay: "A", ownDisplay: "A", dropDisplayDisabled: false) == .reorder)
+    }
+
+    // Round 4 finding: watching an app stopped after about 5 s, so a busy app was never tiled.
+    @Test func watchRetriesGoOnForAboutTwoMinutes() {
+        let delays = (1...40).compactMap { Policy.watchRetryDelay(attempt: $0) }
+        #expect(delays.count == 30)
+        #expect(delays.prefix(6).reduce(0, +) == 5.25)
+        #expect(delays.allSatisfy { $0 <= 5 })
+        #expect((115...135).contains(delays.reduce(0, +)))
+    }
+
+    // Round 4 finding: hidden and minimized windows lost their slot when Spool restarted.
+    @Test func theSessionKeepsTheSlotsOfHiddenAndMinimizedWindows() {
+        func col(_ id: WindowID) -> Column { Column(window: WindowInfo(id: id), width: .proportion(0.5)) }
+        // [1, B, A, 4] lost A (slot 3) and then B (slot 2). Focus is on 4.
+        let strips = ["k": Strip(columns: [col(1), col(4)], focusedColumn: 1)]
+        let off: [(info: WindowInfo, key: String, slot: Int?, width: ColumnWidth?)] = [
+            (WindowInfo(id: 3), "k", 3, .proportion(0.7)),
+            (WindowInfo(id: 2), "k", 2, nil),
+            (WindowInfo(id: 8), "other", nil, nil),
+        ]
+        let out = Policy.stripsForSession(strips, offStrip: off, defaultWidth: .proportion(0.5))
+        #expect(out["k"]?.allWindows.map(\.id) == [1, 2, 3, 4])
+        #expect(out["k"]?.focusedColumn == 3)
+        #expect(out["k"]?.columns[2].width == .proportion(0.7))
+        #expect(out["other"]?.allWindows.map(\.id) == [8])
+        // Saved and restored, the order stays.
+        let session = Session(strips: [SessionStrip(displayID: "D", spaceID: 0, strip: out["k"]!)], floating: [])
+        let back = session.restore(live: (1...4).map { WindowInfo(id: WindowID($0)) })
+        #expect(back.strips.first?.strip.allWindows.map(\.id) == [1, 2, 3, 4])
+    }
+
+    // Round 5 finding: each retry waited for all three notifications of a hung app (about 0.75 s on main).
+    @Test func registeringStopsAtTheFirstTimeout() {
+        var calls: [String] = []
+        let hung = Policy.registerUntilHung(["a", "b", "c"]) { calls.append($0); return $0 == "a" ? .success : .cannotComplete }
+        #expect(calls == ["a", "b"])
+        #expect(hung.registered == 1 && hung.hung)
+
+        calls = []
+        let ok = Policy.registerUntilHung(["a", "b", "c"]) { calls.append($0); return $0 == "b" ? .failure : .success }
+        #expect(calls == ["a", "b", "c"])
+        #expect(ok.registered == 2 && !ok.hung)
+    }
+
+    // Round 5 finding: a tiled window at another window level (video player "Float on Top") counted as closed.
+    @Test func windowsAtEveryLevelExist() {
+        let list: [[String: Any]] = [
+            [kCGWindowNumber as String: NSNumber(value: 10), kCGWindowLayer as String: 0],
+            [kCGWindowNumber as String: NSNumber(value: 11), kCGWindowLayer as String: 3],
+            [kCGWindowNumber as String: NSNumber(value: 12), kCGWindowLayer as String: 25],
+            [kCGWindowLayer as String: 0],
+        ]
+        #expect(WindowList.ids(in: list) == [10, 11, 12])
+    }
+
+    // Round 5 finding: the AX timeout covered app elements only, so a hung app's window could block for 6 s.
+    @Test func theGlobalTimeoutCanBeSet() {
+        #expect(AX.setGlobalTimeout() == .success)
+    }
+
+    // Round 6 finding: with the global 0.25 s timeout, a slow app's writes counted as errors and it was healed.
+    @Test func aTimedOutFrameWriteCountsAsSent() {
+        #expect(Policy.writeResult([(.size, .success), (.position, .success)]) == .written)
+        #expect(Policy.writeResult([(.size, .success), (.position, .cannotComplete)]) == .written)
+        #expect(Policy.writeResult([(.position, .cannotComplete)]) == .written)
+        #expect(Policy.writeResult([]) == .written)
+        #expect(Policy.writeResult([(.size, .failure)]) == .failed(call: .size, code: -25200))
+    }
+
+    // Follow-up of the sub-ms frames work: the live stats showed 2 AX errors, both writes to a Teams window that
+    // had just closed (kAXErrorInvalidUIElement, -25202). A closed window is gone, not an AX error.
+    @Test func aWriteToAClosedWindowIsGoneNotFailed() {
+        #expect(Policy.writeResult([(.size, .invalidUIElement)]) == .gone)
+        #expect(Policy.writeResult([(.size, .success), (.position, .invalidUIElement)]) == .gone)
+        // The window closed between the calls: a later failure of the same write is part of the close.
+        #expect(Policy.writeResult([(.size, .invalidUIElement), (.position, .failure)]) == .gone)
+        // The first real failure is the one reported.
+        #expect(Policy.writeResult([(.size, .success), (.position, .attributeUnsupported)])
+                == .failed(call: .position, code: AXError.attributeUnsupported.rawValue))
+        #expect(Policy.writeResult([(.size, .apiDisabled), (.position, .failure)])
+                == .failed(call: .size, code: AXError.apiDisabled.rawValue))
+    }
+
+    @Test func axErrorCodesHaveNames() {
+        #expect(Policy.axErrorName(-25200) == "failure")
+        #expect(Policy.axErrorName(-25202) == "invalid UI element")
+        #expect(Policy.axErrorName(-25204) == "cannot complete")
+        #expect(Policy.axErrorName(-25211) == "API disabled")
+        #expect(Policy.axErrorName(-25214) == "not enough precision")
+        #expect(Policy.axErrorName(1) == "unknown")
+    }
+
+    // Round 6 finding: the hit test skipped tiled windows above level 0, so they could not be dragged.
+    @Test func managedWindowsAtOtherLevelsCanBePressed() {
+        func entry(_ id: UInt32, layer: Int, pid: Int32 = 50) -> [String: Any] {
+            [kCGWindowNumber as String: NSNumber(value: id), kCGWindowLayer as String: layer,
+             kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 100, height: 100).dictionaryRepresentation]
+        }
+        let list = [entry(1, layer: 3), entry(2, layer: 25), entry(3, layer: 0), entry(4, layer: 0, pid: 99)]
+        let ids = Engine.hitCandidates(list, ownPID: 99, managed: [1]).map(\.id)
+        #expect(ids == [1, 3])
+        #expect(Policy.pressedWindow(at: CGPoint(x: 50, y: 50), frontToBack: Engine.hitCandidates(list, ownPID: 99, managed: [1]),
+                                     slop: 0, parked: []) == 1)
+    }
+
+    // Round 7 finding: after the quiet rescans gave up, a watched app was never scanned again.
+    // Round 8 finding: held windows kept the key of their saved strip, even when that strip was restored to another
+    // key, so they were never released and a save put them in a strip of their own.
+    @Test func heldWindowsWaitInTheStripTheirSavedStripWasRestoredTo() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(5), "D2": 6]
+        func key(_ d: String, _ s: UInt64, into: [K: K] = [:], known: Set<UInt64> = [5, 6, 7]) -> K {
+            Policy.heldKey(saved: K(display: d, space: s), restoredInto: into, activeSpaces: active, knownSpaces: known, fallbackDisplay: "D1")
+        }
+        // Restored somewhere else: go with the strip.
+        #expect(key("D1", 99, into: [K(display: "D1", space: 99): K(display: "D2", space: 6)]) == K(display: "D2", space: 6))
+        // On screen: stays.
+        #expect(key("D1", 5) == K(display: "D1", space: 5))
+        // Its Space is on screen on another display.
+        #expect(key("D1", 6) == K(display: "D2", space: 6))
+        // A known Space not on screen: waits there.
+        #expect(key("D2", 7) == K(display: "D2", space: 7))
+        // An unknown Space (after a restart), or no saved Space: the Space on screen of its display.
+        #expect(key("D2", 99) == K(display: "D2", space: 6))
+        #expect(key("D2", 0) == K(display: "D2", space: 6))
+        // Its display is gone: the fallback display.
+        #expect(key("GONE", 99) == K(display: "D1", space: 5))
+        #expect(Policy.heldGraceDelay >= 3)
+    }
+
+    // Round 10 finding: a strip key could pair a display with a Space of another display (never shown).
+    @Test func aStripKeyNeverPairsADisplayWithASpaceOfAnotherDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2]
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [1]) == K(display: "D1", space: 1))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [2]) == K(display: "D2", space: 2))
+        // A Space not on screen goes to the display that has it; an unknown one stays with the display asked for.
+        let all: () -> [String: Set<UInt64>] = { ["D1": [1, 8], "D2": [2, 9], "Main": [7]] }
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [9], allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [8], allSpaces: all) == K(display: "D1", space: 8))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [7], allSpaces: all) == K(display: "D1", space: 7))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: [9]) == K(display: "D1", space: 9))
+        // No Space information.
+        #expect(Policy.stripKey(display: "D1", activeSpaces: [:], windowSpaces: [2]) == K(display: "D1", space: 0))
+        #expect(Policy.stripKey(display: "D1", activeSpaces: active, windowSpaces: []) == K(display: "D1", space: 1))
+
+        #expect(Policy.heldWindowFits(heldSpace: 2, floats: false, windowSpaces: [2, 3]))
+        #expect(!Policy.heldWindowFits(heldSpace: 1, floats: false, windowSpaces: [2]))
+        #expect(Policy.heldWindowFits(heldSpace: 1, floats: false, windowSpaces: []))
+        #expect(Policy.heldWindowFits(heldSpace: 0, floats: false, windowSpaces: [2]))
+        #expect(Policy.heldWindowFits(heldSpace: 1, floats: true, windowSpaces: [2]))
+    }
+
+    // Round 11 finding: a window moved in Mission Control to a Space of another display (or put back while it was
+    // there) kept its old display, so its strip was never shown.
+    @Test func aWindowMovedToASpaceOfAnotherDisplayGoesToThatDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2]
+        let all: () -> [String: Set<UInt64>] = { ["D1": [1, 8], "D2": [2, 9]] }
+        let old = K(display: "D1", space: 1)
+        #expect(Policy.respacedKey(old: old, windowSpaces: [2], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 2))
+        #expect(Policy.respacedKey(old: old, windowSpaces: [9], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.respacedKey(old: old, windowSpaces: [8], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 8))
+        // Not moved, no Space information, or one Space for all displays: no change.
+        #expect(Policy.respacedKey(old: old, windowSpaces: [1, 2], activeSpaces: active, allSpaces: all) == nil)
+        #expect(Policy.respacedKey(old: old, windowSpaces: [], activeSpaces: active, allSpaces: all) == nil)
+        #expect(Policy.respacedKey(old: K(display: "D1", space: 0), windowSpaces: [2], activeSpaces: [:]) == nil)
+
+        // Put back: the old Space when the window is still there, else the Space it is on now, on its display.
+        #expect(Policy.putBackKey(old: old, windowSpaces: [1], activeSpaces: active, allSpaces: all) == old)
+        #expect(Policy.putBackKey(old: K(display: "D1", space: 8), windowSpaces: [8], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 8))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [9], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 9))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [2], activeSpaces: active, allSpaces: all) == K(display: "D2", space: 2))
+        #expect(Policy.putBackKey(old: old, windowSpaces: [], activeSpaces: active, allSpaces: all) == K(display: "D1", space: 1))
+        #expect(Policy.putBackKey(old: K(display: "D1", space: 0), windowSpaces: [9], activeSpaces: [:]) == K(display: "D1", space: 0))
+    }
+
+    // Round 14 finding: the check of an off-display float was dropped during a swipe or a drag, so it stayed
+    // floating on a managed display.
+    @Test func anOffDisplayFloatIsCheckedAfterADragOrSwipeEnds() {
+        func step(_ state: Engine.ManagedWindow.State, off: Bool = false, user: Bool = false, drag: Bool = false,
+                  swipe: Bool = false, mouse: Bool = false, anim: Bool = false) -> Policy.CorrectionStep {
+            Policy.correctionStep(state: state, offDisplay: off, userFloating: user, dragging: drag, swiping: swipe,
+                                  mouseDown: mouse, animating: anim)
+        }
+        #expect(step(.floating, off: true, swipe: true) == .wait)
+        #expect(step(.floating, off: true, drag: true) == .wait)
+        #expect(step(.floating, off: true, mouse: true) == .wait)
+        #expect(step(.floating, off: true) == .respaceOnly)
+        #expect(step(.floating, off: true, anim: true) == .respaceOnly)
+        // The user's floats and rule floats are not Spool's to move.
+        #expect(step(.floating, off: true, user: true) == .drop)
+        #expect(step(.floating) == .drop)
+        // Tiled windows: as before.
+        #expect(step(.tiled) == .correct)
+        #expect(step(.tiled, anim: true) == .wait)
+        #expect(step(.tiled, swipe: true) == .drop)
+        #expect(step(.tiled, drag: true) == .drop)
+        #expect(step(.minimized, off: true) == .drop)
+    }
+
+    // Round 12 findings: a window moved in Mission Control to the Space on screen of another display was put back,
+    // and a window that floated on a disabled display never tiled again on a managed one.
+    @Test func aWindowFollowsItsSpaceAndTilesAgainOnAManagedDisplay() {
+        typealias K = Engine.StripKey
+        let active = ["D1": UInt64(1), "D2": 2, "OFF": 3]
+        let off: (String) -> Bool = { $0 == "OFF" }
+        let old = K(display: "D1", space: 1)
+        func act(_ state: Engine.ManagedWindow.State, user: Bool = false, offDisplay: Bool = false, key: K? = old,
+                 spaces: [UInt64] = [], here: K? = nil) -> Policy.RespaceAction {
+            Policy.respaceAction(state: state, userFloating: user, offDisplay: offDisplay, key: key, windowSpaces: spaces,
+                                 activeSpaces: active, here: { here }, isDisabled: off)
+        }
+        // Tiled: the active Space of no display changed, but the window is on D2's Space now.
+        #expect(act(.tiled, spaces: [2]) == .move(from: old, to: K(display: "D2", space: 2)))
+        #expect(act(.tiled, spaces: [1]) == .stay)
+        #expect(act(.tiled, spaces: []) == .stay)
+        #expect(act(.tiled, spaces: [3]) == .float(from: old))
+        // Floating because of its display: it tiles where it is when that display is managed.
+        #expect(act(.floating, offDisplay: true, here: K(display: "D1", space: 1)) == .tile(K(display: "D1", space: 1)))
+        #expect(act(.floating, offDisplay: true, key: nil, here: K(display: "D2", space: 2)) == .tile(K(display: "D2", space: 2)))
+        #expect(act(.floating, offDisplay: true, here: nil) == .stay)
+        // The user's floats, rule floats and windows off the strip for another reason stay as they are.
+        #expect(act(.floating, user: true, offDisplay: true, here: old) == .stay)
+        #expect(act(.floating, here: old) == .stay)
+        #expect(act(.minimized, offDisplay: true, spaces: [2], here: old) == .stay)
+    }
+
+    @Test func anActivatedAppIsScannedAgainWhenSpoolGaveUpOrHoldsItsWindows() {
+        func r(watching: Bool = true, waiting: Bool = false, pending: Bool = false, gaveUp: Bool = false, holds: Bool = false) -> Bool {
+            Policy.rescanOnActivate(watching: watching, waiting: waiting, rescanPending: pending, gaveUp: gaveUp, holdsWindows: holds)
+        }
+        #expect(!r())
+        #expect(r(watching: false))
+        #expect(r(gaveUp: true))
+        #expect(r(holds: true))
+        #expect(!r(watching: false, waiting: true))
+        #expect(!r(pending: true, gaveUp: true))
+    }
+}

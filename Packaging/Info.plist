@@ -1,41 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Template for Striple.app/Contents/Info.plist.
-  scripts/build-app.sh replaces the __STRIPLE_*__ values with plutil and adds the
+  Template for Spool.app/Contents/Info.plist.
+  scripts/build-app.sh replaces the __SPOOL_*__ values with plutil and adds the
   Sparkle keys (SUFeedURL, SUPublicEDKey, SUEnableAutomaticChecks) only when
-  STRIPLE_FEED_URL and STRIPLE_ED_PUBLIC_KEY are set.
+  SPOOL_FEED_URL and SPOOL_ED_PUBLIC_KEY are set.
 -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Striple</string>
+	<string>Spool</string>
 	<key>CFBundleExecutable</key>
-	<string>Striple</string>
+	<string>Spool</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.fskroes.Striple</string>
+	<string>com.fskroes.Spool</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Striple</string>
+	<string>Spool</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>__STRIPLE_VERSION__</string>
+	<string>__SPOOL_VERSION__</string>
 	<key>CFBundleVersion</key>
-	<string>__STRIPLE_BUILD__</string>
+	<string>__SPOOL_BUILD__</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.fskroes.Striple</string>
+			<string>com.fskroes.Spool</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>striple</string>
+				<string>spool</string>
 			</array>
 		</dict>
 	</array>
@@ -48,7 +48,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>__STRIPLE_COPYRIGHT__</string>
+	<string>__SPOOL_COPYRIGHT__</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

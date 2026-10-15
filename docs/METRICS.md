@@ -1,17 +1,17 @@
 # Metrics
 
-Striple measures its own speed, its cost and the problems it has, on your Mac only. You read the numbers with
-`striple report`. This page tells what Striple measures, where the files are, how to read the report, and how to
+Spool measures its own speed, its cost and the problems it has, on your Mac only. You read the numbers with
+`spool report`. This page tells what Spool measures, where the files are, how to read the report, and how to
 turn it off.
 
 ## Privacy
 
-- Local only. Striple sends nothing. No part of the metrics opens a network connection.
+- Local only. Spool sends nothing. No part of the metrics opens a network connection.
 - No window titles, no key presses, no text that you type. A mark keeps the note that you give it, and nothing else
   that you typed.
 - Apps are named by their bundle ID only (for example `com.apple.Safari`).
-- Striple keeps 90 days. It deletes older day files by itself. It always keeps the newest 90 days that have a
-  file, so a clock that is far ahead cannot delete real data, and if you use Striple only on some days, you keep
+- Spool keeps 90 days. It deletes older day files by itself. It always keeps the newest 90 days that have a
+  file, so a clock that is far ahead cannot delete real data, and if you use Spool only on some days, you keep
   your last 90 days of use.
 
 ## Turn it on or off
@@ -23,43 +23,43 @@ Mac (local only)**, or set this in `config.json`:
 "metrics": { "enabled": false }
 ```
 
-The change applies at once, without a restart. When metrics are off, Striple records nothing and writes no metrics
+The change applies at once, without a restart. When metrics are off, Spool records nothing and writes no metrics
 file. The files that are already there stay.
 
-To delete the data, quit Striple and delete the folder `~/Library/Application Support/Striple/metrics`.
+To delete the data, quit Spool and delete the folder `~/Library/Application Support/Spool/metrics`.
 **Open metrics folder** in Settings > General shows it in Finder.
 
 ## Where the files are
 
 | File | What it is |
 |---|---|
-| `~/Library/Application Support/Striple/metrics/YYYY-MM-DD.json` | The numbers of one local day |
-| `~/Library/Application Support/Striple/metrics/YYYY-MM-DD.local.json` | Only when `YYYY-MM-DD.json` is from a newer Striple or cannot be read. Striple never replaces that file and writes the numbers of this run here. The report adds the two files together |
-| `~/Library/Application Support/Striple/metrics/running` | Exists while Striple runs. If it is there at launch, the last run did not quit cleanly |
-| `~/Library/Application Support/Striple/metrics/marks/<date and time>/` | One mark (see "Marks") |
+| `~/Library/Application Support/Spool/metrics/YYYY-MM-DD.json` | The numbers of one local day |
+| `~/Library/Application Support/Spool/metrics/YYYY-MM-DD.local.json` | Only when `YYYY-MM-DD.json` is from a newer Spool or cannot be read. Spool never replaces that file and writes the numbers of this run here. The report adds the two files together |
+| `~/Library/Application Support/Spool/metrics/running` | Exists while Spool runs. If it is there at launch, the last run did not quit cleanly |
+| `~/Library/Application Support/Spool/metrics/marks/<date and time>/` | One mark (see "Marks") |
 
-Striple keeps the numbers in memory and writes the day file 60 s after the first change, when `striple report` asks
-for them, and when you quit. There is no repeating timer: when nothing happens, Striple writes nothing.
+Spool keeps the numbers in memory and writes the day file 60 s after the first change, when `spool report` asks
+for them, and when you quit. There is no repeating timer: when nothing happens, Spool writes nothing.
 
-If a write fails (for example, the disk is full), Striple keeps the numbers in memory and tries again later. The
+If a write fails (for example, the disk is full), Spool keeps the numbers in memory and tries again later. The
 wait doubles after each failure: 2 min, 4 min, 8 min, and so on, up to 1 h. After a write that works, the wait is
 60 s again. This retry is the only write that repeats, and it stops when a write works. `engine.log` gets one line
 for each new error, and one line when a write works again.
 
 The day is the local day of the Mac clock. When the clock changes (a time zone, a manual change), the numbers go to
-the day of the new time, also to an earlier day. Striple adds them to the file of that day.
+the day of the new time, also to an earlier day. Spool adds them to the file of that day.
 
-## What Striple measures
+## What Spool measures
 
 | Part | Numbers | Where in the day file |
 |---|---|---|
 | Time | Seconds the engine ran (managed windows) | `activeSeconds` |
 | Speed | Frame write: all window writes of one frame | `frameWrite` |
-| | Striple's part of a frame write: the frame write time without the AX calls of the slowest app. The AX calls wait for the app and WindowServer; this part is Striple's own code | `frameOwn` |
+| | Spool's part of a frame write: the frame write time without the AX calls of the slowest app. The AX calls wait for the app and WindowServer; this part is Spool's own code | `frameOwn` |
 | | Command latency: from a command to its first frame that moves a window. A command that moves no window (for example focus-left at the first column) or that comes during a swipe gives no sample | `commandLatency` |
 | | Command settle: from a command to the end of its animation. Only a command that moved a window has one. When the animation ends with the first frame (animations off), the settle is the time until that frame is on the windows, the same as the latency. A swipe that stops the animation removes the sample | `commandSettle` |
 | | Time between two frames of one animation, and the frames later than 1.5 times the display period | `tickInterval`, `ticks`, `slowTicks` |
-| Cost | CPU time of the Striple process (user and system) and its idle wakeups, only while the engine runs. The highest memory of the process since it started (physical footprint) | `cpuSeconds`, `wakeups`, `peakRSSMB` |
+| Cost | CPU time of the Spool process (user and system) and its idle wakeups, only while the engine runs. The highest memory of the process since it started (physical footprint) | `cpuSeconds`, `wakeups`, `peakRSSMB` |
 | Use | Each command, with where it came from: `hotkey`, `cli`, `url`, `menu`, `tab` (a click on a tab bar) or `gesture` | `commands` |
 | | Columns on a strip, each time the number changes or a strip opens (`1` to `9`, `10+`) | `columnsPerStrip` |
 | Problems | Engine start, stop and restart, unclean exits, repaired app observers, a lost Accessibility permission, focus through the slow fallback, `config.json` errors, refused shortcuts, apps that do not answer, swipes, flings, marks | `events` |
@@ -78,12 +78,12 @@ Cost in detail:
 - `peakRSSMB` is the highest physical footprint of the process since it started, in MB (the "Memory" column of
   Activity Monitor shows the current footprint). The day file keeps the highest value of the day.
 
-Friction is a sign that Striple did something that you or an app did not want. Striple counts it per app:
+Friction is a sign that Spool did something that you or an app did not want. Spool counts it per app:
 
 | Friction | When |
 |---|---|
-| `app.correction` | The app moved or resized a tiled window, and Striple put it back |
-| `user.drag` | You dragged a tiled window and Striple put it back (drag-to-reorder is off, or you dropped it outside a managed display). A reorder or a move to another display is not friction |
+| `app.correction` | The app moved or resized a tiled window, and Spool put it back |
+| `user.drag` | You dragged a tiled window and Spool put it back (drag-to-reorder is off, or you dropped it outside a managed display). A reorder or a move to another display is not friction |
 | `user.resize` | You resized a tiled window with the mouse |
 | `float.tiled` | You used toggle-float on a tiled window. Maybe this app must float (an app rule) |
 | `unfloat.auto` | You used toggle-float on a window that a rule or the smart check floated. Maybe it must tile |
@@ -118,36 +118,36 @@ One JSON object per day, with sorted keys. In short:
 ```
 
 A histogram (`frameWrite` and the others) has `counts` per bucket, the `count` of samples, their `sum` and the
-`max`, all in ms. The bucket bounds are fixed (`Histogram.bounds` in `Sources/StripleCore/Metrics.swift`), so days add
+`max`, all in ms. The bucket bounds are fixed (`Histogram.bounds` in `Sources/SpoolCore/Metrics.swift`), so days add
 up. The example shortens `counts`.
 
-`schema` 2 added `frameOwn`. Striple reads a schema 1 file, without `frameOwn`. An older Striple does not change a
+`schema` 2 added `frameOwn`. Spool reads a schema 1 file, without `frameOwn`. An older Spool does not change a
 schema 2 file: it writes `YYYY-MM-DD.local.json`.
 
 ## Read the report
 
 ```sh
-striple report
-striple report --days 30
-striple report --json
+spool report
+spool report --days 30
+spool report --json
 ```
 
-`striple report` shows the last 7 days (`--days` from 1 to 90). It works also when Striple does not run: it reads the
-day files. When Striple runs, it first asks Striple to write the numbers that are still in memory.
+`spool report` shows the last 7 days (`--days` from 1 to 90). It works also when Spool does not run: it reads the
+day files. When Spool runs, it first asks Spool to write the numbers that are still in memory.
 
 The report has these parts:
 
 - The period and the time the engine ran.
 - The live budgets, each with PASS, FAIL or no data. Without day files, every budget shows no data, also
-  `unclean-exits`: with no file, Striple knows nothing. Then the first line of the report is
-  `Striple metrics: no data yet`. The budgets are in [SPEC.md](SPEC.md#live-budget).
+  `unclean-exits`: with no file, Spool knows nothing. Then the first line of the report is
+  `Spool metrics: no data yet`. The budgets are in [SPEC.md](SPEC.md#live-budget).
   `slow-tick-ratio` is the slow frames in percent of all frames. `cpu-while-active` is the CPU time in percent of the
   time the engine ran.
 - Speed (p50, p95 and the highest value), cost and problems.
 - The 10 most used commands, with their sources.
 - The 10 highest friction counts, per app and kind.
 - The 10 apps with the slowest AX writes. A slow app makes every animation slow, not only its own windows.
-- Day files that Striple could not read. A broken file does not stop the report.
+- Day files that Spool could not read. A broken file does not stop the report.
 
 `--json` prints the full report as JSON, for scripts.
 
@@ -157,19 +157,19 @@ When something goes wrong (a window in the wrong place, a slow animation), save 
 
 - Press `⌃⌥⇧M`.
 - Or choose **Mark This Moment** in the menu bar menu.
-- Or run `striple mark` with a note, for example `striple mark Safari jumped to the left`.
-- Or open `striple://mark`.
+- Or run `spool mark` with a note, for example `spool mark Safari jumped to the left`.
+- Or open `spool://mark`.
 
 A mark is a new folder in `metrics/marks/` with:
 
 | File | What it is |
 |---|---|
 | `note.txt` | Your note (empty from the shortcut, the menu and the URL) |
-| `state.json` | The strips and windows (the data of `striple state`), with every window title removed |
-| `stats.json` | The performance counters (the data of `striple stats`) |
+| `state.json` | The strips and windows (the data of `spool state`), with every window title removed |
+| `stats.json` | The performance counters (the data of `spool stats`) |
 | `day.json` | The numbers of today, so far |
 | `engine.log` | The last 60 s of the engine log |
 
-`striple mark` prints `Saving a mark (see engine.log for the folder)`, because Striple writes the folder after it
-answers. The engine log (`~/Library/Logs/Striple/engine.log`) names the folder of each mark. Marks need metrics on. Striple does not delete marks; delete the
+`spool mark` prints `Saving a mark (see engine.log for the folder)`, because Spool writes the folder after it
+answers. The engine log (`~/Library/Logs/Spool/engine.log`) names the folder of each mark. Marks need metrics on. Spool does not delete marks; delete the
 folders that you do not need.

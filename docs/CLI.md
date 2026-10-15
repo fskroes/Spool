@@ -1,113 +1,113 @@
-# Striple command-line tool
+# Spool command-line tool
 
-The `striple` tool controls the running Striple app from a terminal, a script, Raycast or any
+The `spool` tool controls the running Spool app from a terminal, a script, Raycast or any
 other launcher. It sends one request to the app over a Unix socket and prints the answer.
 
 ## Install
 
-- The app has the tool inside: `Striple.app/Contents/Helpers/striple`.
-- `make install` links it to `~/.local/bin/striple`. Make sure that `~/.local/bin` is in your `PATH`.
-- In a source checkout, `swift build` makes `.build/debug/striple`.
+- The app has the tool inside: `Spool.app/Contents/Helpers/spool`.
+- `make install` links it to `~/.local/bin/spool`. Make sure that `~/.local/bin` is in your `PATH`.
+- In a source checkout, `swift build` makes `.build/debug/spool`.
 
 ## Usage
 
 ```
-striple <command> [<n>] [--json] [--socket <path>]
-striple report [--days <n>] [--json]
+spool <command> [<n>] [--json] [--socket <path>]
+spool report [--days <n>] [--json]
 ```
 
 Examples:
 
 ```sh
-striple focus-left
-striple focus-index 3
-striple command focus-left
-striple state
-striple stats --json
-striple mark Safari jumped to the left
-striple report --days 30
-striple list
-striple help focus-index
-striple --version
+spool focus-left
+spool focus-index 3
+spool command focus-left
+spool state
+spool stats --json
+spool mark Safari jumped to the left
+spool report --days 30
+spool list
+spool help focus-index
+spool --version
 ```
 
 | Command | What it does |
 |---|---|
-| `striple focus-left` | Focuses the column on the left. |
-| `striple focus-index 3` | Focuses place 3. Same as `striple focus-index-3`. |
-| `striple command focus-left` | Same as `striple focus-left`. |
-| `striple state` | Shows the displays, columns and windows. |
-| `striple stats --json` | Shows the performance counters as JSON. |
-| `striple mark Safari jumped to the left` | Saves a mark with the note "Safari jumped to the left". |
-| `striple report --days 30` | Shows the local metrics of the last 30 days. |
-| `striple list` | Shows all commands with a short description. |
-| `striple help focus-index` | Shows the help for one command. |
-| `striple --version` | Shows the version. |
+| `spool focus-left` | Focuses the column on the left. |
+| `spool focus-index 3` | Focuses place 3. Same as `spool focus-index-3`. |
+| `spool command focus-left` | Same as `spool focus-left`. |
+| `spool state` | Shows the displays, columns and windows. |
+| `spool stats --json` | Shows the performance counters as JSON. |
+| `spool mark Safari jumped to the left` | Saves a mark with the note "Safari jumped to the left". |
+| `spool report --days 30` | Shows the local metrics of the last 30 days. |
+| `spool list` | Shows all commands with a short description. |
+| `spool help focus-index` | Shows the help for one command. |
+| `spool --version` | Shows the version. |
 
 A command prints nothing when it works. Errors go to stderr.
 
 ## Commands
 
-`striple list` shows the same list. Names are not case sensitive, and `_` works as `-`.
-For a command with a number, you can write the number as a separate word (`striple focus-index 3`)
-or as part of the name (`striple focus-index-3`).
+`spool list` shows the same list. Names are not case sensitive, and `_` works as `-`.
+For a command with a number, you can write the number as a separate word (`spool focus-index 3`)
+or as part of the name (`spool focus-index-3`).
 
 | Command | What it does | URL |
 |---|---|---|
-| `striple focus-left` | Focus left | `striple://focus-left` |
-| `striple focus-right` | Focus right | `striple://focus-right` |
-| `striple focus-up` | Focus up in stack | `striple://focus-up` |
-| `striple focus-down` | Focus down in stack | `striple://focus-down` |
-| `striple focus-first` | Focus first window | `striple://focus-first` |
-| `striple focus-last` | Focus last window | `striple://focus-last` |
-| `striple focus-index <1-9>` | Focus place &lt;n&gt; (9 is the last place) | `striple://focus-index/3` |
-| `striple move-left` | Move column left | `striple://move-left` |
-| `striple move-right` | Move column right | `striple://move-right` |
-| `striple move-up` | Move window up in stack | `striple://move-up` |
-| `striple move-down` | Move window down in stack | `striple://move-down` |
-| `striple move-first` | Move column to first place | `striple://move-first` |
-| `striple move-last` | Move column to last place | `striple://move-last` |
-| `striple move-to-index <1-9>` | Move column to place &lt;n&gt; (9 is the last place) | `striple://move-to-index/3` |
-| `striple cycle-width` | Cycle preset widths | `striple://cycle-width` |
-| `striple toggle-full-width` | Full width | `striple://toggle-full-width` |
-| `striple center-column` | Center column | `striple://center-column` |
-| `striple wider` | Wider | `striple://wider` |
-| `striple narrower` | Narrower | `striple://narrower` |
-| `striple taller` | Taller (in a stack) | `striple://taller` |
-| `striple shorter` | Shorter (in a stack) | `striple://shorter` |
-| `striple equalize-heights` | Equalize heights | `striple://equalize-heights` |
-| `striple stack-left` | Stack into left column | `striple://stack-left` |
-| `striple stack-right` | Stack into right column | `striple://stack-right` |
-| `striple pop-left` | Pop out of stack to the left | `striple://pop-left` |
-| `striple pop-right` | Pop out of stack to the right | `striple://pop-right` |
-| `striple toggle-tabbed` | Tabbed column | `striple://toggle-tabbed` |
-| `striple toggle-float` | Float / unfloat | `striple://toggle-float` |
-| `striple send-to-next-display` | Send window to next display | `striple://send-to-next-display` |
-| `striple toggle-engine` | Start / stop the window manager | `striple://toggle-engine` |
-| `striple focus-window <id>` | Focus the window with this ID (see striple state --json) | `striple://focus-window/1234` |
-| `striple start` | Start | `striple://start` |
-| `striple stop` | Stop | `striple://stop` |
-| `striple restart` | Restart | `striple://restart` |
-| `striple mark [<note>]` | Mark this moment: save the state, the stats and the last minute of the log, with a note | `striple://mark` |
+| `spool focus-left` | Focus left | `spool://focus-left` |
+| `spool focus-right` | Focus right | `spool://focus-right` |
+| `spool focus-up` | Focus up in stack | `spool://focus-up` |
+| `spool focus-down` | Focus down in stack | `spool://focus-down` |
+| `spool focus-first` | Focus first window | `spool://focus-first` |
+| `spool focus-last` | Focus last window | `spool://focus-last` |
+| `spool focus-index <1-9>` | Focus place &lt;n&gt; (9 is the last place) | `spool://focus-index/3` |
+| `spool move-left` | Move column left | `spool://move-left` |
+| `spool move-right` | Move column right | `spool://move-right` |
+| `spool move-up` | Move window up in stack | `spool://move-up` |
+| `spool move-down` | Move window down in stack | `spool://move-down` |
+| `spool move-first` | Move column to first place | `spool://move-first` |
+| `spool move-last` | Move column to last place | `spool://move-last` |
+| `spool move-to-index <1-9>` | Move column to place &lt;n&gt; (9 is the last place) | `spool://move-to-index/3` |
+| `spool cycle-width` | Cycle preset widths | `spool://cycle-width` |
+| `spool toggle-full-width` | Full width | `spool://toggle-full-width` |
+| `spool center-column` | Center column | `spool://center-column` |
+| `spool wider` | Wider | `spool://wider` |
+| `spool narrower` | Narrower | `spool://narrower` |
+| `spool taller` | Taller (in a stack) | `spool://taller` |
+| `spool shorter` | Shorter (in a stack) | `spool://shorter` |
+| `spool equalize-heights` | Equalize heights | `spool://equalize-heights` |
+| `spool stack-left` | Stack into left column | `spool://stack-left` |
+| `spool stack-right` | Stack into right column | `spool://stack-right` |
+| `spool pop-left` | Pop out of stack to the left | `spool://pop-left` |
+| `spool pop-right` | Pop out of stack to the right | `spool://pop-right` |
+| `spool toggle-tabbed` | Tabbed column | `spool://toggle-tabbed` |
+| `spool toggle-float` | Float / unfloat | `spool://toggle-float` |
+| `spool send-to-next-display` | Send window to next display | `spool://send-to-next-display` |
+| `spool toggle-engine` | Start / stop the window manager | `spool://toggle-engine` |
+| `spool focus-window <id>` | Focus the window with this ID (see spool state --json) | `spool://focus-window/1234` |
+| `spool start` | Start | `spool://start` |
+| `spool stop` | Stop | `spool://stop` |
+| `spool restart` | Restart | `spool://restart` |
+| `spool mark [<note>]` | Mark this moment: save the state, the stats and the last minute of the log, with a note | `spool://mark` |
 
 `focus-index 9` and `move-to-index 9` mean the last place, also when there are more than 9 columns.
 
-`striple mark` takes the words after `mark` as the note. Quotes are not necessary. Use a mark when something goes
-wrong: Striple writes a new folder in `~/Library/Application Support/Striple/metrics/marks/`. It writes the folder
-after it answers, so `striple mark` prints `Saving a mark (see engine.log for the folder)`. The engine log
-(`~/Library/Logs/Striple/engine.log`) names the folder when the write ends. The note is the only text that you type that Striple keeps. Marks need metrics on (Settings > General).
+`spool mark` takes the words after `mark` as the note. Quotes are not necessary. Use a mark when something goes
+wrong: Spool writes a new folder in `~/Library/Application Support/Spool/metrics/marks/`. It writes the folder
+after it answers, so `spool mark` prints `Saving a mark (see engine.log for the folder)`. The engine log
+(`~/Library/Logs/Spool/engine.log`) names the folder when the write ends. The note is the only text that you type that Spool keeps. Marks need metrics on (Settings > General).
 See [METRICS.md](METRICS.md#marks).
 
 ## Queries
 
 | Query | What it shows |
 |---|---|
-| `striple ping` | `Striple is running.` when the app answers. |
-| `striple state` | Engine status, the focused window, and the columns of each display. |
-| `striple stats` | Uptime, frame and window write counts, AX errors, timings, restarts and the slowest apps. |
-| `striple report [--days <n>]` | The local metrics of the last &lt;n&gt; days (1 to 90, default 7). See "Metrics report". |
+| `spool ping` | `Spool is running.` when the app answers. |
+| `spool state` | Engine status, the focused window, and the columns of each display. |
+| `spool stats` | Uptime, frame and window write counts, AX errors, timings, restarts and the slowest apps. |
+| `spool report [--days <n>]` | The local metrics of the last &lt;n&gt; days (1 to 90, default 7). See "Metrics report". |
 
-Example output of `striple state`:
+Example output of `spool state`:
 
 ```
 Engine: running. Accessibility: granted.
@@ -123,7 +123,7 @@ Floating: calculator "Calculator"
 - `+` joins the windows of a stacked column.
 - The app name is the last part of the bundle ID. A title longer than 40 characters is cut.
 
-Example output of `striple stats`:
+Example output of `spool stats`:
 
 ```
 Uptime:               1h 02m 03s
@@ -134,7 +134,7 @@ Coalesced writes:     40
 AX errors:            1
 Closed-window writes: 3 (the window closed first; not errors)
 Frame write:          p50 1.20 ms, p95 3.46 ms
-Striple's part:       p50 0.08 ms, p95 0.11 ms (frame write without the AX calls)
+Spool's part:         p50 0.08 ms, p95 0.11 ms (frame write without the AX calls)
 Command latency:      p50 4.00 ms, p95 9.50 ms
 Restarts:             2
 Slowest apps (AX write per window):
@@ -144,32 +144,32 @@ Slowest apps (AX write per window):
 
 - **AX errors**: AX frame writes that failed. `engine.log` names the window, the app, the AX call and the code of the
   first 3 per app and code.
-- **Closed-window writes**: writes to a window that closed before Striple knew it. They are not errors and are not
-  retried. A Striple that does not report it shows no line.
+- **Closed-window writes**: writes to a window that closed before Spool knew it. They are not errors and are not
+  retried. A Spool that does not report it shows no line.
 - **Frame write**: the time from a layout tick until every frame of that tick is on its window, or was
   replaced by a newer frame that is on its window. Apps are written in parallel, so this is the time of the
   slowest app in the tick.
-- **Striple's part**: the frame write time without the AX calls of the slowest app in the tick: Striple's own
-  code. The AX calls wait for the app and WindowServer. The live budget `frame-own-p95` is 1 ms. A Striple
+- **Spool's part**: the frame write time without the AX calls of the slowest app in the tick: Spool's own
+  code. The AX calls wait for the app and WindowServer. The live budget `frame-own-p95` is 1 ms. A Spool
   that does not report it shows no line.
 - **Command latency**: the time from a command until its first frame that moves a window is on the windows. A command that moves
   no window (for example `focus-left` at the first column), a command during a swipe, and a swipe give no sample.
 - **Slowest apps**: the 5 apps with the highest p95 AX time for one window write, from the newest 128
   writes of each app. **latency** is from the tick that queued the frame until it was written, so it
-  includes the wait for the write before it. An app with a high AX time makes Striple feel slow; quit it or
+  includes the wait for the write before it. An app with a high AX time makes Spool feel slow; quit it or
   float its windows to check.
 
 ## Metrics report
 
-`striple report` reads the metrics files in `~/Library/Application Support/Striple/metrics/` and prints a summary:
+`spool report` reads the metrics files in `~/Library/Application Support/Spool/metrics/` and prints a summary:
 the live budgets (PASS, FAIL or no data), speed, cost, problems, the most used commands, friction per app and the
-slowest apps. It also works when Striple is not running. When Striple runs, the tool first asks it to write the
+slowest apps. It also works when Spool is not running. When Spool runs, the tool first asks it to write the
 numbers that are still in memory.
 
 ```sh
-striple report
-striple report --days 30
-striple report --json
+spool report
+spool report --days 30
+spool report --json
 ```
 
 - `--days <n>`: the number of days, 1 to 90. The default is 7. Another value is a usage error (exit code 2).
@@ -183,10 +183,10 @@ Add `--json` to a command or a query to print the full response of the app as JS
 (pretty printed, keys sorted). Use it in scripts, for example to get the window IDs:
 
 ```sh
-striple state --json | jq '.state.displays[].columns[][].id'
+spool state --json | jq '.state.displays[].columns[][].id'
 ```
 
-`striple list --json` prints all commands and queries with `name`, `usage`, `title` and `url`.
+`spool list --json` prints all commands and queries with `name`, `usage`, `title` and `url`.
 
 ## Exit codes
 
@@ -195,26 +195,26 @@ striple state --json | jq '.state.displays[].columns[][].id'
 | 0 | OK. |
 | 1 | The command failed, or the app sent an error. The reason is on stderr. |
 | 2 | Usage error: unknown command, wrong argument or unknown option. |
-| 3 | Striple is not running. The message is `Striple is not running. Open Striple.app.` |
+| 3 | Spool is not running. The message is `Spool is not running. Open Spool.app.` |
 
 An unknown command gets a suggestion when it looks like a typo:
 
 ```
-$ striple focus-lef
+$ spool focus-lef
 Unknown command 'focus-lef'. Did you mean 'focus-left'?
-Run 'striple help' for usage.
+Run 'spool help' for usage.
 ```
 
 ## Socket
 
-The app listens on `~/Library/Application Support/Striple/striple.sock`.
+The app listens on `~/Library/Application Support/Spool/spool.sock`.
 Only your user can connect: the file has mode 0600, and the app checks the user ID of each client.
 
-To use a different socket (for tests or to debug), use `--socket <path>` or set `STRIPLE_SOCKET`.
-`--socket` has priority over `STRIPLE_SOCKET`. The path must be 103 bytes or less.
+To use a different socket (for tests or to debug), use `--socket <path>` or set `SPOOL_SOCKET`.
+`--socket` has priority over `SPOOL_SOCKET`. The path must be 103 bytes or less.
 
-Test only: when the app starts with `STRIPLE_HOME` set, the socket, config, session and logs are in that folder
-(logs in `$STRIPLE_HOME/Logs`), and `STRIPLE_MANAGE_ONLY` limits Striple to the windows of some apps. The live E2E
+Test only: when the app starts with `SPOOL_HOME` set, the socket, config, session and logs are in that folder
+(logs in `$SPOOL_HOME/Logs`), and `SPOOL_MANAGE_ONLY` limits Spool to the windows of some apps. The live E2E
 test uses them. See [E2E.md](E2E.md). Do not use them for normal work.
 
 The tool waits a maximum of 2 seconds for an answer. `start`, `stop`, `toggle-engine` and `restart` wait a maximum of
@@ -238,24 +238,24 @@ A maximum of 16 connections can be open at the same time.
 
 ## URL scheme
 
-All commands also work as a `striple://` URL, for example from Shortcuts or a browser.
+All commands also work as a `spool://` URL, for example from Shortcuts or a browser.
 These forms do the same thing:
 
 ```sh
-open -g "striple://focus-left"
-open -g "striple://command?name=focus-left"
-open -g "striple://focus-index/3"
+open -g "spool://focus-left"
+open -g "spool://command?name=focus-left"
+open -g "spool://focus-index/3"
 ```
 
-The last URL is the same as `striple focus-index 3`.
+The last URL is the same as `spool focus-index 3`.
 
-A URL opens Striple if it is not running. Queries (`ping`, `state`, `stats`) and `report` are not available as URLs.
+A URL opens Spool if it is not running. Queries (`ping`, `state`, `stats`) and `report` are not available as URLs.
 
-`striple://settings/<page>` opens a page of the settings window, for example `open "striple://settings/shortcuts"`.
+`spool://settings/<page>` opens a page of the settings window, for example `open "spool://settings/shortcuts"`.
 The pages are `general`, `layout`, `appearance`, `trackpad` (Mouse & Trackpad), `displays`, `rules`, `shortcuts`,
-`mac-setup` and `help`. `striple://settings` and `striple://open` open the page that was open last (General after Striple starts).
+`mac-setup` and `help`. `spool://settings` and `spool://open` open the page that was open last (General after Spool starts).
 
 ## Raycast
 
-The folder `Integrations/Raycast` has Raycast Script Commands for the main commands, and a "Striple State" command.
+The folder `Integrations/Raycast` has Raycast Script Commands for the main commands, and a "Spool State" command.
 Setup is in [Integrations/Raycast/README.md](../Integrations/Raycast/README.md).

@@ -1,0 +1,434 @@
+import AppKit
+import CoreGraphics
+import Foundation
+import SpoolCore
+
+/// Engine decisions that need no system state. Kept pure so tests cover them without Accessibility.
+enum Policy {
+    // MARK: Focus stealing
+
+    /// True when a window that just got focus took it without the user asking for it.
+    ///
+    /// - `windowAge`: seconds since Spool first saw the window.
+    /// - `secondsSinceInput`: seconds since the last key press, click or scroll.
+    /// - `appAge`: seconds since the app launched. A slow app that opens its first window after a long launch
+    ///   is not stealing: the user started it.
+    static func isFocusSteal(windowAge: Double, secondsSinceInput: Double, appAge: Double?) -> Bool {
+        windowAge < 2 && secondsSinceInput > 1 && (appAge ?? .infinity) > 10
+    }
+
+    // MARK: Swipes
+
+    /// Converts a horizontal finger movement (in trackpad widths) into a scroll change in points.
+    /// With natural scrolling the windows follow the fingers: fingers to the left show the columns on the right.
+    static func scrollDelta(dx: Double, viewWidth: Double, settings: GestureSettings) -> Double {
+        let points = dx * viewWidth * max(settings.sensitivity, 0.05)
+        return settings.natural ? -points : points
+    }
+
+    /// The scroll range a swipe can settle in: the first and the last column at their snap positions.
+    static func scrollBounds(_ strip: Strip, settings: LayoutSettings, metrics: StripMetrics) -> (lower: Double, upper: Double) {
+        guard !strip.columns.isEmpty else { return (0, 0) }
+        let p = strip.columnPositions(metrics: metrics)
+        let view = metrics.usableWidth
+        switch settings.centerMode {
+        case .always:
+            let n = p.x.count - 1
+            return (p.x[0] - (view - p.width[0]) / 2, p.x[n] - (view - p.width[n]) / 2)
+        case .onOverflow, .never:
+            return (0, max(p.total - view, 0))
+        }
+    }
+
+    /// Rubber band past the ends, like a scroll view: the further past the end, the less the strip moves.
+    /// It never goes more than `dimension` past an end.
+    static func rubberBand(_ raw: Double, lower: Double, upper: Double, dimension: Double) -> Double {
+        func band(_ over: Double) -> Double { (1 - 1 / (over * 0.55 / max(dimension, 1) + 1)) * dimension }
+        if raw > upper { return upper + band(raw - upper) }
+        if raw < lower { return lower - band(lower - raw) }
+        return raw
+    }
+
+    // MARK: Geometry
+
+    /// Apps whose windows Spool manages: regular apps that still run, never Spool itself.
+    /// This leaves out loginwindow (the lock screen), agents and menu bar apps.
+    /// `manageOnly` (test only, see `manageOnlyBundleIDs`): when not nil, only apps with one of these bundle IDs.
+    static func isManageableApp(policy: NSApplication.ActivationPolicy, pid: pid_t, ownPID: pid_t, terminated: Bool,
+                                bundleID: String? = nil, manageOnly: Set<String>? = nil) -> Bool {
+        policy == .regular && pid != ownPID && !terminated && isAllowed(bundleID: bundleID, manageOnly: manageOnly)
+    }
+
+    /// The environment variable of the E2E test seam. See docs/E2E.md.
+    static let manageOnlyEnvironmentKey = "SPOOL_MANAGE_ONLY"
+
+    /// The bundle IDs in `SPOOL_MANAGE_ONLY` (comma separated). nil when the variable is not set: Spool manages
+    /// every app. Set but empty gives an empty set: Spool manages no app. A test seam must fail closed.
+    static func manageOnlyBundleIDs(environment: [String: String]) -> Set<String>? {
+        guard let raw = environment[manageOnlyEnvironmentKey] else { return nil }
+        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+
+    /// With a manage-only list, an app without a bundle ID or with another bundle ID is never managed.
+    static func isAllowed(bundleID: String?, manageOnly: Set<String>?) -> Bool {
+        guard let manageOnly else { return true }
+        guard let bundleID else { return false }
+        return manageOnly.contains(bundleID)
+    }
+
+    /// True when two frames are the same within `tolerance` points. Used to tell Spool's own writes from user moves.
+    static func same(_ a: CGRect, _ b: CGRect?, tolerance: CGFloat = 2) -> Bool {
+        guard let b else { return false }
+        return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
+            && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    }
+
+    /// `10,25 800x600` for logs. Values are rounded; a value that is not finite prints as `?`.
+    static func text(_ r: CGRect) -> String {
+        func n(_ v: CGFloat) -> String { v.isFinite ? String(Int(v.rounded())) : "?" }
+        return "\(n(r.minX)),\(n(r.minY)) \(n(r.width))x\(n(r.height))"
+    }
+
+    /// The display that contains `point`, else the one nearest to it. Frames are in AX coordinates.
+    static func displayIndex(for point: CGPoint, frames: [CGRect]) -> Int? {
+        if let i = frames.firstIndex(where: { $0.contains(point) }) { return i }
+        func distance(_ r: CGRect) -> CGFloat {
+            let dx = max(r.minX - point.x, 0, point.x - r.maxX)
+            let dy = max(r.minY - point.y, 0, point.y - r.maxY)
+            return dx * dx + dy * dy
+        }
+        return frames.indices.min { distance(frames[$0]) < distance(frames[$1]) }
+    }
+
+    /// The display after `current` from left to right (then top to bottom), wrapping around.
+    static func nextDisplay(after current: Int, frames: [CGRect]) -> Int? {
+        guard frames.count > 1, frames.indices.contains(current) else { return nil }
+        let order = frames.indices.sorted { (frames[$0].minX, frames[$0].minY) < (frames[$1].minX, frames[$1].minY) }
+        let i = order.firstIndex(of: current) ?? 0
+        return order[(i + 1) % order.count]
+    }
+
+    /// Moves `frame` into `area` (shrinking it if it is bigger). Used to bring parked windows back when Spool
+    /// stops or a window starts to float.
+    static func bringIntoView(_ frame: CGRect, area: CGRect) -> CGRect {
+        var r = frame
+        r.size.width = min(r.width, area.width)
+        r.size.height = min(r.height, area.height)
+        r.origin.x = min(max(r.minX, area.minX), area.maxX - r.width)
+        r.origin.y = min(max(r.minY, area.minY), area.maxY - r.height)
+        return r
+    }
+
+    /// Where a window goes when Spool lets it go (stop, quit, rebuild).
+    ///
+    /// - target: the strip frame the animation runs toward, for a tiled window on a Space on screen. The window
+    ///   goes to its final place, not to a frame from the middle of the animation.
+    /// - known: otherwise the last frame Spool wrote (or the parked frame of a hidden or minimized window).
+    static func releaseFrame(target: CGRect?, known: CGRect?, display: DisplayGeometry, settings: LayoutSettings) -> CGRect? {
+        let area = display.usable
+        if let target { return bringIntoView(Layout.physical(target, display: display, settings: settings).frame, area: area) }
+        return known.map { bringIntoView($0, area: area) }
+    }
+
+    /// Whether a Space is one of a display's Spaces. True when Spaces are unknown, so nothing is hidden by mistake.
+    /// `known` comes from `Spaces.all()`: "Main" holds all Spaces when displays do not have separate Spaces.
+    static func spaceExists(_ space: UInt64, onDisplay display: String, known: [String: Set<UInt64>]) -> Bool {
+        if space == 0 || known.isEmpty { return true }
+        return (known[display] ?? known["Main"] ?? []).contains(space)
+    }
+
+    /// After an app is watched again: every managed window must be observed again, with the fresh element when
+    /// AXWindows lists the window and with the old one otherwise (a window on another Space is not listed).
+    static func healPlan<E>(managed: [WindowID: E], fresh: [WindowID: E]) -> (observe: [WindowID: E], renewed: Set<WindowID>) {
+        var observe = managed
+        var renewed = Set<WindowID>()
+        for id in managed.keys {
+            if let e = fresh[id] {
+                observe[id] = e
+                renewed.insert(id)
+            }
+        }
+        return (observe, renewed)
+    }
+
+    /// A tiled window that moves while the button is down is dragged by the user only when the mouse moved,
+    /// the window was under the mouse at mouse-down, its frame is not one Spool wrote or is writing, and no
+    /// other window is dragged already.
+    static func isUserDrag(window: WindowID, mouseMoved: Bool, pressedWindow: WindowID?, ownFrame: Bool,
+                           currentDrag: WindowID?) -> Bool {
+        guard mouseMoved, window == pressedWindow, !ownFrame else { return false }
+        return currentDrag == nil || currentDrag == window
+    }
+
+    /// A move while the button is down that is not a drag and not Spool's own write (for example a resize
+    /// that started outside the hit test, or an app that moved itself). It is checked again after the release:
+    /// put back, so the window cannot stay over its neighbour with a size Spool does not know.
+    static func correctAfterRelease(isUserDrag: Bool, ownFrame: Bool) -> Bool { !isUserDrag && !ownFrame }
+
+    /// The window under the mouse at mouse-down: the frontmost one whose bounds, widened by `slop`, contain the
+    /// point. macOS starts a resize a few points outside the window edge (on macOS 26 mostly outside the
+    /// corner), so an exact hit test misses those presses. `frontToBack` is in window-server order.
+    /// `parked`: windows Spool parked out of view. They stay on screen as 1 pt slivers at the display edge,
+    /// so the window server still lists them, but the user cannot see or press them.
+    static func pressedWindow(at p: CGPoint, frontToBack: [(id: WindowID, bounds: CGRect)], slop: CGFloat,
+                              parked: Set<WindowID> = []) -> WindowID? {
+        frontToBack.first { !parked.contains($0.id) && $0.bounds.insetBy(dx: -slop, dy: -slop).contains(p) }?.id
+    }
+
+    /// A saved strip that comes back from the session. Windows that are gone were dropped, so the saved scroll
+    /// can point past the end: scroll again so the focused column is in view.
+    static func restoredStrip(_ saved: Strip, into existing: Strip?, settings: LayoutSettings, metrics: StripMetrics?) -> Strip {
+        var strip = existing ?? Strip()
+        if strip.isEmpty { strip = saved } else { strip.columns += saved.columns }
+        if let metrics { strip.ensureFocusVisible(settings: settings, metrics: metrics) }
+        return strip
+    }
+
+    /// The Space a hidden or minimized window goes back to: the one it left, while the window is still on it.
+    /// `windowSpaces` is empty when Spool cannot read Spaces. `active` is 0 when Spaces are not used.
+    static func putBackSpace(old: UInt64, windowSpaces: [UInt64], active: UInt64) -> UInt64 {
+        guard active != 0 else { return 0 }
+        if windowSpaces.contains(old) { return old }
+        if windowSpaces.contains(active) || windowSpaces.isEmpty { return active }
+        return windowSpaces[0]
+    }
+
+    /// What a window drag that ends does.
+    enum DropKind: Equatable {
+        /// Onto another enabled display: move the window to that display's strip.
+        case otherDisplay
+        /// On its own display: move the window to the gap under the mouse.
+        case reorder
+        /// Onto a display Spool does not manage, or outside every display: back to its old place.
+        case putBack
+    }
+
+    static func dropKind(dropDisplay: String?, ownDisplay: String, dropDisplayDisabled: Bool) -> DropKind {
+        guard let dropDisplay else { return .putBack }
+        if dropDisplay == ownDisplay { return .reorder }
+        return dropDisplayDisabled ? .putBack : .otherDisplay
+    }
+
+    /// Seconds before the next try to watch an app that did not answer, or nil to give up.
+    /// Fast at first (an app that is starting), then every 5 s for about two minutes (a large app that is busy).
+    /// The result of a frame write from its AX calls, in call order.
+    /// - `.invalidUIElement` from any call: the window closed after the frame was queued. That is `.gone`, not an
+    ///   error: Spool removes the window when the destroyed notification comes, some ms later.
+    /// - `.cannotComplete` is a timeout: the app got the request and applies it when it can, so the frame counts
+    ///   as written and the app is not healed for being slow.
+    /// - Any other code fails the write; the first such call is reported.
+    static func writeResult(_ calls: [(AXCall, AXError)]) -> WriteResult {
+        if calls.contains(where: { $0.1 == .invalidUIElement }) { return .gone }
+        if let bad = calls.first(where: { $0.1 != .success && $0.1 != .cannotComplete }) {
+            return .failed(call: bad.0, code: bad.1.rawValue)
+        }
+        return .written
+    }
+
+    /// The name of an AXError code, for the log.
+    static func axErrorName(_ code: Int32) -> String {
+        switch AXError(rawValue: code) {
+        case .success: "success"
+        case .failure: "failure"
+        case .illegalArgument: "illegal argument"
+        case .invalidUIElement: "invalid UI element"
+        case .invalidUIElementObserver: "invalid UI element observer"
+        case .cannotComplete: "cannot complete"
+        case .attributeUnsupported: "attribute unsupported"
+        case .actionUnsupported: "action unsupported"
+        case .notificationUnsupported: "notification unsupported"
+        case .notImplemented: "not implemented"
+        case .notificationAlreadyRegistered: "notification already registered"
+        case .notificationNotRegistered: "notification not registered"
+        case .apiDisabled: "API disabled"
+        case .noValue: "no value"
+        case .parameterizedAttributeUnsupported: "parameterized attribute unsupported"
+        case .notEnoughPrecision: "not enough precision"
+        default: "unknown"
+        }
+    }
+
+    /// Registers the app notifications in order. It stops at the first timeout: every later call to a hung app
+    /// waits the full timeout too, on the main thread. `hung` makes the caller try again later.
+    /// Whether an activated app is scanned again: when it is not watched (the watch retries gave up), when its
+    /// quiet rescans gave up, or when it has held windows. Not while a retry or a rescan is pending.
+    static func rescanOnActivate(watching: Bool, waiting: Bool, rescanPending: Bool, gaveUp: Bool, holdsWindows: Bool) -> Bool {
+        if waiting || rescanPending { return false }
+        return !watching || gaveUp || holdsWindows
+    }
+
+    /// The strip of a window on `display`. Its Space is the active one of the display when the window is on it,
+    /// else the first Space of the window. A Space that is on screen on another display belongs to that display,
+    /// so the key is never a display with a Space of another display (a strip that is never shown). For a Space
+    /// not on screen, `allSpaces` (every Space by display, read only then) names its display.
+    static func stripKey(display: String, activeSpaces: [String: UInt64], windowSpaces: [UInt64],
+                         allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey {
+        let active = activeSpaces[display] ?? 0
+        // Without Space information (private calls missing, or one Space for all displays) use one strip per display.
+        guard active != 0 else { return Engine.StripKey(display: display, space: 0) }
+        let space = windowSpaces.contains(active) ? active : (windowSpaces.first ?? active)
+        guard space != active else { return Engine.StripKey(display: display, space: space) }
+        if let owner = activeSpaces.first(where: { $0.value == space })?.key
+            ?? allSpaces().first(where: { $0.value.contains(space) && activeSpaces[$0.key] != nil })?.key {
+            return Engine.StripKey(display: owner, space: space)
+        }
+        return Engine.StripKey(display: display, space: space)
+    }
+
+    /// The new strip of a tiled window whose Space changed (moved in Mission Control), or nil when it did not
+    /// change. A Space of another display moves the window to that display, as in `stripKey`.
+    static func respacedKey(old: Engine.StripKey, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                            allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey? {
+        guard (activeSpaces[old.display] ?? 0) != 0, !windowSpaces.isEmpty, !windowSpaces.contains(old.space) else { return nil }
+        return stripKey(display: old.display, activeSpaces: activeSpaces, windowSpaces: windowSpaces, allSpaces: allSpaces)
+    }
+
+    /// The strip a window that comes back (unminimized, shown, unfloated) goes to: its old strip, else the Space it
+    /// is on now, on the display that has that Space.
+    static func putBackKey(old: Engine.StripKey, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                           allSpaces: () -> [String: Set<UInt64>] = { [:] }) -> Engine.StripKey {
+        let space = putBackSpace(old: old.space, windowSpaces: windowSpaces, active: activeSpaces[old.display] ?? 0)
+        return stripKey(display: old.display, activeSpaces: activeSpaces, windowSpaces: space == 0 ? [] : [space], allSpaces: allSpaces)
+    }
+
+    /// What to do with a window after it may have changed Space or display without a drag by the user (Mission
+    /// Control, an app, macOS).
+    enum RespaceAction: Equatable {
+        case stay
+        /// A tiled window goes from strip `from` to strip `to`.
+        case move(from: Engine.StripKey, to: Engine.StripKey)
+        /// A tiled window is now on a display Spool does not manage: it floats there.
+        case float(from: Engine.StripKey)
+        /// A window that floats only because its display was not managed is on a managed display again.
+        case tile(Engine.StripKey)
+    }
+
+    /// `here`: the strip of the window's place now (`Engine.stripKey(for:)`), nil on a disabled display. Only asked
+    /// for a window that floats because of its display.
+    static func respaceAction(state: Engine.ManagedWindow.State, userFloating: Bool, offDisplay: Bool,
+                              key: Engine.StripKey?, windowSpaces: [UInt64], activeSpaces: [String: UInt64],
+                              allSpaces: () -> [String: Set<UInt64>] = { [:] }, here: () -> Engine.StripKey?,
+                              isDisabled: (String) -> Bool) -> RespaceAction {
+        switch state {
+        case .tiled:
+            guard let key, let target = respacedKey(old: key, windowSpaces: windowSpaces, activeSpaces: activeSpaces,
+                                                    allSpaces: allSpaces) else { return .stay }
+            return isDisabled(target.display) ? .float(from: key) : .move(from: key, to: target)
+        case .floating where offDisplay && !userFloating:
+            return here().map { .tile($0) } ?? .stay
+        default:
+            return .stay
+        }
+    }
+
+    enum CorrectionStep: Equatable {
+        /// Nothing to do: the window is not Spool's to move now.
+        case drop
+        /// Try again a moment later.
+        case wait
+        /// A window that floats because of its display: only check where it is now (`respaceAction`).
+        case respaceOnly
+        /// A tiled window: check its Space, then put it back on its strip.
+        case correct
+    }
+
+    /// What a correction does after a window moved without Spool. An off-display float is checked again only
+    /// after a drag, swipe or mouse press ends, because that check is the only thing that tiles it again.
+    static func correctionStep(state: Engine.ManagedWindow.State, offDisplay: Bool, userFloating: Bool, dragging: Bool,
+                               swiping: Bool, mouseDown: Bool, animating: Bool) -> CorrectionStep {
+        switch state {
+        case .floating where offDisplay && !userFloating:
+            return dragging || swiping || mouseDown ? .wait : .respaceOnly
+        case .tiled:
+            if dragging || swiping { return .drop }
+            return animating ? .wait : .correct
+        default:
+            return .drop
+        }
+    }
+
+    /// Whether a live window can take a held slot without the same ID: it is on the held window's Space. Without
+    /// Space information it can.
+    static func heldWindowFits(heldSpace: UInt64, floats: Bool, windowSpaces: [UInt64]) -> Bool {
+        floats || heldSpace == 0 || windowSpaces.isEmpty || windowSpaces.contains(heldSpace)
+    }
+
+    /// How long held windows of an app that answered wait for windows the app makes late (Chrome, Electron apps).
+    static let heldGraceDelay = 5.0
+
+    /// The strip a held window waits in. A saved strip whose Space is unknown, or whose display is gone, is
+    /// restored on screen now (`Session.partition`), so its held windows go with it (`restoredInto`, from saved key
+    /// to the key it was restored to). Without that, they go to the Space on screen of their display, or of
+    /// `fallbackDisplay` when their display is gone. A held window whose Space is not on screen and is known keeps it.
+    static func heldKey(saved: Engine.StripKey, restoredInto: [Engine.StripKey: Engine.StripKey],
+                        activeSpaces: [String: UInt64], knownSpaces: Set<UInt64>, fallbackDisplay: String?) -> Engine.StripKey {
+        if let k = restoredInto[saved] { return k }
+        if activeSpaces[saved.display] == saved.space { return saved }
+        if saved.space != 0, let d = activeSpaces.first(where: { $0.value == saved.space })?.key {
+            return Engine.StripKey(display: d, space: saved.space)
+        }
+        if saved.space != 0, knownSpaces.contains(saved.space) { return saved }
+        let d = activeSpaces[saved.display] != nil ? saved.display : (fallbackDisplay ?? saved.display)
+        return Engine.StripKey(display: d, space: activeSpaces[d] ?? saved.space)
+    }
+
+    static func registerUntilHung(_ names: [String], add: (String) -> AXError) -> (registered: Int, hung: Bool) {
+        var registered = 0
+        for name in names {
+            switch add(name) {
+            case .success: registered += 1
+            case .cannotComplete: return (registered, true)
+            default: continue
+            }
+        }
+        return (registered, false)
+    }
+
+    static func watchRetryDelay(attempt n: Int) -> Double? {
+        switch n {
+        case 1...6: return 0.25 * Double(n)
+        case 7...30: return 5
+        default: return nil
+        }
+    }
+
+    /// The strips as the session saves them: hidden and minimized windows go back into the slot they left,
+    /// so a restart restores them there. After the restore, the scan takes them off the strip again.
+    static func stripsForSession<K: Hashable>(_ strips: [K: Strip], offStrip: [(info: WindowInfo, key: K, slot: Int?, width: ColumnWidth?)],
+                                              defaultWidth: ColumnWidth) -> [K: Strip] {
+        var out = strips
+        let ordered = offStrip.sorted { ($0.slot ?? .max, $0.info.id) < ($1.slot ?? .max, $1.info.id) }
+        for w in ordered {
+            var strip = out[w.key] ?? Strip()
+            strip.insert(w.info, width: w.width ?? defaultWidth, slot: w.slot ?? strip.columns.count + 1, focus: false)
+            out[w.key] = strip
+        }
+        return out
+    }
+
+    /// Tiled windows of hidden apps, in a stable order.
+    static func windowsToHide(tiled: [WindowID: pid_t], hiddenApps: Set<pid_t>) -> [WindowID] {
+        tiled.filter { hiddenApps.contains($0.value) }.keys.sorted()
+    }
+
+    /// A left-button drag that moved more than `threshold` points. A click that does not move is not a drag,
+    /// even when Spool's own animation moves the window under the mouse.
+    static func isDrag(from down: CGPoint?, to now: CGPoint, threshold: CGFloat = 4) -> Bool {
+        guard let down else { return false }
+        return hypot(now.x - down.x, now.y - down.y) > threshold
+    }
+
+    /// The same place on another display: keeps the position relative to the usable area.
+    static func translate(_ frame: CGRect, from a: CGRect, to b: CGRect) -> CGRect {
+        let rx = a.width > frame.width ? (frame.minX - a.minX) / (a.width - frame.width) : 0
+        let ry = a.height > frame.height ? (frame.minY - a.minY) / (a.height - frame.height) : 0
+        let w = min(frame.width, b.width), h = min(frame.height, b.height)
+        return CGRect(x: b.minX + min(max(rx, 0), 1) * (b.width - w), y: b.minY + min(max(ry, 0), 1) * (b.height - h), width: w, height: h)
+    }
+
+    /// The width a column gets when the user resized its window with the mouse.
+    static func adoptedWidth(_ width: CGFloat, metrics: StripMetrics) -> ColumnWidth {
+        let p = ColumnWidth.fixed(Double(width)).proportion(usableWidth: metrics.usableWidth, gap: metrics.gap)
+        return .proportion(min(max(p, 0.05), 1))
+    }
+}

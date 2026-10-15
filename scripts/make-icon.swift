@@ -1,4 +1,4 @@
-// Draws the Striple app icon with CoreGraphics and writes AppIcon.icns.
+// Draws the Spool app icon with CoreGraphics and writes AppIcon.icns.
 //
 // Usage: swift scripts/make-icon.swift <outdir>
 // Output: <outdir>/AppIcon.iconset/*.png and <outdir>/AppIcon.icns

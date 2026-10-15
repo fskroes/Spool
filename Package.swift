@@ -2,21 +2,21 @@
 import PackageDescription
 
 let package = Package(
-    name: "Striple",
+    name: "Spool",
     platforms: [.macOS(.v13)],
     products: [
-        // The app binary is "StripleApp" because "Striple" and "striple" collide on case-insensitive APFS.
-        .executable(name: "StripleApp", targets: ["StripleApp"]),
-        .executable(name: "striple", targets: ["striple-cli"]),
+        // The app binary is "SpoolApp" because "Spool" and "spool" collide on case-insensitive APFS.
+        .executable(name: "SpoolApp", targets: ["SpoolApp"]),
+        .executable(name: "spool", targets: ["spool-cli"]),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
     ],
     targets: [
-        .target(name: "StripleCore"),
+        .target(name: "SpoolCore"),
         .target(
-            name: "StripleEngine",
-            dependencies: ["StripleCore"],
+            name: "SpoolEngine",
+            dependencies: ["SpoolCore"],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AppKit"),
@@ -26,24 +26,24 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "StripleApp",
+            name: "SpoolApp",
             dependencies: [
-                "StripleCore",
-                "StripleEngine",
+                "SpoolCore",
+                "SpoolEngine",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             linkerSettings: [.linkedFramework("ServiceManagement")]
         ),
-        .executableTarget(name: "striple-cli", dependencies: ["StripleCore"]),
+        .executableTarget(name: "spool-cli", dependencies: ["SpoolCore"]),
         // Live E2E test (`make e2e`, docs/E2E.md). Not part of `swift test`: it moves real windows.
-        .target(name: "StripleE2EKit"),
-        .executableTarget(name: "striple-e2e", dependencies: ["StripleE2EKit", "StripleCore"]),
-        .executableTarget(name: "striple-e2e-windows", dependencies: ["StripleE2EKit"]),
-        .testTarget(name: "StripleCoreTests", dependencies: ["StripleCore"]),
-        .testTarget(name: "StripleEngineTests", dependencies: ["StripleEngine", "StripleCore"]),
+        .target(name: "SpoolE2EKit"),
+        .executableTarget(name: "spool-e2e", dependencies: ["SpoolE2EKit", "SpoolCore"]),
+        .executableTarget(name: "spool-e2e-windows", dependencies: ["SpoolE2EKit"]),
+        .testTarget(name: "SpoolCoreTests", dependencies: ["SpoolCore"]),
+        .testTarget(name: "SpoolEngineTests", dependencies: ["SpoolEngine", "SpoolCore"]),
         // Tests the pure rules inside the app (recorder, URL routes, login, single instance).
-        .testTarget(name: "StripleAppTests", dependencies: ["StripleApp", "StripleEngine", "StripleCore"]),
-        .testTarget(name: "StripleE2EKitTests", dependencies: ["StripleE2EKit"]),
+        .testTarget(name: "SpoolAppTests", dependencies: ["SpoolApp", "SpoolEngine", "SpoolCore"]),
+        .testTarget(name: "SpoolE2EKitTests", dependencies: ["SpoolE2EKit"]),
     ],
     swiftLanguageModes: [.v5]
 )
