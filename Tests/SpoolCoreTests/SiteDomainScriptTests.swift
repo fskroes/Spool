@@ -186,7 +186,8 @@ import Testing
                      "\\\"content\\\": \\\"fskroes.github.io\\\"", "\\\"proxied\\\": false"] {
             #expect(post.first?.stdin.contains(want) == true, "\(want) in \(post.first?.stdin ?? "")")
         }
-        #expect(r.pagesPuts() == [["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-f", "cname=spool.1yc.dev"],
+        #expect(r.pagesPuts() == [["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-F", "cname=null"],
+                                  ["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-f", "cname=spool.1yc.dev"],
                                   ["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-F", "https_enforced=true"]])
 
         #expect(r.calls.allSatisfy { !$0.argv.joined(separator: " ").contains(Self.token) }, "token on a command line")
@@ -258,9 +259,11 @@ import Testing
         ])
         #expect(r.status == 0, "\(r.lines) \(r.stderr)")
         #expect(r.pagesPuts().filter { $0.contains("cname=spool.1yc.dev") }.count == 1, "\(r.pagesPuts())")
+        #expect(!r.pagesPuts().contains { $0.contains("cname=null") }, "a new domain is not removed again")
     }
 
-    /// An errored certificate gets one new try. When it is still errored, a person must look.
+    /// An errored certificate gets one new try: remove the domain, then add it again (a save of the same domain
+    /// does not start a new try). When it is still errored, a person must look.
     @Test func applyRetriesAnErroredCertificateOnce() throws {
         let r = try Self.run(["apply"], rules: Self.githubDNS + [
             Self.rule("gh", ["-X PUT repos/fskroes/Spool/pages"], ""),
@@ -268,7 +271,8 @@ import Testing
         ])
         #expect(r.status == 1, "\(r.lines) \(r.stderr)")
         #expect(r.status(of: "certificate") == "fail")
-        #expect(r.pagesPuts() == [["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-f", "cname=spool.1yc.dev"]])
+        #expect(r.pagesPuts() == [["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-F", "cname=null"],
+                                  ["api", "-X", "PUT", "repos/fskroes/Spool/pages", "-f", "cname=spool.1yc.dev"]])
     }
 
     /// A GitHub CNAME with the proxy off is already right: apply writes nothing and waits for the resolver.
