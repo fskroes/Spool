@@ -1,84 +1,40 @@
 # Install Spool
 
-This page tells you how to build, install, sign, update and remove Spool.
+This page tells you how to install, build, sign, update and remove Spool.
 
 ## Requirements
 
-- macOS 13 or later.
-- The Xcode Command Line Tools with Swift 6 (`xcode-select --install`). Xcode is not necessary.
-- An internet connection for the first build. SwiftPM downloads Sparkle (the update framework).
+- macOS 13 or later. The app is a universal binary (Apple silicon and Intel).
+- Only to build from source: the Xcode Command Line Tools with Swift 6 (`xcode-select --install`), and an internet connection for the first build (SwiftPM downloads Sparkle, the update framework). Xcode is not necessary.
 
-The app is a universal binary (Apple silicon and Intel).
+## Install the release
 
-## Build from source
+1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
+2. Open `Spool.dmg` and drag Spool to Applications.
+3. Open Spool from Applications. Then do the [first run](#first-run) steps.
 
-```sh
-make test
-make app
-make dmg
-```
-
-- `make test` runs the tests, except `SigningScriptTests`. `make test-signing` runs those (see the README).
-- On a managed Mac, use `make test-quiet` in place of `make test`. It runs only the suites that start no process and make no executable file. `scripts/quiet-tests.sh --list` shows which files are in the lane and why the others are not.
-- `make app` builds and signs `dist/Spool.app`. `Packaging/updates.env` pins the signing identity of the releases. When that identity is not on your Mac, `make app` stops. The maintainer imports it (see "Keep the Accessibility permission after a rebuild"). Other builders sign with an Apple Development or Developer ID identity (`SIGN_IDENTITY="<name or SHA-1>" make app`; another self-signed identity does not work there, because the hardened runtime blocks Sparkle.framework), or ad hoc (`SIGN_IDENTITY=- make app`) and click Settings > Mac Setup > **Reset Permission** after each rebuild.
-- `make dmg` is optional. It makes `dist/Spool-<version>.dmg`.
-
-To publish a release on GitHub: `make publish-dry`, then `make publish`. See [RELEASING.md](RELEASING.md).
-
-`make app` runs `scripts/build-app.sh`. The script:
-
-1. Reads the version from the `VERSION` file. The build number is `git rev-list --count HEAD`.
-2. Builds the app and the `spool` CLI in release mode for arm64 and x86_64.
-3. Makes the app icon from `scripts/make-icon.swift` into `.build/icon/AppIcon.icns` (only when it is missing or older than the script).
-4. Makes a new `dist/Spool.app` (it deletes the old one first).
-5. Signs the bundle from the inside out and verifies it.
-
-You can change the build with these environment variables:
-
-| Variable | Default | Use |
-|---|---|---|
-| `SIGN_IDENTITY` | the local identity from `make-signing-cert.sh`. When `Packaging/updates.env` pins an identity and it is not on this Mac, the build stops. Without a pin and without a local identity: `-` (ad hoc) | The codesign identity. |
-| `SPOOL_ARCHS` | `arm64 x86_64` | For example `SPOOL_ARCHS=arm64 make app` for a faster build. |
-| `SPOOL_FEED_URL` | from `Packaging/updates.env` | The Sparkle appcast URL (https). See "Updates". |
-| `SPOOL_ED_PUBLIC_KEY` | from `Packaging/updates.env` | The Sparkle public EdDSA key. See "Updates". |
-| `SPOOL_UPDATES` | `on` | `off` builds without updates. |
-
-The bundle has this layout:
-
-```
-Spool.app/Contents/
-  Info.plist
-  MacOS/Spool                       the app (SwiftPM product SpoolApp)
-  Helpers/spool                     the CLI
-  Frameworks/Sparkle.framework
-  Library/LaunchAgents/com.fskroes.Spool.agent.plist
-  Resources/AppIcon.icns
-```
-
-To make the icon only: `make icon`.
-
-## Install
+The app and the DMG are signed with a Developer ID and notarized by Apple, and the ticket is stapled to both. Thus macOS opens Spool after a download with a browser, with no "Open Anyway" step and without a network connection. You can check it:
 
 ```sh
-make install
-./scripts/install.sh --dry-run
-./scripts/install.sh --prefix ~/Applications
+spctl --assess --type execute -vv /Applications/Spool.app
 ```
 
-- `make install` builds, then installs.
-- `--dry-run` shows what the install does and changes nothing.
-- `--prefix ~/Applications` installs into another folder.
+The output has `accepted` and `source=Notarized Developer ID`.
 
-`scripts/install.sh` does these steps:
+Spool updates itself (see [Updates](#updates-sparkle)). The Accessibility permission stays after each update: macOS stores it with the bundle ID and the Team ID of the signature, and every release has the same team.
 
-1. It quits Striple (the old name of Spool) and Spool if they run. The first time, macOS can ask if your terminal can control them. Click OK.
-2. It copies `dist/Spool.app` to `/Applications`. If you cannot write to `/Applications`, it uses `~/Applications`.
-3. It removes Striple if it finds it. See [Upgrade from Striple](#upgrade-from-striple).
-4. It makes the link `~/.local/bin/spool` to `Spool.app/Contents/Helpers/spool`. If `~/.local/bin` is not on your `PATH`, it tells you the line to add to `~/.zshrc`.
+To use the `spool` CLI in a terminal, link it once:
 
-### Install a published release
+```sh
+mkdir -p ~/.local/bin
+ln -sf /Applications/Spool.app/Contents/Helpers/spool ~/.local/bin/spool
+```
 
-Releases are at [fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). Download with `curl`, not with a browser:
+If `~/.local/bin` is not on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`.
+
+### Install the release from a terminal
+
+This block also checks the download against `SHA256SUMS.txt` of the release:
 
 ```sh
 (
@@ -114,11 +70,73 @@ On every exit, also after a stop, the `trap` line detaches the DMG and deletes t
 
 The block has no `#` comments: zsh, the default shell of macOS, does not accept comments at the prompt unless `setopt interactivecomments` is on.
 
-Why: a browser adds the quarantine flag (`com.apple.quarantine`) to a download. For an app with that flag, Gatekeeper accepts only Apple and Developer ID signatures. Spool is signed with the local certificate, so `spctl -a -t exec` says `rejected` and macOS does not open it. `curl` does not add the flag. Gatekeeper checks only apps with the flag, so the app opens. If you downloaded with a browser: System Settings > Privacy & Security > "Open Anyway" (needs an admin password), or `xattr -dr com.apple.quarantine /Applications/Spool.app`.
+If the copy that you replace was a build from source, its Accessibility entry stores another signature. Then click Settings > Mac Setup > **Reset Permission** once, and turn Spool on.
 
-The Accessibility permission stays after you replace the app: macOS stores it with the bundle ID and the signing certificate, not with the files. If the old copy was an ad hoc build, its entry does not match the new copy. Then click Settings > Mac Setup > **Reset Permission** once, and turn Spool on.
+## Build from source
 
-Sparkle updates do not have this problem: Sparkle removes the quarantine flag from the update before it installs it.
+```sh
+make test
+make app
+make dmg
+```
+
+- `make test` runs the tests, except `SigningScriptTests`. `make test-signing` runs those (see the README).
+- On a managed Mac, use `make test-quiet` in place of `make test`. It runs only the suites that start no process and make no executable file. `scripts/quiet-tests.sh --list` shows which files are in the lane and why the others are not.
+- `make app` builds and signs `dist/Spool.app`. `Packaging/updates.env` names the Apple team of the releases (`SPOOL_TEAM_ID`). When this Mac has a "Developer ID Application" identity of that team, `make app` signs with it, like a release. A Developer ID signature gets a secure timestamp from Apple, so this build needs a network connection; without one, `codesign` fails. Else it signs with the free identity of `scripts/make-signing-cert.sh` (see "Keep the Accessibility permission after a rebuild"). When this Mac has neither, `make app` stops and tells you the ways on. You can also sign with your own Apple Development or Developer ID identity (`SIGN_IDENTITY="<name or SHA-1>" make app`; a self-signed identity does not work there, because the hardened runtime blocks Sparkle.framework), or ad hoc (`SIGN_IDENTITY=- make app`) and click Settings > Mac Setup > **Reset Permission** after each rebuild.
+- `make dmg` is optional. It makes `dist/Spool-<version>.dmg`.
+
+To publish a release on GitHub: `make publish-dry`, then `make publish`. See [RELEASING.md](RELEASING.md).
+
+`make app` runs `scripts/build-app.sh`. The script:
+
+1. Reads the version from the `VERSION` file. The build number is `git rev-list --count HEAD`.
+2. Builds the app and the `spool` CLI in release mode for arm64 and x86_64.
+3. Makes the app icon from `scripts/make-icon.swift` into `.build/icon/AppIcon.icns` (only when it is missing or older than the script).
+4. Makes a new `dist/Spool.app` (it deletes the old one first).
+5. Signs the bundle from the inside out and verifies it.
+
+You can change the build with these environment variables:
+
+| Variable | Default | Use |
+|---|---|---|
+| `SIGN_IDENTITY` | the Developer ID of the team in `Packaging/updates.env`, else the local identity from `make-signing-cert.sh`. When a team is set and neither is on this Mac, the build stops. Without a team and without a local identity: `-` (ad hoc) | The codesign identity. |
+| `SPOOL_ARCHS` | `arm64 x86_64` | For example `SPOOL_ARCHS=arm64 make app` for a faster build. |
+| `SPOOL_FEED_URL` | from `Packaging/updates.env` | The Sparkle appcast URL (https). See "Updates". |
+| `SPOOL_ED_PUBLIC_KEY` | from `Packaging/updates.env` | The Sparkle public EdDSA key. See "Updates". |
+| `SPOOL_UPDATES` | `on` | `off` builds without updates. |
+
+The bundle has this layout:
+
+```
+Spool.app/Contents/
+  Info.plist
+  MacOS/Spool                       the app (SwiftPM product SpoolApp)
+  Helpers/spool                     the CLI
+  Frameworks/Sparkle.framework
+  Library/LaunchAgents/com.fskroes.Spool.agent.plist
+  Resources/AppIcon.icns
+```
+
+To make the icon only: `make icon`.
+
+## Install a build from source
+
+```sh
+make install
+./scripts/install.sh --dry-run
+./scripts/install.sh --prefix ~/Applications
+```
+
+- `make install` builds, then installs.
+- `--dry-run` shows what the install does and changes nothing.
+- `--prefix ~/Applications` installs into another folder.
+
+`scripts/install.sh` does these steps:
+
+1. It quits Striple (the old name of Spool) and Spool if they run. The first time, macOS can ask if your terminal can control them. Click OK.
+2. It copies `dist/Spool.app` to `/Applications`. If you cannot write to `/Applications`, it uses `~/Applications`.
+3. It removes Striple if it finds it. See [Upgrade from Striple](#upgrade-from-striple).
+4. It makes the link `~/.local/bin/spool` to `Spool.app/Contents/Helpers/spool`. If `~/.local/bin` is not on your `PATH`, it tells you the line to add to `~/.zshrc`.
 
 ### Upgrade from Striple
 
@@ -184,7 +202,9 @@ Make a self-signed code signing certificate one time. Then each build has the sa
 
 The first command shows the steps. It reads and changes no keychain. The second command makes the identity "Striple Local Signing" and its backup.
 
-When `Packaging/updates.env` has a pin (`SPOOL_SIGNING_CERT_SHA1`), the second command stops and makes nothing. With a new identity, every installed copy would lose the Accessibility permission after the next update, while the switch still shows on. Restore the pinned identity from its backup with `--import` (see below). To change the identity of the releases on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `SPOOL_UPDATES_ENV` sets another file than `Packaging/updates.env`. If that file is not there, the script stops: a missing file would turn the pin off.
+This identity is for your own builds. The releases do not use it: they are signed with the Developer ID of the team in `Packaging/updates.env` (`SPOOL_TEAM_ID`). When this Mac has that Developer ID, `make app` uses it and not this identity.
+
+The script can also pin one identity, for a fork that publishes with a self-signed identity: `SPOOL_SIGNING_CERT_SHA1` in `Packaging/updates.env`. This repository sets no pin. With a pin, the second command stops and makes nothing: with a new identity, every installed copy would lose the Accessibility permission after the next update, while the switch still shows on. Restore the pinned identity from its backup with `--import` (see below). To change the pinned identity on purpose, use `./scripts/make-signing-cert.sh --new-identity`. Then set the pin to the new SHA-1, as the script tells you. `SPOOL_UPDATES_ENV` sets another file than `Packaging/updates.env`. If that file is not there, the script stops: a missing file would turn the pin off.
 
 The script:
 
@@ -217,7 +237,7 @@ With a pin, the script accepts only the pinned identity. It stops and changes no
 - the backup that you import has another SHA-1, or has no private key (also without a pin),
 - the keychain has another identity. Remove it with `--remove --yes`, then import the backup of the pinned identity.
 
-After that, `make app` uses the identity automatically. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. When the keychain has another identity than the pin, `make app` stops. When `Packaging/updates.env` has a pin and `make app` does not find the local identity (not made, not imported, or its keychain does not unlock), `make app` also stops: an ad hoc build there gets a grant that no later build matches (see below). Without a pin and without a local identity, it signs ad hoc and warns. `SIGN_IDENTITY=- make app` makes an ad hoc test build on purpose. If you give such a build the Accessibility permission, the entry stops working after the next build, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission. `make install` warns when the app is not signed with the pinned identity: a grant for an ad hoc app stops working after the next build, and a grant for an app with another identity stops working after an update. In both cases the switch still shows on. After it signs, `build-app.sh` checks that the designated requirement names the certificate, and stops if it does not. After the first build with the new identity, remove the old Spool entry and give the permission again (see below). Turning the switch off and on is not enough.
+After that, `make app` uses the identity automatically, when this Mac has no Developer ID of the team of the releases. It selects the identity by its SHA-1 hash, so a certificate with the same name in another keychain is never used. When `Packaging/updates.env` names a team and `make app` finds neither the Developer ID of that team nor the local identity (not made, not imported, or its keychain does not unlock), `make app` stops: an ad hoc build there gets a grant that no later build matches (see below). Without a team and without a local identity, it signs ad hoc and warns. `SIGN_IDENTITY=- make app` makes an ad hoc test build on purpose. If you give such a build the Accessibility permission, the entry stops working after the next build, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission. `make app` and `make install` warn when the app is not signed by the team of the releases: a grant for an ad hoc app stops working after the next build, and a grant for an app with another identity stops working after an update to a release. In both cases the switch still shows on. After it signs, `build-app.sh` checks that the designated requirement names the certificate (or, for the Developer ID, the team), and stops if it does not. After the first build with the new identity, remove the old Spool entry and give the permission again (see below). Turning the switch off and on is not enough.
 
 Check the identity:
 
@@ -251,7 +271,7 @@ The script cannot make a backup of an identity that is in the keychain already. 
 Notes:
 
 - The local identity has no Apple Team ID. Thus `build-app.sh` does not use the hardened runtime with it. With the hardened runtime, library validation would block Sparkle.framework.
-- The certificate is only on your Mac. Other people cannot check it. To give Spool to other people, use a Developer ID certificate and notarization: `SIGN_IDENTITY="Developer ID Application: ..." make app`. With a Developer ID identity, `build-app.sh` adds `--options runtime --timestamp`. Notarization (`xcrun notarytool`) is not in the scripts.
+- The certificate is only on your Mac. Other people cannot check it. The releases use a Developer ID and notarization instead: `make publish` notarizes the app and the DMG with `xcrun notarytool` and staples the tickets (see [RELEASING.md](RELEASING.md)). With a Developer ID identity, `build-app.sh` adds `--options runtime --timestamp`.
 - On this Mac (Intune managed) the script works: no MDM profile stops a user keychain or user Accessibility grants. If a Mac has rules that stop it, use ad hoc signing (`SIGN_IDENTITY=- make app`). Then after each build, click Settings > Mac Setup > Reset Permission and turn Spool on again.
 
 ### The switch is on, but Spool has no permission
@@ -323,7 +343,7 @@ Spool uses the plain login item only when the agent is `notRegistered` or `notFo
 
 ## Updates (Sparkle)
 
-Spool uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates come from the public repository [fskroes/spool-releases](https://github.com/fskroes/spool-releases). `build-app.sh` reads the feed URL and the public EdDSA key from `Packaging/updates.env` and writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist. Then Spool checks for updates every 24 hours, and "Check for Updates…" in the menu is on.
+Spool uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates come from the releases of [fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). `build-app.sh` reads the feed URL and the public EdDSA key from `Packaging/updates.env` and writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist. Then Spool checks for updates every 24 hours, and "Check for Updates…" in the menu is on.
 
 `SPOOL_UPDATES=off make app` builds without updates. Without the keys, Spool makes no Sparkle object and shows no update errors. This is also true for `swift run`.
 
@@ -353,7 +373,7 @@ NN Mac where Spool was made (2026-10-12) the result was:
 
 | Control | Result | Effect on Spool |
 |---|---|---|
-| Gatekeeper (`AllowIdentifiedDevelopers = 1`) | Apps from identified developers are allowed | A self-signed app with the quarantine flag is blocked. See [Install a published release](#install-a-published-release). |
+| Gatekeeper (`AllowIdentifiedDevelopers = 1`) | Apps from identified developers are allowed | The release is a notarized Developer ID app, so Gatekeeper allows it. A self-signed build with the quarantine flag is blocked. See [Install the release](#install-the-release). |
 | Privacy (TCC) profiles | They only allow access for named apps (OneDrive, Edge, Defender, Intune and others). No profile denies Accessibility. | You can give Spool the Accessibility permission. |
 | App block lists | None | Spool can run. |
 | Security tools | Microsoft Defender and Zscaler are installed | They can see and report the app. |

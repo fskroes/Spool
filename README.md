@@ -136,23 +136,27 @@ How Spool stays fast:
 
 ## Install
 
-Requirements: macOS 13 or later, the Xcode Command Line Tools (`xcode-select --install`).
+Requirements: macOS 13 or later.
+
+1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
+2. Open it and drag Spool to Applications.
+3. Open Spool. At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.
+
+The app is signed with a Developer ID and notarized by Apple, so macOS opens it with no extra step. Spool updates itself: **Check for Updates…** in the menu bar menu, or automatically every 24 hours. The Accessibility permission stays after each update, because every release is signed by the same Apple team. To link the `spool` CLI, see [docs/INSTALL.md](docs/INSTALL.md#install-the-release).
+
+### Build from source
+
+Requirements: the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
+scripts/make-signing-cert.sh
 make install
 open /Applications/Spool.app
 ```
 
-`make install` builds `dist/Spool.app` and copies it to `/Applications`.
+`scripts/make-signing-cert.sh` makes a free, self-signed signing identity one time. With it, every build has the same signature, so the Accessibility permission stays after a rebuild. `make install` builds `dist/Spool.app`, copies it to `/Applications` and links `spool` to `~/.local/bin`. On the maintainer's Mac, `make install` signs with the Developer ID of the releases instead. Without either identity, `make install` stops and lists the ways on. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild).
 
-At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.
-
-An ad hoc signed build gets a new signature with each rebuild. Then the Accessibility entry no longer matches: the switch still shows on, but Spool has no permission. A stable signing identity prevents this. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild).
-
-`Packaging/updates.env` pins the signing identity of the Spool releases. Only the maintainer has it. When it is not on your Mac, `make install` stops with "the local signing identity is not found". Then do one of these:
-
-- The maintainer: restore the identity with `scripts/make-signing-cert.sh --import <backup file>`.
-- Other builders: sign with an Apple Development or Developer ID identity (from Xcode), `SIGN_IDENTITY="<name or SHA-1>" make install`. Another self-signed identity does not work here: `build-app.sh` then adds the hardened runtime, and that blocks Sparkle.framework. Sparkle updates are signed with the pin. Each time the app changes between your build and an update, click Settings > Mac Setup > **Reset Permission**. Or sign ad hoc, `SIGN_IDENTITY=- make install`, and after each rebuild click Settings > Mac Setup > **Reset Permission** and turn Spool on.
+A build from source is not signed like a release. When Sparkle updates it to a release, the Accessibility entry no longer matches: click Settings > Mac Setup > **Reset Permission** once. To keep your own build, build it with `SPOOL_UPDATES=off make install`.
 
 If System Settings shows Spool on, but Spool says "Accessibility permission needed", click Settings > Mac Setup > **Reset Permission**, then turn Spool on. See [docs/INSTALL.md](docs/INSTALL.md#the-switch-is-on-but-spool-has-no-permission).
 
@@ -263,7 +267,7 @@ The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pa
 - Window focus uses private SkyLight calls, as other window managers on macOS do. A future macOS can change them; Spool then falls back to normal app activation.
 - Trackpad swipes use the private MultitouchSupport framework.
 - On a Mac that your employer manages, ask IT before you use Spool. See [Use on a managed work Mac](docs/INSTALL.md#use-on-a-managed-work-mac).
-- Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. Updates come from [fskroes/spool-releases](https://github.com/fskroes/spool-releases). See [docs/RELEASING.md](docs/RELEASING.md).
+- Releases are signed with a Developer ID and notarized by Apple. Downloads and updates come from the [releases of fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). See [docs/RELEASING.md](docs/RELEASING.md).
 - There is no license file yet. The source is public, but until a license is added, the default copyright rules apply.
 
 ## Related projects

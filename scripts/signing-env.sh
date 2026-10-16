@@ -2,7 +2,8 @@
 # shellcheck shell=bash
 
 # The identity, its keychain and the password item keep the old name of Spool, Striple: the name is in the
-# certificate that Packaging/updates.env pins. A new name needs a new identity (docs/RELEASING.md).
+# certificate of every build from source signed with it. A new name needs a new identity, and the
+# Accessibility permission of those builds stops working.
 SPOOL_SIGNING_NAME="Striple Local Signing"
 # Tests point this at a temporary path.
 SPOOL_SIGNING_KEYCHAIN="${SPOOL_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/striple-signing.keychain-db}"
@@ -80,6 +81,16 @@ spool_signing_remove_from_search_list() {
     # An empty list would hide the login keychain from every app.
     [[ ${#paths[@]} -gt 0 ]] || paths=("$SPOOL_LOGIN_KEYCHAIN")
     "$SPOOL_SECURITY" list-keychains -d user -s "${paths[@]}"
+}
+
+# Prints the SHA-1 of a valid "Developer ID Application" identity of team $1 in the keychain search list,
+# the identity of the releases. Status 1 (no output) when there is none. `-v` lists only identities with
+# a trusted, unexpired certificate. Reads names only: no key, no password. Needs spool_developer_id_in
+# from release-lib.sh.
+spool_developer_id() {
+    local list
+    list=$("$SPOOL_SECURITY" find-identity -v -p codesigning 2>/dev/null) || return 1
+    spool_developer_id_in "$list" "$1"
 }
 
 # Prints the SHA-1 of the identity and leaves its keychain unlocked and on the search list.

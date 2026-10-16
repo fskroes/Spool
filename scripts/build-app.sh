@@ -2,10 +2,11 @@
 # Builds and signs dist/Spool.app. Used by `make app`.
 #
 # Environment (all optional):
-#   SIGN_IDENTITY          codesign identity. Default: "Striple Local Signing" when
-#                          scripts/make-signing-cert.sh made it, else "-" (ad hoc).
-#                          When Packaging/updates.env pins an identity (SPOOL_SIGNING_CERT_SHA1)
-#                          and the local identity is another one or is not found, the build stops.
+#   SIGN_IDENTITY          codesign identity. Default: the "Developer ID Application" identity of
+#                          the team in Packaging/updates.env (SPOOL_TEAM_ID), the identity of the
+#                          releases. Else "Striple Local Signing" when scripts/make-signing-cert.sh
+#                          made it. When a team is set and neither is found, the build stops.
+#                          Without a team: "-" (ad hoc).
 #                          SIGN_IDENTITY=- makes an ad hoc test build on purpose.
 #   SPOOL_ARCHS            architectures to build. Default: "arm64 x86_64" (universal).
 #   SPOOL_FEED_URL         Sparkle appcast URL (https). Default: from Packaging/updates.env.
@@ -59,32 +60,32 @@ if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
     [[ "$FEED_URL" == https://* ]] || die "SPOOL_FEED_URL must use https"
 fi
 
-# Signing identity. LOCAL: the self-signed identity of make-signing-cert.sh (by its SHA-1, so a
-# certificate with the same name in another keychain is never used). Packaging/updates.env pins
-# the identity of the releases: a build with another local identity stops.
+# Signing identity. Packaging/updates.env names the team of the releases (SPOOL_TEAM_ID). A
+# "Developer ID Application" identity of that team signs like a release: the Accessibility permission
+# stays after a rebuild and after every update. Else LOCAL: the self-signed identity of
+# make-signing-cert.sh (by its SHA-1, so a certificate with the same name in another keychain is never
+# used).
 LOCAL=0
-PIN=$(spool_updates_value "$UPDATES_ENV" SPOOL_SIGNING_CERT_SHA1)
+RELEASE=0
+TEAM=$(spool_updates_value "$UPDATES_ENV" SPOOL_TEAM_ID)
+[[ -z "$TEAM" ]] || spool_team_id_valid "$TEAM" || die "SPOOL_TEAM_ID in Packaging/updates.env is not a Team ID: $TEAM"
+DEVID=""
 LOCAL_HASH=""
-[[ -n "${SIGN_IDENTITY:-}" ]] || LOCAL_HASH=$(spool_signing_identity) || LOCAL_HASH=""
-case "$(spool_build_identity "$PIN" "$LOCAL_HASH" "${SIGN_IDENTITY:-}")" in
-    explicit) IDENTITY=$SIGN_IDENTITY ;;
-    local) IDENTITY=$LOCAL_HASH; LOCAL=1 ;;
-    adhoc) IDENTITY="-" ;;
-    missing) die "$(spool_missing_identity_message "$PIN")" ;;
-    *) die "the local signing identity is $LOCAL_HASH, but Packaging/updates.env pins $PIN.
-An app with this identity loses the Accessibility permission of the installed copies.
-Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>.
-For a test build only: SIGN_IDENTITY=- make app (ad hoc)." ;;
-esac
-if [[ -n "$PIN" && $LOCAL -eq 0 && "$IDENTITY" != "-" ]]; then
-    warn "this build is not signed with the pinned identity $PIN (signed with: $IDENTITY).
-Updates are signed with the pinned identity. After an update, the Accessibility entry of an installed
-copy stops working, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission.
-See docs/INSTALL.md."
+if [[ -z "${SIGN_IDENTITY:-}" ]]; then
+    [[ -z "$TEAM" ]] || DEVID=$(spool_developer_id "$TEAM") || DEVID=""
+    [[ -n "$DEVID" ]] || LOCAL_HASH=$(spool_signing_identity) || LOCAL_HASH=""
 fi
+case "$(spool_build_identity "$TEAM" "$DEVID" "$LOCAL_HASH" "${SIGN_IDENTITY:-}")" in
+    explicit) IDENTITY=$SIGN_IDENTITY ;;
+    release) IDENTITY=$DEVID; RELEASE=1 ;;
+    local) IDENTITY=$LOCAL_HASH; LOCAL=1 ;;
+    missing) die "$(spool_missing_identity_message "$TEAM")" ;;
+    *) IDENTITY="-" ;;
+esac
 # Hardened runtime and secure timestamps need an Apple-issued identity (Developer ID or
 # Apple Development). With ad hoc or the self-signed local identity there is no Team ID,
 # so library validation under the hardened runtime would refuse to load Sparkle.
+# Notarization needs both.
 SIGN_FLAGS=(--force --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" && $LOCAL -eq 0 && "$IDENTITY" != "$SPOOL_SIGNING_NAME" ]]; then
     SIGN_FLAGS+=(--options runtime --timestamp)
@@ -168,9 +169,11 @@ done
 if [[ "$IDENTITY" == "-" ]]; then
     warn "signing ad hoc. An Accessibility grant for this build stops working after the next build,"
     warn "and the switch in System Settings still shows on. Then use Settings > Mac Setup > Reset Permission."
-    warn "$(spool_stable_identity_hint "$PIN")"
+    warn "$(spool_stable_identity_hint "$TEAM")"
 fi
-if [[ $LOCAL -eq 1 ]]; then
+if [[ $RELEASE -eq 1 ]]; then
+    log "Signing with the Developer ID of team $TEAM ($IDENTITY)"
+elif [[ $LOCAL -eq 1 ]]; then
     log "Signing with identity: $SPOOL_SIGNING_NAME ($IDENTITY)"
 else
     log "Signing with identity: $IDENTITY"
@@ -195,10 +198,20 @@ sign "$APP"
 log "Verifying"
 plutil -lint "$PLIST" "$CONTENTS/Library/LaunchAgents/$AGENT_PLIST"
 codesign --verify --deep --strict "$APP"
-if [[ $LOCAL -eq 1 ]]; then
+DR=$(codesign -d -r - "$APP" 2>&1)
+if [[ $RELEASE -eq 1 ]]; then
+    # The Accessibility permission of a release stays while the requirement names the team.
+    spool_dr_is_team "$DR" "$BUNDLE_ID" "$TEAM" || die "the designated requirement does not name the team $TEAM"
+elif [[ $LOCAL -eq 1 ]]; then
     # The Accessibility permission stays only while the requirement names the certificate, not a cdhash.
-    [[ "$(codesign -d -r - "$APP" 2>&1)" == *"identifier \"$BUNDLE_ID\" and certificate leaf = H\""* ]] \
+    [[ "$DR" == *"identifier \"$BUNDLE_ID\" and certificate leaf = H\""* ]] \
         || die "the designated requirement does not name the local certificate"
+fi
+if [[ -n "$TEAM" && "$IDENTITY" != "-" ]] && ! spool_dr_is_team "$DR" "$BUNDLE_ID" "$TEAM"; then
+    warn "this build is not signed by the team $TEAM of the releases (signed with: $IDENTITY).
+Releases are signed by that team. After an update to a release, the Accessibility entry of this copy
+stops working, while the switch still shows on. Then click Settings > Mac Setup > Reset Permission.
+See docs/INSTALL.md."
 fi
 [[ -e "$SPARKLE/Versions/B/Sparkle" ]] || die "Sparkle binary missing in the bundle"
 

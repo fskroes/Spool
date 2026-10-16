@@ -273,7 +273,7 @@ footer a,.note a{display:inline-block;padding:4px 0}
       <p class="lead">Windows sit side by side on one endless strip. <strong>A new window never makes the other windows smaller.</strong> You move the view with the keyboard, a trackpad swipe or the CLI.</p>
       <div class="hero-row">
         <div class="cta">
-          <a class="btn primary" href="#install">Install from source</a>
+          <a class="btn primary" href="https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg">Download Spool.dmg</a>
           <a class="btn" href="https://github.com/fskroes/Spool">View on GitHub</a>
         </div>
         <ul class="chips" aria-label="Facts">
@@ -355,28 +355,39 @@ footer a,.note a{display:inline-block;padding:4px 0}
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
       <p class="tag">Install</p>
-      <h2 id="install-h">Build it. Run it. One permission.</h2>
-      <p class="sub">There is no download. You build Spool from source. You need macOS 13 or later and the Xcode Command Line Tools.</p>
+      <h2 id="install-h">Download it. Open it. One permission.</h2>
+      <p class="sub">Spool is signed with a Developer ID and notarized by Apple. macOS opens it with no extra step. You need macOS 13 or later.</p>
       <div class="split">
-        <div class="pre">
-          <button class="copy" type="button" data-copy="git clone https://github.com/fskroes/Spool.git&#10;cd Spool&#10;SPOOL_UPDATES=off SIGN_IDENTITY=- make install&#10;open /Applications/Spool.app" aria-label="Copy the install commands">Copy</button>
-<pre tabindex="0"><span class="c"># once: xcode-select --install</span>
-git clone https://github.com/fskroes/Spool.git
-cd Spool
-<span class="p">SPOOL_UPDATES=off SIGN_IDENTITY=- make install</span>
-<span class="p">open /Applications/Spool.app</span></pre>
+        <div>
+          <p><a class="btn primary" href="https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg">Download Spool.dmg</a></p>
+          <p class="sub">All versions and checksums: <a href="https://github.com/fskroes/spool-releases/releases">github.com/fskroes/spool-releases/releases</a>.</p>
         </div>
         <ol class="steps">
-          <li><strong>make install</strong> builds <code>dist/Spool.app</code>, signs it ad hoc and copies it to <code>/Applications</code>. When you cannot write to <code>/Applications</code>, it uses <code>~/Applications</code>: then open <code>~/Applications/Spool.app</code>. It also links the <code>spool</code> tool to <code>~/.local/bin</code>. If that folder is not on your <code>PATH</code>, the install prints the line to add to <code>~/.zshrc</code>.</li>
+          <li><strong>Open Spool.dmg</strong> and drag Spool to Applications.</li>
           <li><strong>Open the app.</strong> The guide at first launch asks for the Accessibility permission.</li>
           <li><strong>Grant Accessibility</strong> in System Settings &gt; Privacy &amp; Security &gt; Accessibility. It is the only permission Spool needs.</li>
         </ol>
       </div>
       <div class="fix" id="sign">
-        <p><strong>Why SIGN_IDENTITY=-?</strong> The release signing identity is only on the maintainer's Mac. Without it, a plain <code>make install</code> stops with "the local signing identity is not found". <code>SIGN_IDENTITY=-</code> signs your build ad hoc instead.</p>
-        <p><strong>Why SPOOL_UPDATES=off?</strong> Every build from this repository reads <code>Packaging/updates.env</code> and checks the maintainer's update feed on github.com. An update from that feed has the maintainer's signature, so your Mac would see a different app and Spool would lose the Accessibility permission. <code>SPOOL_UPDATES=off</code> builds an app with no update feed. It makes no network requests. To update, run <code>git pull</code> and the same <code>make install</code> again.</p>
-        <p>An ad hoc build gets a new signature each time you rebuild. After each rebuild, click Settings &gt; Mac Setup &gt; <strong>Reset Permission</strong> and turn Spool on again. With an Apple Development or Developer ID identity from Xcode, use <code>SIGN_IDENTITY="&lt;name or SHA-1&gt;" make install</code> instead. Details: <a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>.</p>
-        <p><strong>Status:</strong> personal signing, not notarized, build from source. The source is public, but there is no license file yet.</p>
+        <p><strong>Updates.</strong> Spool updates itself with Sparkle: <strong>Check for Updates…</strong> in the menu bar menu, or automatically every 24 hours. Every release is signed by the same Apple team, so macOS keeps the Accessibility permission after each update.</p>
+        <p><strong>The spool tool.</strong> The app includes the <code>spool</code> CLI. To use it in a terminal, link it once: <code>ln -sf /Applications/Spool.app/Contents/Helpers/spool ~/.local/bin/spool</code>. Details: <a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>.</p>
+      </div>
+      <h3 id="source" style="margin:34px 0 14px">Or build it from source</h3>
+      <div class="split">
+        <div class="pre">
+          <button class="copy" type="button" data-copy="git clone https://github.com/fskroes/Spool.git&#10;cd Spool&#10;scripts/make-signing-cert.sh&#10;make install&#10;open /Applications/Spool.app" aria-label="Copy the build commands">Copy</button>
+<pre tabindex="0"><span class="c"># once: xcode-select --install</span>
+git clone https://github.com/fskroes/Spool.git
+cd Spool
+<span class="p">scripts/make-signing-cert.sh</span>
+<span class="p">make install</span>
+<span class="p">open /Applications/Spool.app</span></pre>
+        </div>
+        <ol class="steps">
+          <li><strong>scripts/make-signing-cert.sh</strong> makes a free, self-signed signing identity, one time. With it, every build has the same signature, so the Accessibility permission stays after a rebuild.</li>
+          <li><strong>make install</strong> builds <code>dist/Spool.app</code> and copies it to <code>/Applications</code> (or <code>~/Applications</code>). It also links the <code>spool</code> tool to <code>~/.local/bin</code>.</li>
+          <li><strong>Updates.</strong> Your build gets the same Sparkle updates as the release. After the first update to a release, click Settings &gt; Mac Setup &gt; <strong>Reset Permission</strong> once. To keep your own build, use <code>SPOOL_UPDATES=off make install</code>.</li>
+        </ol>
       </div>
     </div>
   </section>
@@ -496,15 +507,15 @@ Display: Built-in Retina Display (on, space 5)
       <div style="margin-top:22px">
         <details open>
           <summary>Is there a download?</summary>
-          <p>No. Releases are signed with a personal certificate and are not notarized, so they are for the owner's own Macs. You build Spool from source with <code>make install</code>.</p>
+          <p>Yes. <a href="https://github.com/fskroes/spool-releases/releases/latest">Spool.dmg</a> is signed with a Developer ID and notarized by Apple, so macOS opens it after a download. Spool updates itself.</p>
         </details>
         <details>
-          <summary>Why not a plain make install?</summary>
-          <p>The release signing identity is only on the maintainer's Mac, so a plain <code>make install</code> stops for everyone else. The <a href="#sign">install section</a> explains the ad hoc build.</p>
+          <summary>Can I build it myself?</summary>
+          <p>Yes. Run <code>scripts/make-signing-cert.sh</code> once, then <code>make install</code>. See <a href="#source">build from source</a>.</p>
         </details>
         <details>
           <summary>What does Spool send out?</summary>
-          <p>Spool measures its own speed, cost and problems on your Mac. The metrics never leave your Mac. They keep no window titles and no keys. You can turn the metrics off in Settings &gt; General. The only network use is the Sparkle update check. A plain <code>make install</code> turns it on and checks the maintainer's feed on github.com. The install command on this page uses <code>SPOOL_UPDATES=off</code>, so that build makes no network requests.</p>
+          <p>Spool measures its own speed, cost and problems on your Mac. The metrics never leave your Mac. They keep no window titles and no keys. You can turn the metrics off in Settings &gt; General. The only network use is the Sparkle update check: it reads the update feed of the releases on github.com. A build with <code>SPOOL_UPDATES=off make install</code> has no update feed and makes no network requests.</p>
         </details>
         <details>
           <summary>Is it open source?</summary>

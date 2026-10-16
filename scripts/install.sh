@@ -19,7 +19,7 @@ readonly LEGACY_LINK="$BIN_DIR/striple"
 readonly SYSTEM_APPS=${SPOOL_SYSTEM_APPS:-/Applications}
 # Asks macOS which apps run. Tests set a fake, so the result does not depend on the apps that run on the Mac.
 readonly OSASCRIPT=${SPOOL_OSASCRIPT:-osascript}
-# The settings with the pinned signing identity. Tests point it at another file.
+# The settings with the Team ID of the releases. Tests point it at another file.
 readonly UPDATES_ENV=${SPOOL_UPDATES_ENV:-$ROOT/Packaging/updates.env}
 # shellcheck source=release-lib.sh
 source "$ROOT/scripts/release-lib.sh"
@@ -223,18 +223,18 @@ if same_file "$SOURCE_APP" "$DEST"; then
 fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"
 codesign --verify --deep --strict "$SOURCE_APP" || die "$SOURCE_APP has a bad code signature. Run 'make app' again."
-# Another signature than the pinned one: an Accessibility entry for it stops working, while the switch
-# still shows on. For an ad hoc app after the next build, for another identity after an update
-# (releases have the pinned signature).
+# Another signature than the one of the releases: an Accessibility entry for it stops working, while the
+# switch still shows on. For an ad hoc app after the next build, for another identity after an update
+# (releases have the Developer ID signature of the team).
 spool_updates_env_usable "$UPDATES_ENV" || die "$UPDATES_ENV not found. Set SPOOL_UPDATES_ENV to the settings file."
-PIN=$(spool_updates_value "$UPDATES_ENV" SPOOL_SIGNING_CERT_SHA1)
-case "$(spool_install_signature "$PIN" "$(codesign -d -r - "$SOURCE_APP" 2>&1)" "$BUNDLE_ID")" in
-    adhoc) warn "$SOURCE_APP is signed ad hoc, not with the pinned identity $PIN.
+TEAM=$(spool_updates_value "$UPDATES_ENV" SPOOL_TEAM_ID)
+case "$(spool_install_signature "$TEAM" "$(codesign -d -r - "$SOURCE_APP" 2>&1)" "$BUNDLE_ID")" in
+    adhoc) warn "$SOURCE_APP is signed ad hoc, not by the team $TEAM of the releases.
 If you give it the Accessibility permission, that entry stops working after the next build,
 while the switch still shows on. Then click Settings > Mac Setup > Reset Permission again.
-$(spool_stable_identity_hint "$PIN")" ;;
-    other) warn "$SOURCE_APP is not signed with the pinned identity $PIN.
-Updates are signed with the pinned identity. After an update, the Accessibility entry stops working,
+$(spool_stable_identity_hint "$TEAM")" ;;
+    other) warn "$SOURCE_APP is not signed by the team $TEAM of the releases.
+Updates are signed by that team. After an update, the Accessibility entry stops working,
 while the switch still shows on. Then click Settings > Mac Setup > Reset Permission." ;;
 esac
 
