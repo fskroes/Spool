@@ -6,12 +6,13 @@
 #      v<version> in the releases repository (also no draft), a CHANGELOG.md section for
 #      VERSION, the Sparkle private key matches Packaging/updates.env, this Mac has a
 #      "Developer ID Application" identity of the team in Packaging/updates.env (SPOOL_TEAM_ID),
-#      and the notarytool profile SPOOL_NOTARY_PROFILE works. A real run also needs the commit
-#      on main of the source repository (SPOOL_SOURCE_REPO) on GitHub, and no tag v<version> in the
-#      releases repository yet.
+#      and the notarytool profile SPOOL_NOTARY_PROFILE works, and SPOOL_LICENSE_PUBLIC_KEY is a
+#      valid public key that is not the test key of docs/license-test-vectors.json. A real run also
+#      needs the commit on main of the source repository (SPOOL_SOURCE_REPO) on GitHub, and no tag
+#      v<version> in the releases repository yet.
 #      The published archive must have the same signing team and update key.
 #   2. Builds dist/Spool.app (universal, updates on, hardened runtime) and checks its Info.plist
-#      and signature.
+#      (also SpoolLicensePublicKey) and signature.
 #   3. Notarizes the app with Apple, staples the ticket to it, and asks Gatekeeper.
 #   4. Makes dist/release/<version>/ (a dry run: dist/release/dry-run/<version>/):
 #      Spool-<version>.zip (the Sparkle archive), Spool.dmg (signed, notarized and stapled),
@@ -88,12 +89,19 @@ KEY=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_PUBLIC_KEY)
 ACCOUNT=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_KEY_ACCOUNT)
 TEAM=$(spool_updates_value "$UPDATES_ENV" SPOOL_TEAM_ID)
 PROFILE=$(spool_updates_value "$UPDATES_ENV" SPOOL_NOTARY_PROFILE)
+LICENSE_KEY=$(spool_updates_value "$UPDATES_ENV" SPOOL_LICENSE_PUBLIC_KEY)
 [[ -n "$REPO" && -n "$SOURCE" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$TEAM" && -n "$PROFILE" ]] \
     || die "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_SOURCE_REPO, SPOOL_FEED_URL, SPOOL_ED_PUBLIC_KEY, SPOOL_ED_KEY_ACCOUNT, SPOOL_TEAM_ID and SPOOL_NOTARY_PROFILE"
 # The source is private, the releases repository is public: a release must never go to the source.
 [[ "$REPO" != "$SOURCE" ]] || die "SPOOL_RELEASES_REPO must not be the source repository $SOURCE"
 [[ "$FEED" == "$(spool_feed_url_for_repo "$REPO")" ]] \
     || die "SPOOL_FEED_URL must be $(spool_feed_url_for_repo "$REPO")"
+[[ -n "$LICENSE_KEY" ]] || die "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is empty: an app without it asks for a license that no key can open.
+Make the key pair once with spool-license keygen and put the public key in Packaging/updates.env (docs/RELEASING.md, \"License keys\")."
+spool_license_key_valid "$LICENSE_KEY" || die "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is not a 32-byte public key in base64: $LICENSE_KEY"
+# The seed of the test key is public (docs/license-test-vectors.json): anyone could make keys for this app.
+[[ "$LICENSE_KEY" != "$(spool_license_test_key "$ROOT/docs/license-test-vectors.json" || echo none)" ]] \
+    || die "SPOOL_LICENSE_PUBLIC_KEY is the public test key of docs/license-test-vectors.json. Use the key that spool-license keygen made."
 spool_team_id_valid "$TEAM" || die "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got '$TEAM'"
 [[ -z "${SIGN_IDENTITY:-}" ]] || die "unset SIGN_IDENTITY: releases are signed with the Developer ID of team $TEAM only"
 [[ "${SPOOL_UPDATES:-on}" == on ]] || die "unset SPOOL_UPDATES: a release must have updates on"
@@ -241,7 +249,7 @@ fi
 
 # --- 2. Build --------------------------------------------------------------------------------
 log "Building the app"
-env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_ARCHS -u SPOOL_UPDATES \
+env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY -u SPOOL_ARCHS -u SPOOL_UPDATES \
     "$ROOT/scripts/build-app.sh"
 
 PLIST="$APP/Contents/Info.plist"
@@ -251,6 +259,7 @@ plist() { plutil -extract "$1" raw -o - "$PLIST" 2>/dev/null; }
 [[ "$(plist CFBundleVersion)" == "$BUILD" ]] || die "the app build is not $BUILD"
 [[ "$(plist SUFeedURL)" == "$FEED" ]] || die "the app has the wrong SUFeedURL"
 [[ "$(plist SUPublicEDKey)" == "$KEY" ]] || die "the app has the wrong SUPublicEDKey"
+[[ "$(plist SpoolLicensePublicKey)" == "$LICENSE_KEY" ]] || die "the app has the wrong SpoolLicensePublicKey"
 codesign --verify --deep --strict "$APP" || die "the signature of the app is not valid"
 spool_dr_is_team "$(codesign -d -r - "$APP" 2>&1)" "$BUNDLE_ID" "$TEAM" \
     || die "the app is not signed with the Developer ID of team $TEAM"
@@ -397,6 +406,7 @@ REMOTE_TAG=$(spool_release_remote_tag "$REPO" "$TAG") || die "$REMOTE_TAG"
     printf '# Spool %s, build %s\n\n%s\n\n' "$VERSION" "$BUILD" "$NOTES"
     printf '**Install:** download `Spool.dmg`, open it, and drag Spool to Applications. '
     printf 'The app is signed with a Developer ID and notarized by Apple.\n\n'
+    printf '**License:** Spool needs a license key. Buy one for EUR 0.99 at https://1yc.dev/spool.\n\n'
     printf 'Spool updates itself: **Check for Updates…** in the menu bar menu.\n'
     printf 'Checksums: `SHA256SUMS.txt`. Source commit: `%s`.\n' "$COMMIT"
 } > "$TMP/body.md"

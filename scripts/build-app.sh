@@ -12,6 +12,10 @@
 #   SPOOL_FEED_URL         Sparkle appcast URL (https). Default: from Packaging/updates.env.
 #   SPOOL_ED_PUBLIC_KEY    Sparkle EdDSA public key. Default: from Packaging/updates.env.
 #   SPOOL_UPDATES          "off" builds without Sparkle updates (no feed, no key).
+#   SPOOL_LICENSE_PUBLIC_KEY  the public key that checks license keys (32 bytes, base64), written to
+#                          SpoolLicensePublicKey in Info.plist. Default: from Packaging/updates.env.
+#                          make e2e sets the public test key of docs/license-test-vectors.json.
+#                          Without a key the app asks for a license that it cannot accept.
 #
 # The script does not install, open or register anything.
 set -euo pipefail
@@ -58,6 +62,19 @@ esac
 if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
     [[ -n "$FEED_URL" && -n "$ED_KEY" ]] || die "set both SPOOL_FEED_URL and SPOOL_ED_PUBLIC_KEY, or neither"
     [[ "$FEED_URL" == https://* ]] || die "SPOOL_FEED_URL must use https"
+fi
+
+# License key: the public key that checks the license keys. It is independent of the update feed. The
+# environment overrides Packaging/updates.env, like the feed values. Empty is allowed (a build for tests of the
+# build), but the app then asks for a license that no key can open.
+LICENSE_KEY=${SPOOL_LICENSE_PUBLIC_KEY:-$(spool_updates_value "$UPDATES_ENV" SPOOL_LICENSE_PUBLIC_KEY)}
+if [[ -n "$LICENSE_KEY" ]]; then
+    spool_license_key_valid "$LICENSE_KEY" \
+        || die "SPOOL_LICENSE_PUBLIC_KEY is not a 32-byte public key in base64: $LICENSE_KEY"
+else
+    warn "no SPOOL_LICENSE_PUBLIC_KEY (environment or Packaging/updates.env). This app will ask for a license"
+    warn "that it cannot accept. Fix: make the key pair once with spool-license keygen, then put the public key in"
+    warn "Packaging/updates.env (docs/RELEASING.md, \"License keys\")."
 fi
 
 # Signing identity. Packaging/updates.env names the team of the releases (SPOOL_TEAM_ID). A
@@ -145,6 +162,12 @@ if [[ -n "$FEED_URL" ]]; then
     log "Sparkle updates on: $FEED_URL"
 else
     log "Sparkle updates off (SPOOL_UPDATES=off, or no feed in Packaging/updates.env)"
+fi
+if [[ -n "$LICENSE_KEY" ]]; then
+    plutil -replace SpoolLicensePublicKey -string "$LICENSE_KEY" "$PLIST"
+    log "License public key: $LICENSE_KEY"
+else
+    log "No license public key: the app is unlicensed"
 fi
 plutil -convert xml1 "$PLIST"
 if grep -q '__SPOOL_' "$PLIST"; then die "unreplaced placeholder in Info.plist"; fi

@@ -112,5 +112,7 @@ case gives a `key` and `valid`. Check every case with `publicKeyA`. The case
 A.
 
 The seeds are the bytes `0x00` to `0x1f` and `0x20` to `0x3f`. They are
-public. A release never holds `publicKeyA`: `scripts/release.sh` stops when the
-built app does not have the public key of `Packaging/updates.env`.
+public. A release never holds `publicKeyA`: `scripts/release.sh` stops when
+`Packaging/updates.env` has it (or no valid key), and when the built app does not
+have the public key of `Packaging/updates.env`. Only `make e2e` builds an app with
+`publicKeyA`.

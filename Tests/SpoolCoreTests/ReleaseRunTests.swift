@@ -28,6 +28,11 @@ import Testing
     static let profile = "spool-test-notary"
     static let key = Data(repeating: 7, count: 32).base64EncodedString()
     static let otherKey = Data(repeating: 9, count: 32).base64EncodedString()
+    /// The license public key of the fixture, and another valid one.
+    static let licenseKey = Data(repeating: 5, count: 32).base64EncodedString()
+    static let otherLicenseKey = Data(repeating: 6, count: 32).base64EncodedString()
+    /// publicKeyA of docs/license-test-vectors.json: the test key, whose seed is public.
+    static var testLicenseKey: String { LicenseKeyTests.vectors.publicKeyA }
     static let releases = "fskroes/spool-test"
     /// The private source repository: a release is built from a commit on its main.
     static let source = "fskroes/spool-test-source"
@@ -66,6 +71,8 @@ import Testing
                 try FileManager.default.copyItem(at: scripts.appendingPathComponent(name),
                                                  to: repo.appendingPathComponent("scripts/\(name)").creatingParent())
             }
+            try FileManager.default.copyItem(at: ReleaseScriptTests.root.appendingPathComponent("docs/license-test-vectors.json"),
+                                             to: repo.appendingPathComponent("docs/license-test-vectors.json").creatingParent())
             try writeFakes()
             try write("VERSION", ReleaseRunTests.version + "\n")
             try write("CHANGELOG.md", "# Changelog\n\n## 1.2.0\n\n- A test release.\n\n## 1.1.0\n\n- Older.\n")
@@ -75,6 +82,7 @@ import Testing
             SPOOL_FEED_URL=\(ReleaseRunTests.feed)
             SPOOL_ED_PUBLIC_KEY=\(ReleaseRunTests.key)
             SPOOL_ED_KEY_ACCOUNT=com.fskroes.Striple
+            SPOOL_LICENSE_PUBLIC_KEY=\(ReleaseRunTests.licenseKey)
             SPOOL_TEAM_ID=\(ReleaseRunTests.team)
             SPOOL_NOTARY_PROFILE=\(ReleaseRunTests.profile)
 
@@ -186,7 +194,8 @@ import Testing
             try write(state.appendingPathComponent(tag), isDraft + "\n")
         }
 
-        static func plist(version: String, build: String, feed: String, key: String, bundle: String = "com.fskroes.Spool") -> String {
+        static func plist(version: String, build: String, feed: String, key: String, bundle: String = "com.fskroes.Spool",
+                          license: String = ReleaseRunTests.licenseKey) -> String {
             """
             <?xml version="1.0" encoding="UTF-8"?>
             <plist version="1.0"><dict>
@@ -195,6 +204,7 @@ import Testing
             <key>CFBundleVersion</key><string>\(build)</string>
             <key>SUFeedURL</key><string>\(feed)</string>
             <key>SUPublicEDKey</key><string>\(key)</string>
+            <key>SpoolLicensePublicKey</key><string>\(license)</string>
             </dict></plist>
 
             """
@@ -212,7 +222,9 @@ import Testing
                                       build: "${FAKE_APP_BUILD:-$(git rev-list --count HEAD)}",
                                       feed: "${FAKE_APP_FEED:-\(ReleaseRunTests.feed)}",
                                       key: "${FAKE_APP_KEY:-\(ReleaseRunTests.key)}",
-                                      bundle: "${FAKE_BUNDLE_ID:-com.fskroes.Spool}")
+                                      bundle: "${FAKE_BUNDLE_ID:-com.fskroes.Spool}",
+                                      // Like the real build-app.sh: the environment wins over updates.env.
+                                      license: "${FAKE_APP_LICENSE_KEY:-${SPOOL_LICENSE_PUBLIC_KEY:-\(ReleaseRunTests.licenseKey)}}")
             try write("scripts/build-app.sh", #"""
             #!/bin/bash
             set -euo pipefail
@@ -650,6 +662,7 @@ import Testing
         (["FAKE_APP_BUILD": "99"], "the app build is not \(build)"),
         (["FAKE_APP_FEED": "https://example.com/appcast.xml"], "the app has the wrong SUFeedURL"),
         (["FAKE_APP_KEY": otherKey], "the app has the wrong SUPublicEDKey"),
+        (["FAKE_APP_LICENSE_KEY": otherLicenseKey], "the app has the wrong SpoolLicensePublicKey"),
         (["FAKE_BAD_SIGNATURE": "1"], "the signature of the app is not valid"),
         (["FAKE_SIGNED_TEAM": otherTeam], "the app is not signed with the Developer ID of team \(team)"),
         (["FAKE_NO_RUNTIME": "1"], "the app does not have the hardened runtime"),
@@ -751,6 +764,59 @@ import Testing
                                                                       with: "SPOOL_FEED_URL=https://example.com/appcast.xml"))
         try f.sh("git commit -qam 'other feed'")
         try Self.expectRefused(try f.release(), "SPOOL_FEED_URL must be \(Self.feed)", f)
+    }
+
+    // MARK: license public key
+
+    /// The updates.env of the fixture with SPOOL_LICENSE_PUBLIC_KEY set to `value`, or without the line (nil).
+    private func setLicenseKey(_ value: String?, in f: Fixture) throws {
+        let file = f.repo.appendingPathComponent("Packaging/updates.env")
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init)
+            .filter { !$0.hasPrefix("SPOOL_LICENSE_PUBLIC_KEY=") }
+        try f.write("Packaging/updates.env", (lines + (value.map { ["SPOOL_LICENSE_PUBLIC_KEY=\($0)"] } ?? [])).joined(separator: "\n") + "\n")
+        try f.sh("git commit -qam 'license key'")
+    }
+
+    @Test(arguments: [nil, ""] as [String?])
+    func anEmptyLicenseKeyStopsTheRunBeforeTheBuild(_ value: String?) throws {
+        let f = try Fixture()
+        try setLicenseKey(value, in: f)
+        let r = try f.release()
+        try Self.expectRefused(r, "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is empty", f)
+        #expect(r.error.contains("spool-license keygen"))
+        #expect(!r.output.contains("==> Building the app"))
+    }
+
+    @Test(arguments: ["abc", "not base64 not base64 not base64 not base64!", Data(repeating: 1, count: 31).base64EncodedString(),
+                      Data(repeating: 1, count: 33).base64EncodedString(),
+                      // 32 bytes, but the last character carries bits that are not zero: not the canonical spelling.
+                      String(Data(repeating: 5, count: 32).base64EncodedString().dropLast(2)) + "B="])
+    func aLicenseKeyThatIsNotA32ByteKeyStopsTheRunBeforeTheBuild(_ value: String) throws {
+        let f = try Fixture()
+        try setLicenseKey(value, in: f)
+        let r = try f.release()
+        try Self.expectRefused(r, "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is not a 32-byte public key in base64", f)
+        #expect(!r.output.contains("==> Building the app"))
+    }
+
+    // Its seed is public: with this key anyone can make a license key for the release.
+    @Test func theTestLicenseKeyStopsTheRunBeforeTheBuild() throws {
+        let f = try Fixture()
+        try setLicenseKey(Self.testLicenseKey, in: f)
+        let r = try f.release()
+        try Self.expectRefused(r, "is the public test key of docs/license-test-vectors.json", f)
+        #expect(!r.output.contains("==> Building the app"))
+        #expect(try ReleaseScriptTests.call("spool_license_key_valid", Self.testLicenseKey).status == 0,
+                "the test key has the right form, so only the test-key check can stop this run")
+    }
+
+    // build-app.sh lets SPOOL_LICENSE_PUBLIC_KEY in the environment win (make e2e uses that). A release must not.
+    @Test func aLicenseKeyInTheEnvironmentNeverReachesTheReleaseBuild() throws {
+        let f = try Fixture()
+        let r = try f.release("--dry-run", env: ["SPOOL_LICENSE_PUBLIC_KEY": Self.testLicenseKey])
+        #expect(r.status == 0, "\(r.all)")
+        let plist = f.repo.appendingPathComponent("dist/Spool.app/Contents/Info.plist")
+        #expect(try f.sh("plutil -extract SpoolLicensePublicKey raw -o - '\(plist.path)'") == Self.licenseKey)
     }
 
     @Test func aVersionThatIsNotLike123StopsTheRun() throws {

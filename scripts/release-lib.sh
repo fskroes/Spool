@@ -113,6 +113,25 @@ spool_dr_is_local() {
 # Status 0 when $1 looks like an Apple Team ID: 10 capital letters and digits.
 spool_team_id_valid() { [[ "$1" =~ ^[A-Z0-9]{10}$ ]]; }
 
+# Status 0 when $1 is an Ed25519 public key as `spool-license keygen` prints it: 32 bytes in standard base64
+# (44 characters, one "="), in the one canonical spelling. The value is public.
+spool_license_key_valid() {
+    local key=$1
+    [[ "$key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+    [[ "$(printf '%s' "$key" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" == 32 ]] || return 1
+    [[ "$(printf '%s' "$key" | base64 -D 2>/dev/null | base64)" == "$key" ]]
+}
+
+# Prints publicKeyA of the license test vectors file $1 (docs/license-test-vectors.json). Its seed is public,
+# so a build with this key accepts keys that anyone can make. Status 1 when the file or the value is missing.
+spool_license_test_key() {
+    [[ -f "$1" ]] || return 1
+    local key
+    key=$(plutil -extract publicKeyA raw -o - "$1" 2>/dev/null) || return 1
+    [[ -n "$key" ]] || return 1
+    printf '%s\n' "$key"
+}
+
 # Status 0 when a designated requirement (the output of `codesign -d -r -`) is the one of a Developer ID
 # signature of team $3 for the bundle ID $2. macOS stores the Accessibility permission with this requirement.
 # It names the team, not one certificate, so it stays the same when the certificate is renewed.

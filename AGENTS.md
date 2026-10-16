@@ -204,6 +204,12 @@ prompt, and `DocsTests` fails. Put the explanation after the block.
   Spool that moves the windows of its own test app on the screen for
   about 20 seconds, and never the windows of other apps (docs/E2E.md).
   Both refuse to run while another Spool runs.
+- **No license keys, no owner keys.** Never run `spool-license keygen`,
+  `spool-license env-line` or `spool-license issue`, and never read
+  `~/.config/spool`. They make or print the private key that signs the
+  license keys. A new key pair makes every sold key invalid. `spool-license
+  verify` is fine: it holds no secret. Tests give every path as an argument
+  and use the test keys of `docs/license-test-vectors.json`.
 - **No change to the user's files.** Never write to
   `~/Library/Application Support/Spool` or `~/Library/Logs/Spool`. Tests
   and verify use `SPOOL_HOME` and a temporary folder.

@@ -104,6 +104,13 @@ You can change the build with these environment variables:
 | `SPOOL_FEED_URL` | from `Packaging/updates.env` | The Sparkle appcast URL (https). See "Updates". |
 | `SPOOL_ED_PUBLIC_KEY` | from `Packaging/updates.env` | The Sparkle public EdDSA key. See "Updates". |
 | `SPOOL_UPDATES` | `on` | `off` builds without updates. |
+| `SPOOL_LICENSE_PUBLIC_KEY` | from `Packaging/updates.env` | The public key that checks license keys (32 bytes, base64). See "License". |
+
+### License
+
+Spool costs EUR 0.99 ([LICENSE-KEYS.md](LICENSE-KEYS.md)). A bundled build (`make app`, `make install`, `make dmg`) asks for a license key at its start and does not start the window manager without a valid one. The key must match the public key in the build: `SPOOL_LICENSE_PUBLIC_KEY` in `Packaging/updates.env`. A build from this repository has the key of the owner, so only the owner can issue a key for it. The owner makes one with `spool-license issue` and activates it with `spool license <key>` ([RELEASING.md](RELEASING.md), "License keys"). While the value in `Packaging/updates.env` is empty, `make app` warns and the app cannot accept any key.
+
+A binary from `swift build` (not in an app bundle) does not need a license. This is the build that the tests and `scripts/verify smoke` use.
 
 The bundle has this layout:
 
