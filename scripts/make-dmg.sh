@@ -8,9 +8,13 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=release-lib.sh
+source "$ROOT/scripts/release-lib.sh"
 
 readonly APP="$ROOT/dist/Spool.app"
 [[ -d "$APP" ]] || die "$APP not found. Run 'make app' first."
+! spool_app_has_test_license_key "$APP" "$ROOT/docs/license-test-vectors.json" \
+    || die "$APP has the public test license key of the E2E test (make e2e): anyone can make keys for it. Run 'make dmg', which builds it again."
 VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")
 readonly DMG="$ROOT/dist/Spool-$VERSION.dmg"
 readonly STAGE="$ROOT/dist/dmg-stage"

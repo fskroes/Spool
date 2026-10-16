@@ -1071,3 +1071,21 @@ import Testing
         var count: Int { lock.lock(); defer { lock.unlock() }; return n }
     }
 }
+
+/// The license of the test Spool (docs/E2E.md): the constants in the runner are the public test values of
+/// docs/license-test-vectors.json.
+@Suite struct E2ELicenseTests {
+    static let vectors: [String: Any] = {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try! Data(contentsOf: root.appendingPathComponent("docs/license-test-vectors.json"))
+        return try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+    }()
+
+    @Test func theRunnerWritesTheValidKeyOfTheVectors() {
+        let cases = Self.vectors["cases"] as! [[String: Any]]
+        let valid = cases.first { $0["name"] as? String == "valid" }!
+        #expect(valid["valid"] as? Bool == true)
+        #expect(E2ELicense.key == valid["key"] as? String)
+        #expect(E2ELicense.fileName == "license.key")
+    }
+}

@@ -35,6 +35,8 @@ let package = Package(
             linkerSettings: [.linkedFramework("ServiceManagement")]
         ),
         .executableTarget(name: "spool-cli", dependencies: ["SpoolCore"]),
+        // The owner's tool for license keys. Not part of the app bundle (docs/RELEASING.md, "License keys").
+        .executableTarget(name: "spool-license", dependencies: ["SpoolCore"]),
         // Live E2E test (`make e2e`, docs/E2E.md). Not part of `swift test`: it moves real windows.
         .target(name: "SpoolE2EKit"),
         .executableTarget(name: "spool-e2e", dependencies: ["SpoolE2EKit", "SpoolCore"]),

@@ -12,6 +12,12 @@
 #   SPOOL_FEED_URL         Sparkle appcast URL (https). Default: from Packaging/updates.env.
 #   SPOOL_ED_PUBLIC_KEY    Sparkle EdDSA public key. Default: from Packaging/updates.env.
 #   SPOOL_UPDATES          "off" builds without Sparkle updates (no feed, no key).
+#   SPOOL_LICENSE_PUBLIC_KEY  the public key that checks license keys (32 bytes, base64), written to
+#                          SpoolLicensePublicKey in Info.plist. Default: from Packaging/updates.env.
+#                          make e2e sets the public test key of docs/license-test-vectors.json.
+#                          Without a key the app asks for a license that it cannot accept.
+#   SPOOL_E2E_BUILD        "1" only for make e2e: compiles with SPOOL_E2E, so the ad hoc E2E app trusts its
+#                          Info.plist key without the signature of the release team. Never for a release.
 #
 # The script does not install, open or register anything.
 set -euo pipefail
@@ -60,6 +66,27 @@ if [[ -n "$FEED_URL" || -n "$ED_KEY" ]]; then
     [[ "$FEED_URL" == https://* ]] || die "SPOOL_FEED_URL must use https"
 fi
 
+# License key: the public key that checks the license keys. It is independent of the update feed. The
+# environment overrides Packaging/updates.env, like the feed values. Empty is allowed (a build for tests of the
+# build), but the app then asks for a license that no key can open.
+LICENSE_KEY=${SPOOL_LICENSE_PUBLIC_KEY:-$(spool_updates_value "$UPDATES_ENV" SPOOL_LICENSE_PUBLIC_KEY)}
+if [[ -n "$LICENSE_KEY" ]]; then
+    spool_license_key_valid "$LICENSE_KEY" \
+        || die "SPOOL_LICENSE_PUBLIC_KEY is not a 32-byte public key in base64: $LICENSE_KEY"
+else
+    warn "no SPOOL_LICENSE_PUBLIC_KEY (environment or Packaging/updates.env). This app will ask for a license"
+    warn "that it cannot accept. Fix: make the key pair once with spool-license keygen, then put the public key in"
+    warn "Packaging/updates.env (docs/RELEASING.md, \"License keys\")."
+fi
+# An E2E app trusts its Info.plist key without the signature of the team. With the real key it would be a
+# team-signed app that any edited Info.plist unlocks. Checked before any keychain call.
+if [[ "${SPOOL_E2E_BUILD:-}" == 1 ]]; then
+    TEST_KEYS=$(spool_license_test_keys "$ROOT/docs/license-test-vectors.json") \
+        || die "cannot read the test keys of docs/license-test-vectors.json"
+    [[ -n "$LICENSE_KEY" ]] && grep -qxF -- "$LICENSE_KEY" <<< "$TEST_KEYS" \
+        || die "SPOOL_E2E_BUILD=1 needs a public test key of docs/license-test-vectors.json as SPOOL_LICENSE_PUBLIC_KEY (make e2e sets it)"
+fi
+
 # Signing identity. Packaging/updates.env names the team of the releases (SPOOL_TEAM_ID). A
 # "Developer ID Application" identity of that team signs like a release: the Accessibility permission
 # stays after a rebuild and after every update. Else LOCAL: the self-signed identity of
@@ -91,10 +118,21 @@ if [[ "$IDENTITY" != "-" && $LOCAL -eq 0 && "$IDENTITY" != "$SPOOL_SIGNING_NAME"
     SIGN_FLAGS+=(--options runtime --timestamp)
 fi
 
+# A release build trusts its license public key only with a signature of the team of the releases
+# (LicenseKeeper.trustRequirement). Signed another way, it asks for a license that no key can open.
+if [[ $RELEASE -eq 0 && "${SPOOL_E2E_BUILD:-}" != 1 ]]; then
+    warn "this app is not signed with the Developer ID of team ${TEAM:-?}: it cannot be licensed and its window"
+    warn "manager does not start. Only a build signed by the team of the releases accepts a license key."
+fi
+
 # Build. Both products in one configuration so they share one build directory.
 read -r -a ARCHS <<< "${SPOOL_ARCHS:-arm64 x86_64}"
 ARCH_FLAGS=()
 for arch in "${ARCHS[@]}"; do ARCH_FLAGS+=(--arch "$arch"); done
+if [[ "${SPOOL_E2E_BUILD:-}" == 1 ]]; then
+    ARCH_FLAGS+=(-Xswiftc -DSPOOL_E2E)
+    warn "E2E build (SPOOL_E2E_BUILD=1): the app trusts its license key without the signature of the team"
+fi
 log "Building Spool $VERSION ($BUILD) for ${ARCHS[*]}"
 swift build -c release "${ARCH_FLAGS[@]}" --product SpoolApp
 swift build -c release "${ARCH_FLAGS[@]}" --product spool
@@ -145,6 +183,12 @@ if [[ -n "$FEED_URL" ]]; then
     log "Sparkle updates on: $FEED_URL"
 else
     log "Sparkle updates off (SPOOL_UPDATES=off, or no feed in Packaging/updates.env)"
+fi
+if [[ -n "$LICENSE_KEY" ]]; then
+    plutil -replace SpoolLicensePublicKey -string "$LICENSE_KEY" "$PLIST"
+    log "License public key: $LICENSE_KEY"
+else
+    log "No license public key: the app is unlicensed"
 fi
 plutil -convert xml1 "$PLIST"
 if grep -q '__SPOOL_' "$PLIST"; then die "unreplaced placeholder in Info.plist"; fi

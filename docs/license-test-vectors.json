@@ -1,0 +1,67 @@
+{
+  "note": "TEST KEYS ONLY. Never use these seeds for real licenses.",
+  "publicKeyA": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "seedA": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "publicKeyB": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+  "cases": [
+    {
+      "name": "valid",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse_JC5zFRWhqpNi1XOY3dqeiB4XseLYKAYQwk2Zk2umE9aCQ",
+      "valid": true,
+      "email": "buyer@example.com",
+      "id": "cs_test_a1b2c3",
+      "issued": "2026-10-16"
+    },
+    {
+      "name": "valid, wrapped by an email client",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYT\n  FiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6Ij \r\nIwMjYtMTAtMTYifQ.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse_JC5zFRWhqpNi1XOY3dqeiB4XseLYKAYQwk2Zk2umE9aCQ",
+      "valid": true,
+      "email": "buyer@example.com"
+    },
+    {
+      "name": "payload changed after signing",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJvdGhlckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse_JC5zFRWhqpNi1XOY3dqeiB4XseLYKAYQwk2Zk2umE9aCQ",
+      "valid": false
+    },
+    {
+      "name": "signed by another key",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.Hpp2O4siNL0imfggsHM2nYuqk38h7wd9YLimXtMMUvkjOEJ9xb2rZgriYqt0l2F3PKM6PH_2N_fPDlqbrkNEDw",
+      "valid": false
+    },
+    {
+      "name": "another product",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoib3RoZXIiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.IbS8WWMw3BRSnYf8Hq1uy6MMsGlMHhMjyvIQ-YJob6-y_hbc4kaLCeC0oaBVjox27XreW9FJTT2Pz7i7C4iAAA",
+      "valid": false
+    },
+    {
+      "name": "unknown version",
+      "key": "SPOOL-eyJ2IjoyLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.BySJeZyHGnpapBzQ0v-uStkYH-DRogH7HG8SPwAvosRhlYpUk407FhVBC_wPZYkpHpacBRuZISoJCatf6eFCBg",
+      "valid": false
+    },
+    {
+      "name": "no prefix",
+      "key": "eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse_JC5zFRWhqpNi1XOY3dqeiB4XseLYKAYQwk2Zk2umE9aCQ",
+      "valid": false
+    },
+    {
+      "name": "signature cut short",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse",
+      "valid": false
+    },
+    {
+      "name": "not base64url",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsImlzc3VlZCI6IjIwMjYtMTAtMTYifQ!.f96hWu-vCH1wl34GCbLiK9OMd39AvXmidKMq5Gse_JC5zFRWhqpNi1XOY3dqeiB4XseLYKAYQwk2Zk2umE9aCQ",
+      "valid": false
+    },
+    {
+      "name": "payload is not JSON",
+      "key": "SPOOL-aGVsbG8.4af8qUqDUSeIW5ni66cz1u5b9dxGPtg4Xrbx3KoRF8DxUXUKEPRvWzeWqRIDV49wLIXGfDNLVomlFihNSZ9xDw",
+      "valid": false
+    },
+    {
+      "name": "email missing",
+      "key": "SPOOL-eyJ2IjoxLCJwcm9kdWN0Ijoic3Bvb2wiLCJpZCI6ImNzX3Rlc3RfYTFiMmMzIiwiaXNzdWVkIjoiMjAyNi0xMC0xNiJ9.QW_C_OK-0YfK0r6Y_x0Oboohh8zzBmWgGrNyfhCEbNRz2kUZn6PstgUb3pOJQDSLYdxvZaKkm8QIG5wroeE9Aw",
+      "valid": false
+    }
+  ]
+}

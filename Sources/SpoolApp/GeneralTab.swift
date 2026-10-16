@@ -14,6 +14,7 @@ struct GeneralTab: View {
                 EngineStatusRow(engine: engine)
                 Toggle("Start tiling when Spool opens", isOn: store.binding(\.behavior.autoStart))
                 LaunchAtLoginRow(store: store)
+                LicenseRow(gate: app.license)
             }
 
             Section("Focus") {
@@ -52,7 +53,11 @@ struct EngineStatusRow: View {
             if engine.status == .noPermission {
                 Button("Mac Setup") { app.openSettings(.macSetup) }
             }
-            Button(engine.status == .stopped ? "Start" : "Stop") { engine.perform(.toggleEngine, source: .menu) }
+            if engine.status == .unlicensed {
+                Button("Activate…") { app.openLicenseWindow() }
+            } else {
+                Button(engine.status == .stopped ? "Start" : "Stop") { engine.perform(.toggleEngine, source: .menu) }
+            }
         }
     }
 
@@ -60,7 +65,28 @@ struct EngineStatusRow: View {
         switch engine.status {
         case .running: return .green
         case .stopped: return .secondary
-        case .noPermission: return .orange
+        case .noPermission, .unlicensed: return .orange
+        }
+    }
+}
+
+/// "Licensed to <email>", or nothing for a build that needs no license.
+struct LicenseRow: View {
+    @ObservedObject var gate: LicenseGate
+    @EnvironmentObject var app: AppModel
+
+    var body: some View {
+        switch gate.status {
+        case .licensed(let license):
+            Text("Licensed to \(license.email)")
+        case .unlicensed:
+            HStack {
+                Text("Not licensed")
+                Spacer()
+                Button("Activate…") { app.openLicenseWindow() }
+            }
+        case .notRequired:
+            EmptyView()
         }
     }
 }

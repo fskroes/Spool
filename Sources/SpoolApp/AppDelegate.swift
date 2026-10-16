@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
     var migration = LegacyMigration.Result()
     /// URL commands that arrive before launch is complete run after auto-start.
     private var pending: [Command] = []
+    /// The key of a `spool://license` URL that arrives before launch is complete.
+    private var pendingLicenseKey: String?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -42,13 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         model.engine.enableMetrics { MetricsStore(directory: SpoolPaths.metricsDirectory, appVersion: version) }
         startIPC()
-        if model.store.config.behavior.autoStart { model.engine.start() }
+        // Without a license the start is refused at once, so the status (menu, Settings) says why,
+        // also when "start at launch" is off.
+        if LicenseLaunch.startsEngine(autoStart: model.store.config.behavior.autoStart, status: model.license.status) {
+            model.engine.start()
+        }
         didLaunch = true
         for command in pending { model.engine.perform(command, source: .url) }
         pending.removeAll()
 
-        // With a broken config.json the guide would save over the user's file when it closes.
-        if !model.store.config.behavior.onboardingDone, !model.store.fileHasError { model.openGuide() }
+        if let key = pendingLicenseKey {
+            pendingLicenseKey = nil
+            model.activateLicense(fromURL: key)
+        }
+        // The license window comes before the guide. The guide opens after a successful activation.
+        switch LicenseLaunch.window(for: model.license.status) {
+        case .license: model.openLicenseWindow()
+        case .guideIfNeeded: model.openGuideIfNeeded()
+        }
     }
 
     // `hasVisibleWindows` also counts the overlay panels (border, tab bars), so it does not tell if Settings is open.
@@ -83,7 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
     /// The `spool` CLI and Raycast scripts talk to this socket. A failure only turns off the CLI.
     private func startIPC() {
         let engine = model.engine
-        let server = IPCServer(socketURL: SpoolPaths.socket) { engine.handle($0) }
+        let model = self.model!
+        let server = IPCServer(socketURL: SpoolPaths.socket) { request in
+            // Before the engine: the license requests work while the engine is gated.
+            if request.query == .license { return model.license.keeper.statusResponse() }
+            if let key = request.licenseKey { return model.license.keeper.response(for: model.activateLicense(key)) }
+            return engine.handle(request)
+        }
         do {
             try server.start()
             ipc = server
@@ -116,6 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
         switch URLRoute(url) {
         case .settings(let tab):
             model.openSettings(tab)
+        case .license(let key):
+            if didLaunch { model.activateLicense(fromURL: key) } else { pendingLicenseKey = key }
         case .command(let command):
             if didLaunch { model.engine.perform(command, source: .url) } else { pending.append(command) }
         case .unknown:
@@ -130,9 +151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
 }
 
 /// What a `spool://` URL asks for. `spool://open` and `spool://settings[/tab]` open the window;
-/// all other URLs are commands.
+/// `spool://license?key=<key>` activates a key; all other URLs are commands.
 enum URLRoute: Equatable {
     case settings(SettingsTab?)
+    /// The key without white space. Empty when the URL has none.
+    case license(String)
     case command(Command)
     case unknown
 
@@ -142,6 +165,10 @@ enum URLRoute: Equatable {
         if host == "open" || host == "settings" {
             let part = url.path.split(separator: "/").first.map { String($0).lowercased() }
             self = .settings(part.flatMap(SettingsTab.init(rawValue:)))
+            return
+        }
+        if let key = SpoolURL.licenseKey(from: url) {
+            self = .license(key)
             return
         }
         self = SpoolURL.command(from: url).map(URLRoute.command) ?? .unknown

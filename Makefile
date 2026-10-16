@@ -37,10 +37,16 @@ release:
 app:
 	./scripts/build-app.sh
 
+# The public test key of docs/license-test-vectors.json (publicKeyA). Its seed is public: only the E2E build uses it.
+E2E_LICENSE_PUBLIC_KEY := $(shell plutil -extract publicKeyA raw -o - $(dir $(lastword $(MAKEFILE_LIST)))docs/license-test-vectors.json)
+
 # Live end-to-end test: runs dist/Spool.app for real against the windows of a test app and checks
 # their frames. Never part of `make test`. Exit 2: refused (another Spool runs). See docs/E2E.md.
 # E2E_ARGS passes options to the runner, for example E2E_ARGS="--out /tmp/spool/e2e/mine".
-e2e: app
+# The app is built with the test license key, and the runner writes the matching license.key to the SPOOL_HOME
+# of the run, so the test Spool starts its window manager. It does not use the key of Packaging/updates.env.
+e2e:
+	SPOOL_E2E_BUILD=1 SPOOL_LICENSE_PUBLIC_KEY='$(E2E_LICENSE_PUBLIC_KEY)' ./scripts/build-app.sh
 	swift build --product spool-e2e
 	swift build --product spool-e2e-windows
 	"$$(swift build --show-bin-path)/spool-e2e" --app dist/Spool.app $(E2E_ARGS)

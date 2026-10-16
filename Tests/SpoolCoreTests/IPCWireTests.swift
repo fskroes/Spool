@@ -280,7 +280,7 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         let text = SpoolCLI.listText()
         #expect(text.hasPrefix("Commands:\n  focus-left            Focus left\n"))
         #expect(text.contains("\n  focus-index <1-9>     Focus place <n> (9 is the last place)\n"))
-        #expect(text.hasSuffix("Queries:\n  ping                  Check that Spool is running\n  state                 Show displays, columns and windows\n  stats                 Show performance counters\n  report [--days <n>]   Show the local metrics report\n"))
+        #expect(text.hasSuffix("Queries:\n  ping                  Check that Spool is running\n  state                 Show displays, columns and windows\n  stats                 Show performance counters\n  report [--days <n>]   Show the local metrics report\n  license [<key>]       Show the license, or activate a license key\n"))
     }
 }
 
@@ -460,5 +460,109 @@ let everyCommand: [Command] = Command.bindable + [.start, .stop, .restart, .focu
         #expect(IPCClient.timeout(for: IPCRequest(query: .state), base: IPCClient.defaultTimeout) == IPCClient.defaultTimeout)
         // A longer timeout from the caller is never made shorter.
         #expect(IPCClient.timeout(for: IPCRequest(command: .stop), base: 30) == 30)
+    }
+}
+
+/// `spool license` and `spool license <key>` on the wire and in the CLI (F25).
+@Suite struct LicenseWireTests {
+    func run(_ args: [String], _ send: (IPCRequest) throws -> IPCResponse) -> SpoolCLI.Output {
+        SpoolCLI.run(SpoolCLI.parse(args), versionLine: "spool 1.0", send: send)
+    }
+
+    static let key = "SPOOL-abc.def"
+    static let licensed = IPCResponse(ok: true, license: LicenseReport(.licensed(
+        License(id: "cs_test_1", email: "buyer@example.com", issued: "2026-01-02", key: key))))
+
+    @Test func parse() {
+        #expect(SpoolCLI.parse(["license"]).action == .send(IPCRequest(query: .license)))
+        #expect(SpoolCLI.parse(["license", Self.key]).action == .send(IPCRequest(licenseKey: Self.key)))
+        #expect(SpoolCLI.parse(["License", Self.key]).action == .send(IPCRequest(licenseKey: Self.key)))
+        #expect(SpoolCLI.parse(["command", "license"]).action == .send(IPCRequest(query: .license)))
+        #expect(SpoolCLI.parse(["help", "license"]).action == .help("license"))
+        #expect(SpoolCLI.parse(["license", "--json"]) == .init(action: .send(IPCRequest(query: .license)), options: .init(json: true)))
+    }
+
+    @Test func aWrappedKeyJoinsWithoutWhiteSpace() {
+        #expect(SpoolCLI.parse(["license", "SPOOL-abc", ".def"]).action == .send(IPCRequest(licenseKey: "SPOOL-abc.def")))
+        #expect(SpoolCLI.parse(["license", "SPOOL-abc\n.def\n"]).action == .send(IPCRequest(licenseKey: "SPOOL-abc.def")))
+        #expect(SpoolCLI.parse(["license", "  "]).action == .send(IPCRequest(query: .license)))
+    }
+
+    @Test func requestsRoundTrip() throws {
+        for request in [IPCRequest(query: .license), IPCRequest(licenseKey: Self.key)] {
+            let line = try IPCWire.encode(request)
+            #expect(try IPCWire.decodeRequest(line) == request)
+        }
+        let plain = String(decoding: try IPCWire.encode(IPCRequest(query: .ping)), as: UTF8.self)
+        #expect(!plain.contains("licenseKey"), "other requests do not carry the field")
+        let response = try IPCWire.encode(Self.licensed)
+        #expect(try IPCWire.decodeResponse(response) == Self.licensed)
+        let old = String(decoding: try IPCWire.encode(IPCResponse(ok: true)), as: UTF8.self)
+        #expect(!old.contains("license"), "other responses do not carry the field")
+    }
+
+    @Test func licensedPrintsWhoAndWhichOrder() {
+        #expect(run(["license"]) { _ in Self.licensed } == .init(stdout: "Licensed to buyer@example.com (order cs_test_1)\n"))
+    }
+
+    @Test func notLicensedExitsWithOne() {
+        let answer = IPCResponse(ok: false, error: "Not licensed.", license: LicenseReport(.unlicensed))
+        #expect(run(["license"]) { _ in answer } == .init(stderr: "Not licensed.\n", code: .failed))
+    }
+
+    @Test func aDeveloperBuildNeedsNoLicense() {
+        let answer = IPCResponse(ok: true, license: LicenseReport(.notRequired))
+        #expect(run(["license"]) { _ in answer } == .init(stdout: "This build of Spool needs no license.\n"))
+    }
+
+    @Test func activationSendsTheKeyAndPrintsTheLicense() {
+        var sent: [IPCRequest] = []
+        let out = run(["license", Self.key]) { sent.append($0); return Self.licensed }
+        #expect(sent == [IPCRequest(licenseKey: Self.key)])
+        #expect(out == .init(stdout: "Licensed to buyer@example.com (order cs_test_1)\n"))
+    }
+
+    @Test func aKeyThatIsNotValidExitsWithOne() {
+        let answer = IPCResponse(ok: false, error: LicenseKey.invalidMessage)
+        #expect(run(["license", Self.key]) { _ in answer } == .init(stderr: "This license key is not valid.\n", code: .failed))
+    }
+
+    @Test func noAppRunningExitsWithThree() {
+        #expect(run(["license"]) { _ in throw IPCClient.Error.notRunning }.code == .notRunning)
+    }
+
+    @Test func jsonPrintsTheLicenseWithoutTheKey() {
+        let out = run(["license", "--json"]) { _ in Self.licensed }
+        #expect(out.code == .ok)
+        #expect(out.stdout.contains("\"email\" : \"buyer@example.com\""))
+        #expect(out.stdout.contains("\"state\" : \"licensed\""))
+        #expect(!out.stdout.contains(Self.key))
+    }
+
+    @Test func activationWaitsAsLongAsAStart() {
+        #expect(IPCClient.timeout(for: IPCRequest(licenseKey: Self.key), base: IPCClient.defaultTimeout) == IPCClient.lifecycleTimeout)
+        #expect(IPCClient.timeout(for: IPCRequest(query: .license), base: IPCClient.defaultTimeout) == IPCClient.defaultTimeout)
+    }
+
+    @Test func theUrlCarriesTheKey() {
+        func key(_ text: String) -> String? { SpoolURL.licenseKey(from: URL(string: text)!) }
+        #expect(key("spool://license?key=SPOOL-abc.def") == "SPOOL-abc.def")
+        #expect(key("SPOOL://LICENSE?key=SPOOL-abc.def") == "SPOOL-abc.def")
+        #expect(key("spool://license?key=SPOOL-abc%0A.def") == "SPOOL-abc.def")
+        #expect(key("spool://license") == "")
+        #expect(key("spool://license?other=1") == "")
+        #expect(key("spool://focus-left?key=SPOOL-abc.def") == nil)
+        #expect(key("https://license?key=SPOOL-abc.def") == nil)
+        // No other route takes this URL for a command.
+        #expect(SpoolURL.command(from: URL(string: "spool://license?key=SPOOL-abc.def")!) == nil)
+    }
+
+    @Test func theLicenseEntryIsListedAndDocumented() throws {
+        let list = SpoolCLI.listText()
+        #expect(list.contains("license [<key>]"))
+        #expect(SpoolCLI.helpText(topic: "license").contains("spool://license?key=<key>"))
+        let doc = try String(contentsOf: LicenseKeyTests.root.appendingPathComponent("docs/CLI.md"), encoding: .utf8)
+        #expect(doc.contains("`spool \(SpoolCLI.licenseEntry.usage)`"))
+        #expect(doc.contains("spool://license?key="))
     }
 }

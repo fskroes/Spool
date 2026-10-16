@@ -49,15 +49,21 @@ public struct IPCRequest: Codable, Equatable, Sendable {
         case ping, state, stats
         /// Internal: `spool report` asks the app to write its metrics to disk first. Not a user command.
         case flushMetrics = "flush-metrics"
+        /// `spool license`: whether this copy of Spool is licensed, and to whom.
+        case license
     }
 
     public var command: Command?
     public var query: Query?
     /// The note of a `mark` command. Nil for other requests, and not in the JSON then.
     public var note: String?
+    /// The key of `spool license <key>`. Nil for other requests, and not in the JSON then.
+    public var licenseKey: String?
 
     public init(command: Command, note: String? = nil) { self.command = command; self.query = nil; self.note = note }
     public init(query: Query) { self.command = nil; self.query = query; self.note = nil }
+    /// Asks the app to check, store and use this license key.
+    public init(licenseKey: String) { self.command = nil; self.query = nil; self.note = nil; self.licenseKey = licenseKey }
 }
 
 public struct IPCResponse: Codable, Equatable, Sendable {
@@ -65,12 +71,16 @@ public struct IPCResponse: Codable, Equatable, Sendable {
     public var error: String?
     public var state: EngineState?
     public var stats: EngineStats?
+    /// The answer to `spool license` and `spool license <key>`.
+    public var license: LicenseReport?
 
-    public init(ok: Bool, error: String? = nil, state: EngineState? = nil, stats: EngineStats? = nil) {
+    public init(ok: Bool, error: String? = nil, state: EngineState? = nil, stats: EngineStats? = nil,
+                license: LicenseReport? = nil) {
         self.ok = ok
         self.error = error
         self.state = state
         self.stats = stats
+        self.license = license
     }
 }
 
@@ -98,13 +108,18 @@ public struct EngineState: Codable, Equatable, Sendable {
 
     public var running: Bool
     public var accessibilityTrusted: Bool
+    /// True when the engine does not start because there is no valid license key (F25). Nil otherwise,
+    /// so the JSON of a licensed app does not change.
+    public var needsLicense: Bool?
     public var focusedWindow: WindowInfo?
     public var displays: [DisplayState]
     public var floating: [WindowInfo]
 
-    public init(running: Bool, accessibilityTrusted: Bool, focusedWindow: WindowInfo?, displays: [DisplayState], floating: [WindowInfo]) {
+    public init(running: Bool, accessibilityTrusted: Bool, needsLicense: Bool? = nil, focusedWindow: WindowInfo?,
+                displays: [DisplayState], floating: [WindowInfo]) {
         self.running = running
         self.accessibilityTrusted = accessibilityTrusted
+        self.needsLicense = needsLicense
         self.focusedWindow = focusedWindow
         self.displays = displays
         self.floating = floating
@@ -218,6 +233,14 @@ public enum SpoolURL {
         }
         let path = url.path.split(separator: "/").joined(separator: "-")
         return Command(name: path.isEmpty ? host : "\(host)-\(path)")
+    }
+
+    /// The key of `spool://license?key=<key>`, without white space. Nil for every other URL. An empty string when
+    /// the URL has the `license` host but no key.
+    public static func licenseKey(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == scheme, (url.host ?? "").lowercased() == "license" else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        return LicenseKey.normalized(items.first { $0.name == "key" }?.value ?? "")
     }
 
     public static func url(for command: Command) -> URL {

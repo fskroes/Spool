@@ -228,6 +228,8 @@ final class Harness {
         c.behavior.onboardingDone = true
         c.animation.enabled = config.animations == .on
         try c.encoded().write(to: home.appendingPathComponent("config.json"))
+        // The app of `make e2e` has the public test key. Its license goes into the test home only.
+        try LicenseFile(url: home.appendingPathComponent(E2ELicense.fileName)).write(E2ELicense.key)
         var env = ProcessInfo.processInfo.environment
         env["SPOOL_HOME"] = home.path
         env["SPOOL_MANAGE_ONLY"] = E2EIDs.windowsBundleID

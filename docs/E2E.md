@@ -188,6 +188,7 @@ The test runs on your work Mac, next to your own windows. These rules keep it aw
 3. **Your settings are not touched.** Spool starts with `SPOOL_HOME` set to a new `/tmp/spool-e2e-XXXXXX`
    folder with a `config.json` (`onboardingDone: true`, other values default). The socket, config, session and logs
    are in that folder. The login item is not registered or changed, and Sparkle does not check for updates. The folder is deleted at the end.
+   The app is licensed for the run: `make e2e` builds it with the public test key `publicKeyA` of `docs/license-test-vectors.json` (not the key of `Packaging/updates.env`), and the runner writes the valid test key of that file to `license.key` in `SPOOL_HOME`. The build is compiled with `SPOOL_E2E` (`SPOOL_E2E_BUILD=1`), so the app trusts that key without the signature of the release team. `scripts/install.sh` and `scripts/make-dmg.sh` refuse this app: run `make install` or `make dmg`, which build it again. This does not change the license of your installed Spool.
 4. **Always clean up.** At the end, on a failure and on Ctrl-C, the runner quits the test app, sends SIGTERM to
    Spool (SIGKILL after 5 seconds), copies the engine log and deletes `SPOOL_HOME`.
 5. **A crashed run is cleaned up by the next run.** While a run is active, the runner keeps

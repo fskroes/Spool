@@ -44,6 +44,29 @@ import Testing
         #expect(!test.contains("SPOOL_SIGNING_TESTS"), "\(test)")
     }
 
+    // The E2E app has the public test key, whatever Packaging/updates.env says, and not a key from the caller's
+    // environment. `scripts/verify e2e` runs `make e2e`, so it gets the same build.
+    @Test func makeE2EBuildsTheAppWithTheTestLicenseKey() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/make")
+        p.arguments = ["-n", "-f", Self.makefile.path, "e2e"]
+        p.currentDirectoryURL = FileManager.default.temporaryDirectory
+        var env = ProcessInfo.processInfo.environment
+        env["SPOOL_LICENSE_PUBLIC_KEY"] = "from-the-caller"
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = out
+        try p.run()
+        let plan = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        #expect(p.terminationStatus == 0, "\(plan)")
+        let lines = plan.components(separatedBy: "\n")
+        #expect(lines.first == "SPOOL_E2E_BUILD=1 SPOOL_LICENSE_PUBLIC_KEY='\(LicenseKeyTests.vectors.publicKeyA)' ./scripts/build-app.sh", "\(plan)")
+        #expect(!plan.contains("from-the-caller"))
+        #expect(lines.contains { $0.contains("spool-e2e\" --app dist/Spool.app") })
+    }
+
     // `make publish-finish` needs dist/release/<version>/ after a run that stopped after the publish.
     @Test func cleanKeepsTheFilesOfAReleaseRun() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("spool-make-\(UUID().uuidString)")

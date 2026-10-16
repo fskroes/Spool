@@ -163,12 +163,35 @@ import Testing
 
     static let pinWarning = "is not signed by the team"
 
-    /// A fake app, signed ad hoc, in a source folder outside the install prefix.
-    static func adHocSource(in home: URL) throws -> URL {
+    /// A fake app, signed ad hoc, in a source folder outside the install prefix. `licenseKey` goes in
+    /// SpoolLicensePublicKey of its Info.plist.
+    static func adHocSource(in home: URL, licenseKey: String? = nil) throws -> URL {
         let app = try fakeInstall(in: home, appsFolder: "src")
         try FileManager.default.removeItem(at: home.appendingPathComponent(".local/bin/spool"))
+        if let licenseKey {
+            let url = app.appendingPathComponent("Contents/Info.plist")
+            let plist = try #require(NSMutableDictionary(contentsOf: url))
+            plist["SpoolLicensePublicKey"] = licenseKey
+            try plist.write(to: url)
+        }
         try sign(app)
         return app
+    }
+
+    // A build of `make e2e` has a public test key: anyone can make license keys for it.
+    @Test func anAppWithATestLicenseKeyIsNotInstalled() throws {
+        let home = Self.tempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        for key in [LicenseKeyTests.vectors.publicKeyA, LicenseKeyTests.vectors.publicKeyB] {
+            let app = try Self.adHocSource(in: home, licenseKey: key)
+            let r = try Self.runWithStatus(["--dry-run", "--app", app.path], home: home)
+            #expect(r.status != 0)
+            #expect(r.output.contains("has the public test license key of the E2E test"), "\(r.output)")
+            #expect(!r.output.contains("Installing"))
+            try FileManager.default.removeItem(at: home)
+        }
+        let real = try Self.adHocSource(in: home, licenseKey: Data(repeating: 7, count: 32).base64EncodedString())
+        #expect(try Self.runWithStatus(["--dry-run", "--app", real.path], home: home).status == 0)
     }
 
     // An ad hoc app loses the Accessibility permission. The install says so, and goes on.

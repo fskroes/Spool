@@ -12,10 +12,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "", action: #selector(toggleEngine), keyEquivalent: "")
     private let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+    /// Only while there is no valid license key.
+    private let activateItem = NSMenuItem(title: "Activate Spool…", action: #selector(activateSpool), keyEquivalent: "")
+    private let restartItem = NSMenuItem(title: "Restart Engine", action: #selector(restartEngine), keyEquivalent: "")
     private let configErrorItem = NSMenuItem(title: "", action: #selector(openSettings), keyEquivalent: "")
     /// Saves a mark (docs/METRICS.md). Off while metrics are off.
     private let markItem = NSMenuItem(title: "Mark This Moment", action: #selector(markMoment), keyEquivalent: "")
     private var cancellable: AnyCancellable?
+    private var licenseCancellable: AnyCancellable?
 
     init(app: AppModel) {
         self.app = app
@@ -25,6 +29,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         item.menu = menu
         // @Published sends the new value before the property changes, so use the value it sends.
         cancellable = app.engine.$status.sink { [weak self] status in self?.show(status) }
+        licenseCancellable = app.license.$status.sink { [weak self] status in self?.showLicense(status) }
     }
 
     private func buildMenu() {
@@ -33,8 +38,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         statusLine.isEnabled = false
         menu.addItem(statusLine)
         menu.addItem(target(configErrorItem))
+        menu.addItem(target(activateItem))
         menu.addItem(target(toggleItem))
-        menu.addItem(target(NSMenuItem(title: "Restart Engine", action: #selector(restartEngine), keyEquivalent: "")))
+        menu.addItem(target(restartItem))
         menu.addItem(.separator())
         menu.addItem(target(NSMenuItem(title: "Open Spool…", action: #selector(openSettings), keyEquivalent: ",")))
         menu.addItem(target(NSMenuItem(title: "Open Configuration File", action: #selector(openConfig), keyEquivalent: "")))
@@ -66,7 +72,16 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         button.toolTip = status.summary
     }
 
+    /// Without a license the engine cannot start, so Start and Restart give way to Activate.
+    private func showLicense(_ status: LicenseStatus) {
+        let unlicensed = status == .unlicensed
+        activateItem.isHidden = !unlicensed
+        toggleItem.isHidden = unlicensed
+        restartItem.isHidden = unlicensed
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        showLicense(app.license.status)
         updatesItem.isEnabled = Updater.shared.isConfigured
         markItem.isEnabled = app.store.config.metrics.enabled
         show(app.engine.status)
@@ -83,6 +98,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func toggleEngine() { app.engine.perform(.toggleEngine, source: .menu) }
     @objc private func restartEngine() { app.engine.perform(.restart, source: .menu) }
     @objc private func markMoment() { app.engine.perform(.mark, source: .menu) }
+    @objc private func activateSpool() { app.openLicenseWindow() }
     @objc private func openSettings() { app.openSettings() }
     @objc private func openConfig() { app.openConfigFile() }
     @objc private func openMacSetup() { app.openSettings(.macSetup) }
@@ -100,6 +116,7 @@ enum StatusIcon {
         case .running: return "rectangle.split.3x1.fill"
         case .stopped: return "rectangle.split.3x1"
         case .noPermission: return "exclamationmark.triangle"
+        case .unlicensed: return "lock"
         }
     }
 }

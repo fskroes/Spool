@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SpoolCore
 
 /// Tests for scripts/release-lib.sh (used by release.sh and build-app.sh). Each test calls one shell
 /// function. No network, no keychain, no build.
@@ -239,6 +240,58 @@ import Testing
         #expect(try Self.call("spool_team_id_valid", team).status == status)
     }
 
+    static let testKeyA = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+
+    static let licenseKeyCases: [(String, Int32)] = {
+        func b64(_ count: Int, _ byte: UInt8) -> String { Data(repeating: byte, count: count).base64EncodedString() }
+        // 32 bytes, but the last character carries bits that are not zero: not the canonical spelling.
+        let nonCanonical = String(b64(32, 5).dropLast(2)) + "B="
+        return [(testKeyA, 0), (b64(32, 7), 0), ("", 1), ("abc", 1), (b64(31, 7), 1), (b64(33, 7), 1),
+                (nonCanonical, 1), (testKeyA + "\n", 1), (" " + testKeyA, 1),
+                ("A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=", 1)]
+    }()
+
+    @Test(arguments: licenseKeyCases)
+    func licensePublicKeyIs32BytesInCanonicalBase64(_ key: String, _ status: Int32) throws {
+        #expect(try Self.call("spool_license_key_valid", key).status == status, "\(key.debugDescription)")
+    }
+
+    // The app and release.sh must check the same requirement: a release that does not meet the app's text
+    // would accept no license key at all.
+    @Test func theTrustRequirementIsTheSameInTheAppAndInTheReleaseScript() throws {
+        let shell = try Self.call("spool_license_trust_requirement", "98L4368F9K")
+        #expect(shell.status == 0)
+        #expect(shell.output == LicenseKeeper.trustRequirement(team: "98L4368F9K"))
+        #expect(shell.output == #"anchor apple generic and certificate leaf[subject.OU] = "98L4368F9K""#)
+    }
+
+    // Every test key has a public seed: release.sh refuses all of them, not only key A.
+    @Test func licenseTestKeysComeFromTheVectorsFile() throws {
+        let vectors = Self.root.appendingPathComponent("docs/license-test-vectors.json").path
+        let keys = try Self.call("spool_license_test_keys", vectors)
+        #expect(keys.status == 0)
+        #expect(keys.output == LicenseKeyTests.vectors.publicKeyA + "\n" + LicenseKeyTests.vectors.publicKeyB)
+        #expect(try Self.call("spool_license_test_keys", "/nonexistent/vectors.json").status == 1)
+        let noKey = try Self.temp("vectors.json", "{\"seedA\": \"x\"}")
+        #expect(try Self.call("spool_license_test_keys", noKey.path).status == 1)
+        let notJSON = try Self.temp("vectors.json", "publicKeyA")
+        #expect(try Self.call("spool_license_test_keys", notJSON.path).status == 1)
+    }
+
+    /// The committed key is empty until the owner runs `spool-license keygen`. Then it must be a valid key that is
+    /// not the test key (release.sh checks the same before it builds).
+    @Test func theCommittedLicensePublicKeyIsEmptyOrAUsableKey() throws {
+        let env = Self.root.appendingPathComponent("Packaging/updates.env").path
+        let key = try Self.call("spool_updates_value", env, "SPOOL_LICENSE_PUBLIC_KEY").output
+        let text = try String(contentsOfFile: env, encoding: .utf8)
+        #expect(text.contains("\nSPOOL_LICENSE_PUBLIC_KEY="), "the setting is there for the owner to fill")
+        if !key.isEmpty {
+            #expect(try Self.call("spool_license_key_valid", key).status == 0, "got '\(key)'")
+            #expect(key != LicenseKeyTests.vectors.publicKeyA && key != LicenseKeyTests.vectors.publicKeyB,
+                    "the test keys have a public seed")
+        }
+    }
+
     /// `security find-identity -v -p codesigning` on a Mac with Apple identities of two teams.
     static let identities = """
       1) E0E98E390F0DCC017A6FFCE9C146C52635A1201F "Apple Development: Some Person (78QD42U3HQ)"
@@ -330,6 +383,62 @@ import Testing
         #expect(text.contains("warn \"$(spool_stable_identity_hint \"$TEAM\")\""))
         #expect(text.contains("spool_dr_is_team \"$DR\" \"$BUNDLE_ID\" \"$TEAM\" || die"))
         #expect(!text.contains("SPOOL_SIGNING_CERT_SHA1"))
+    }
+
+    // The license public key goes into Info.plist from the environment or updates.env, and a release never takes
+    // the environment value.
+    @Test func buildAppWritesTheLicensePublicKeyAndReleaseIgnoresTheEnvironment() throws {
+        let scripts = Self.root.appendingPathComponent("scripts")
+        let build = try String(contentsOf: scripts.appendingPathComponent("build-app.sh"), encoding: .utf8)
+        #expect(build.contains("LICENSE_KEY=${SPOOL_LICENSE_PUBLIC_KEY:-$(spool_updates_value \"$UPDATES_ENV\" SPOOL_LICENSE_PUBLIC_KEY)}"))
+        #expect(build.contains("plutil -replace SpoolLicensePublicKey -string \"$LICENSE_KEY\" \"$PLIST\""))
+        #expect(build.contains("spool_license_key_valid \"$LICENSE_KEY\""))
+        let release = try String(contentsOf: scripts.appendingPathComponent("release.sh"), encoding: .utf8)
+        #expect(release.contains("env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY -u SPOOL_E2E_BUILD "))
+    }
+
+    // The check runs before swift build and before any keychain call: a wrong key costs no minutes.
+    @Test(arguments: ["abc", "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg", Data(repeating: 1, count: 31).base64EncodedString()])
+    func buildAppStopsOnALicenseKeyThatIsNot32Bytes(_ key: String) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [Self.root.appendingPathComponent("scripts/build-app.sh").path]
+        p.currentDirectoryURL = Self.root
+        var env = ProcessInfo.processInfo.environment
+        env["SPOOL_LICENSE_PUBLIC_KEY"] = key
+        env.removeValue(forKey: "SIGN_IDENTITY")
+        p.environment = env
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = Pipe()
+        try p.run()
+        let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        #expect(p.terminationStatus == 1, "\(text)")
+        #expect(text.contains("error: SPOOL_LICENSE_PUBLIC_KEY is not a 32-byte public key in base64: \(key)"), "\(text)")
+        #expect(!text.contains("Building Spool"))
+    }
+
+    // An E2E build trusts its Info.plist key without the team signature: only with a public test key.
+    @Test func anE2EBuildWithTheRealKeyStopsBeforeTheBuild() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [Self.root.appendingPathComponent("scripts/build-app.sh").path]
+        p.currentDirectoryURL = Self.root
+        var env = ProcessInfo.processInfo.environment
+        env["SPOOL_LICENSE_PUBLIC_KEY"] = Data(repeating: 7, count: 32).base64EncodedString()
+        env["SPOOL_E2E_BUILD"] = "1"
+        env.removeValue(forKey: "SIGN_IDENTITY")
+        p.environment = env
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = Pipe()
+        try p.run()
+        let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        #expect(p.terminationStatus == 1, "\(text)")
+        #expect(text.contains("SPOOL_E2E_BUILD=1 needs a public test key of docs/license-test-vectors.json"), "\(text)")
+        #expect(!text.contains("Building Spool"))
     }
 
     @Test func installSignatureComparesTheAppWithTheTeam() throws {

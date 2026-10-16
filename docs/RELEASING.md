@@ -30,6 +30,8 @@ Spool publishes its builds on the releases page of the public repository [fskroe
 | Code signing identity "Developer ID Application: … (98L4368F9K)" | login keychain; a `.p12` backup in your password manager | **Yes** |
 | Notarization credential (Apple ID and an app-specific password) | login keychain, as the notarytool profile `spool-notary` | **Yes** |
 | Sparkle private EdDSA key | login keychain, account `com.fskroes.Striple`; backup in your password manager | **Yes** |
+| The public key that checks license keys | `SPOOL_LICENSE_PUBLIC_KEY` in `Packaging/updates.env` (committed) | No |
+| The private key that signs license keys (a 32-byte seed in base64) | `~/.config/spool/license-signing.key` (mode 600) on your Mac, `SPOOL_LICENSE_SIGNING_KEY` in `~/1yc/.env` on the server of 1yc.dev; a backup in your password manager | **Yes** |
 | Release notes | `CHANGELOG.md`, one `## <version>` section per release | No |
 | GitHub login | `gh auth login` (keyring) | Yes |
 
@@ -92,6 +94,63 @@ Every release has the same team, so every update matches the stored entry. A ren
 
    Without the private key, the installed apps cannot accept new updates. On a new Mac, run `swift package resolve` once (it downloads the Sparkle tools), then import the key: `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -f ~/striple-sparkle-key.txt`. Delete the file after the import.
 
+## License keys
+
+Spool costs EUR 0.99. The buyer gets a license key by email, and the app checks it offline with a public key. The format is in [LICENSE-KEYS.md](LICENSE-KEYS.md). `spool-license` is your tool for the keys. It is a SwiftPM product, not part of the app, so run it with `swift run spool-license`.
+
+Do these steps once:
+
+1. Make the key pair:
+
+   ```sh
+   swift run spool-license keygen
+   ```
+
+   It writes the private key to `~/.config/spool/license-signing.key` (mode 600) and prints the public key. It refuses when the file exists: **a new key pair makes every sold key invalid**, so you make the pair one time only. Use `--out <path>` for another place.
+
+2. Back up the private key now. Put the content of `~/.config/spool/license-signing.key` in your password manager. A lost key cannot be made again, and without it you cannot sign more keys.
+
+3. Put the public key in `Packaging/updates.env`, as the line that `keygen` printed:
+
+   ```sh
+   SPOOL_LICENSE_PUBLIC_KEY=<public key from keygen>
+   ```
+
+   Commit this change. `make publish` stops while the value is empty, not a valid key, or the public test key of the test vectors.
+
+4. Give the private key to the server of 1yc.dev. Print the line:
+
+   ```sh
+   swift run spool-license env-line
+   ```
+
+   Add the line `SPOOL_LICENSE_SIGNING_KEY=...` to `~/1yc/.env` on the server, and restart the 1yc service so that it reads the file. This is the only command that prints the private key. Do not paste the output in a chat, a ticket or a repository.
+
+5. Make a key for yourself and check it:
+
+   ```sh
+   swift run spool-license issue --email you@example.com
+   swift run spool-license verify <key>
+   ```
+
+   `issue` prints the key. The order ID is `comp-<date>-<4 hex>`, so a gift key has no Stripe ID. Use `--id` to choose it. `verify` reads the public key from `Packaging/updates.env`. Then activate the key in an installed release:
+
+   ```sh
+   spool license <key>
+   ```
+
+   Use the same command to give a key to a friend, or to send a key again when a buyer lost the email.
+
+### If the private key leaks
+
+Anyone with the private key can make keys without paying. The only fix is a new key pair: the old keys stop working for every buyer.
+
+1. Move the old file away: `mv ~/.config/spool/license-signing.key ~/.config/spool/license-signing.key.leaked`. Then run `swift run spool-license keygen` again.
+2. Put the new public key in `Packaging/updates.env`, publish a new release (see below), and put the new private key in `~/1yc/.env` on the server.
+3. Send a new key to each buyer. Their old keys do not open the new release, and the old releases keep working with the old keys.
+
+If only the public key leaks, nothing happens: it is in every copy of the app.
+
 ## Publish a release
 
 1. Increase `VERSION` (for example `0.1.0` to `0.2.0`).
@@ -123,10 +182,12 @@ Every release has the same team, so every update matches the stored entry. A ren
 | `VERSION` and the build number are higher than the ones in the published feed | Sparkle offers only a higher build. |
 | `CHANGELOG.md` has a section for `VERSION` | The update window shows these notes. |
 | The private key in the keychain matches `SPOOL_ED_PUBLIC_KEY` | Else every installed app refuses the update. |
+| `SPOOL_LICENSE_PUBLIC_KEY` in `Packaging/updates.env` is a 32-byte public key in base64, and not the test key `publicKeyA` of `docs/license-test-vectors.json`. This check comes before the build | An empty value gives an app that asks for a license that no key can open. The seed of the test key is public, so anyone could make keys for it. |
 | The login keychain has a "Developer ID Application" identity of `SPOOL_TEAM_ID`, and `SIGN_IDENTITY` is not set | Every release has the same team, so macOS keeps the Accessibility permission. |
 | The notarytool profile `SPOOL_NOTARY_PROFILE` works. This check comes before the build | A missing profile stops the run now, not after the build. |
 | The published release is signed by the same team and has the same `SUPublicEDKey` | An update that changes either one breaks every installed copy. |
 | The app is universal, has the feed URL and the key, the hardened runtime, and the Developer ID signature of the team | No broken build goes out. Notarization refuses an app without the hardened runtime. |
+| `SpoolLicensePublicKey` in the `Info.plist` of the app is the value in `Packaging/updates.env`. The build ignores `SPOOL_LICENSE_PUBLIC_KEY` in your environment | A wrong key makes every sold license key invalid in this release. |
 | Apple notarizes the app, the ticket is stapled, and Gatekeeper says `source=Notarized Developer ID` | Else macOS does not open the app on another Mac. |
 | The DMG is signed with the same identity, notarized, stapled, and accepted by Gatekeeper. The app in the DMG has the signature of the team and its own ticket | A notarized app in a DMG without a ticket still shows a warning. The app in the DMG is the copy that a user drags to Applications. |
 | The appcast has one item with the right version, build, URL, length and an EdDSA signature | The feed matches the archive. |
@@ -169,7 +230,7 @@ Use this only when the releases must move to another Apple team. A renewed or a 
 
 A release of another team works, and Sparkle installs it (the EdDSA key does not change). But after the update each installed copy loses the Accessibility permission, while the switch still shows on.
 
-1. Set `SPOOL_TEAM_ID` in `Packaging/updates.env` to the new Team ID. Commit it.
+1. Set `SPOOL_TEAM_ID` in `Packaging/updates.env` to the new Team ID, and `LicenseKeeper.releaseTeam` in `Sources/SpoolCore/LicenseKeeper.swift` to the same value (a test checks that they match). The app trusts its license public key only with a signature of that team. Commit both.
 2. In the `CHANGELOG.md` section of the next version, tell the users what to do after the update: in Spool, click Settings > Mac Setup > Reset Permission, then turn Spool on in System Settings > Privacy & Security > Accessibility. Turning the switch off and on is not enough.
 3. Publish with `./scripts/release.sh --new-identity` (a dry run first: `./scripts/release.sh --dry-run --new-identity`). `make publish` refuses this release, because the published release has the old team ("the published … is not signed by team …"). That check stops a change by mistake. `--new-identity` turns it into a warning, and stops when the published release has the new team already. All other checks stay on.
 

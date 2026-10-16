@@ -81,6 +81,19 @@ private func makeStaleSocket(at path: String) {
         #expect((st.st_mode & 0o777) == 0o600)
     }
 
+    // `spool license <key>` sends a request with only a key. The server must pass it to the handler.
+    // Found by a live check: the server answered "Bad request" and the key was never stored.
+    @Test func aRequestWithOnlyALicenseKeyReachesTheHandler() async throws {
+        let path = tempSocketPath()
+        let recorder = Recorder()
+        let server = makeServer(path: path, recorder: recorder)
+        try server.start()
+        defer { server.stop() }
+        let response = try await background { try IPCClient(socketPath: path).send(IPCRequest(licenseKey: "SPOOL-a.b")) }
+        #expect(response == IPCResponse(ok: true))
+        #expect(recorder.requests == [IPCRequest(licenseKey: "SPOOL-a.b")])
+    }
+
     @Test func badRequestsGetAnErrorAndTheConnectionStaysOpen() async throws {
         let path = tempSocketPath()
         let server = makeServer(path: path)

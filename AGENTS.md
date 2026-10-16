@@ -19,7 +19,7 @@ report.
 
 | Document | Role | Read it when |
 |---|---|---|
-| [README.md](README.md) | current | the product, the feature table F1 to F24, the measured speed |
+| [README.md](README.md) | current | the product, the feature table F1 to F25, the measured speed |
 | [docs/SPEC.md](docs/SPEC.md) | current, the contract | any behavior change: each feature has acceptance criteria |
 | [docs/SHORTCUTS.md](docs/SHORTCUTS.md) | current | a shortcut or a command name changes |
 | [docs/CLI.md](docs/CLI.md) | current | the `spool` command, the URL scheme, Raycast |
@@ -115,7 +115,7 @@ submodules. The first `swift build` fetches Sparkle and takes about 40 s.
 ## How a change is made here
 
 1. **Spec first.** A behavior change starts in `docs/SPEC.md`: add or change
-   the acceptance criteria of its feature (F1 to F24), or add a new F number
+   the acceptance criteria of its feature (F1 to F25), or add a new F number
    and a row in the README feature table.
    A bug fix changes `docs/SPEC.md` only when the spec is wrong or does not
    say what should happen. Then add the missing acceptance line.
@@ -204,6 +204,12 @@ prompt, and `DocsTests` fails. Put the explanation after the block.
   Spool that moves the windows of its own test app on the screen for
   about 20 seconds, and never the windows of other apps (docs/E2E.md).
   Both refuse to run while another Spool runs.
+- **No license keys, no owner keys.** Never run `spool-license keygen`,
+  `spool-license env-line` or `spool-license issue`, and never read
+  `~/.config/spool`. They make or print the private key that signs the
+  license keys. A new key pair makes every sold key invalid. `spool-license
+  verify` is fine: it holds no secret. Tests give every path as an argument
+  and use the test keys of `docs/license-test-vectors.json`.
 - **No change to the user's files.** Never write to
   `~/Library/Application Support/Spool` or `~/Library/Logs/Spool`. Tests
   and verify use `SPOOL_HOME` and a temporary folder.

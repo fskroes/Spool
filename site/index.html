@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Spool: a scrolling window manager for macOS</title>
-<meta name="description" content="Spool is a free scrolling window manager for macOS. Windows sit on one endless strip. A new window never makes the others smaller. It has a CLI with JSON state. The source is on GitHub.">
+<meta name="description" content="Spool is a scrolling window manager for macOS, EUR 0.99 one time. Windows sit on one endless strip. A new window never makes the others smaller. It has a CLI with JSON state.">
 <meta name="color-scheme" content="light dark">
 <link rel="canonical" href="https://spool.1yc.dev/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1110'/%3E%3Crect x='4' y='9' width='7' height='14' rx='2' fill='%23506660'/%3E%3Crect x='13' y='9' width='9' height='14' rx='2' fill='%234fe0b5'/%3E%3Crect x='24' y='9' width='5' height='14' rx='2' fill='%23506660'/%3E%3C/svg%3E">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Spool">
 <meta property="og:title" content="Spool: a scrolling window manager for macOS">
-<meta property="og:description" content="Free. Windows sit on one endless strip. A new window never makes the others smaller. CLI with JSON state. Source on GitHub.">
+<meta property="og:description" content="EUR 0.99, one time. Windows sit on one endless strip. A new window never makes the others smaller. CLI with JSON state.">
 <meta property="og:url" content="https://spool.1yc.dev/">
 <meta name="twitter:card" content="summary">
 <style>
@@ -259,7 +259,7 @@ footer a,.note a{display:inline-block;padding:4px 0}
         <li class="opt"><a href="#keys">Keys</a></li>
         <li class="opt"><a href="#cli">CLI</a></li>
         <li class="opt"><a href="#speed">Speed</a></li>
-        <li><a class="gh" href="https://github.com/fskroes/Spool">GitHub</a></li>
+        <li><a class="gh" href="https://1yc.dev/spool">Buy</a></li>
       </ul>
     </nav>
   </div>
@@ -273,12 +273,12 @@ footer a,.note a{display:inline-block;padding:4px 0}
       <p class="lead">Windows sit side by side on one endless strip. <strong>A new window never makes the other windows smaller.</strong> You move the view with the keyboard, a trackpad swipe or the CLI.</p>
       <div class="hero-row">
         <div class="cta">
-          <a class="btn primary" href="https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg">Download Spool.dmg</a>
-          <a class="btn" href="https://github.com/fskroes/Spool">View on GitHub</a>
+          <a class="btn primary" href="https://1yc.dev/spool">Buy Spool, EUR 0.99</a>
+          <a class="btn" href="#install">How to install</a>
         </div>
         <ul class="chips" aria-label="Facts">
-          <li>Free</li>
-          <li>Source on GitHub</li>
+          <li>EUR 0.99, one time</li>
+          <li>Key checked offline</li>
           <li>CLI with JSON state</li>
           <li>macOS 13 or later</li>
         </ul>
@@ -355,39 +355,23 @@ footer a,.note a{display:inline-block;padding:4px 0}
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
       <p class="tag">Install</p>
-      <h2 id="install-h">Download it. Open it. One permission.</h2>
-      <p class="sub">Spool is signed with a Developer ID and notarized by Apple. macOS opens it with no extra step. You need macOS 13 or later.</p>
+      <h2 id="install-h">Buy it. Paste the key. One permission.</h2>
+      <p class="sub">Spool costs EUR 0.99, one time, with updates. It is signed with a Developer ID and notarized by Apple. macOS opens it with no extra step. You need macOS 13 or later.</p>
       <div class="split">
         <div>
-          <p><a class="btn primary" href="https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg">Download Spool.dmg</a></p>
-          <p class="sub">All versions and checksums: <a href="https://github.com/fskroes/spool-releases/releases">github.com/fskroes/spool-releases/releases</a>.</p>
+          <p><a class="btn primary" href="https://1yc.dev/spool">Buy Spool, EUR 0.99</a></p>
+          <p class="sub">Lost your key? <a href="https://1yc.dev/spool/restore">1yc.dev/spool/restore</a> sends it again. All versions and checksums: <a href="https://github.com/fskroes/spool-releases/releases">github.com/fskroes/spool-releases/releases</a>.</p>
         </div>
         <ol class="steps">
+          <li><strong>Buy Spool.</strong> The email has your license key and the download link.</li>
           <li><strong>Open Spool.dmg</strong> and drag Spool to Applications.</li>
-          <li><strong>Open the app.</strong> The guide at first launch asks for the Accessibility permission.</li>
+          <li><strong>Open the app and paste the key.</strong> Spool checks it on your Mac, with no network connection. The link in the email activates it in one click.</li>
           <li><strong>Grant Accessibility</strong> in System Settings &gt; Privacy &amp; Security &gt; Accessibility. It is the only permission Spool needs.</li>
         </ol>
       </div>
       <div class="fix" id="sign">
         <p><strong>Updates.</strong> Spool updates itself with Sparkle: <strong>Check for Updates…</strong> in the menu bar menu, or automatically every 24 hours. Every release is signed by the same Apple team, so macOS keeps the Accessibility permission after each update.</p>
-        <p><strong>The spool tool.</strong> The app includes the <code>spool</code> CLI. To use it in a terminal, link it once: <code>ln -sf /Applications/Spool.app/Contents/Helpers/spool ~/.local/bin/spool</code>. Details: <a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>.</p>
-      </div>
-      <h3 id="source" style="margin:34px 0 14px">Or build it from source</h3>
-      <div class="split">
-        <div class="pre">
-          <button class="copy" type="button" data-copy="git clone https://github.com/fskroes/Spool.git&#10;cd Spool&#10;scripts/make-signing-cert.sh&#10;make install&#10;open /Applications/Spool.app" aria-label="Copy the build commands">Copy</button>
-<pre tabindex="0"><span class="c"># once: xcode-select --install</span>
-git clone https://github.com/fskroes/Spool.git
-cd Spool
-<span class="p">scripts/make-signing-cert.sh</span>
-<span class="p">make install</span>
-<span class="p">open /Applications/Spool.app</span></pre>
-        </div>
-        <ol class="steps">
-          <li><strong>scripts/make-signing-cert.sh</strong> makes a free, self-signed signing identity, one time. With it, every build has the same signature, so the Accessibility permission stays after a rebuild.</li>
-          <li><strong>make install</strong> builds <code>dist/Spool.app</code> and copies it to <code>/Applications</code> (or <code>~/Applications</code>). It also links the <code>spool</code> tool to <code>~/.local/bin</code>.</li>
-          <li><strong>Updates.</strong> Your build gets the same Sparkle updates as the release. After the first update to a release, click Settings &gt; Mac Setup &gt; <strong>Reset Permission</strong> once. To keep your own build, use <code>SPOOL_UPDATES=off make install</code>.</li>
-        </ol>
+        <p><strong>The spool tool.</strong> The app includes the <code>spool</code> CLI. To use it in a terminal, link it once: <code>ln -sf /Applications/Spool.app/Contents/Helpers/spool ~/.local/bin/spool</code>.</p>
       </div>
     </div>
   </section>
@@ -425,7 +409,7 @@ cd Spool
           <div class="row2"><dt>Start / stop</dt><dd><kbd>⌃⌥Q</kbd></dd></div>
         </dl></div>
       </div>
-      <p class="note">Trackpad: swipe left or right with 4 fingers, or with 3 when you choose that in Settings. Lift with speed to fling. The strip stops on a column edge. Every shortcut can be changed in Settings &gt; Shortcuts. Full list: <a href="https://github.com/fskroes/Spool/blob/main/docs/SHORTCUTS.md">docs/SHORTCUTS.md</a>.</p>
+      <p class="note">Trackpad: swipe left or right with 4 fingers, or with 3 when you choose that in Settings. Lift with speed to fling. The strip stops on a column edge. Every shortcut can be changed in Settings &gt; Shortcuts.</p>
     </div>
   </section>
 
@@ -453,7 +437,7 @@ Display: Built-in Retina Display (on, space 5)
   [1] Safari "Apple" | [2*] Terminal "zsh" + Notes</pre>
         </div>
       </div>
-      <p class="note"><code>*</code> marks the focused column. <code>+</code> joins the windows of a stacked column. <code>spool stats</code> shows live frame write times, Spool's own part of them, command latency and the slowest apps. <strong>Raycast:</strong> the folder <code>Integrations/Raycast</code> has Script Commands for the main commands and a "Spool State" command. The <code>jq</code> line needs <a href="https://jqlang.github.io/jq/">jq</a> (<code>brew install jq</code>). More: <a href="https://github.com/fskroes/Spool/blob/main/docs/CLI.md">docs/CLI.md</a>.</p>
+      <p class="note"><code>*</code> marks the focused column. <code>+</code> joins the windows of a stacked column. <code>spool stats</code> shows live frame write times, Spool's own part of them, command latency and the slowest apps. <strong>Raycast:</strong> the folder <code>Integrations/Raycast</code> has Script Commands for the main commands and a "Spool State" command. The <code>jq</code> line needs <a href="https://jqlang.github.io/jq/">jq</a> (<code>brew install jq</code>). More: <code>spool --help</code>.</p>
     </div>
   </section>
 
@@ -473,7 +457,7 @@ Display: Built-in Retina Display (on, space 5)
           </tbody>
         </table>
       </div>
-      <p class="note">Writing the same six frames one after the other takes 18.1 ms. Spool writes to each app on its own queue and keeps only the newest frame for a busy app. When all windows are at rest there is no timer and no display link. The rest of a frame write is the time apps and WindowServer need to answer the AX calls. Spool cannot make that shorter. Details: <a href="https://github.com/fskroes/Spool#performance">README</a>.</p>
+      <p class="note">Writing the same six frames one after the other takes 18.1 ms. Spool writes to each app on its own queue and keeps only the newest frame for a busy app. When all windows are at rest there is no timer and no display link. The rest of a frame write is the time apps and WindowServer need to answer the AX calls. Spool cannot make that shorter.</p>
     </div>
   </section>
 
@@ -506,20 +490,16 @@ Display: Built-in Retina Display (on, space 5)
       <h2 id="status-h">What you should know first.</h2>
       <div style="margin-top:22px">
         <details open>
-          <summary>Is there a download?</summary>
-          <p>Yes. <a href="https://github.com/fskroes/spool-releases/releases/latest">Spool.dmg</a> is signed with a Developer ID and notarized by Apple, so macOS opens it after a download. Spool updates itself.</p>
-        </details>
-        <details>
-          <summary>Can I build it myself?</summary>
-          <p>Yes. Run <code>scripts/make-signing-cert.sh</code> once, then <code>make install</code>. See <a href="#source">build from source</a>.</p>
+          <summary>What does it cost?</summary>
+          <p>EUR 0.99, one time, VAT included. <a href="https://1yc.dev/spool">Buy it on 1yc.dev</a>. The key works for every later version. Spool checks the key on your Mac, with no network connection. Spool.dmg is signed with a Developer ID and notarized by Apple, so macOS opens it after a download. Spool updates itself.</p>
         </details>
         <details>
           <summary>What does Spool send out?</summary>
-          <p>Spool measures its own speed, cost and problems on your Mac. The metrics never leave your Mac. They keep no window titles and no keys. You can turn the metrics off in Settings &gt; General. The only network use is the Sparkle update check: it reads the update feed of the releases on github.com. A build with <code>SPOOL_UPDATES=off make install</code> has no update feed and makes no network requests.</p>
+          <p>Spool measures its own speed, cost and problems on your Mac. The metrics never leave your Mac. They keep no window titles and no keys. You can turn the metrics off in Settings &gt; General. The only network use is the Sparkle update check: it reads the update feed of the releases on github.com.</p>
         </details>
         <details>
           <summary>Is it open source?</summary>
-          <p>Not yet. The source is public on GitHub, but the repository has no license file. Until a license is added, the default copyright rules apply.</p>
+          <p>No. Spool is a paid app and the source is private. The license key is for your own Macs.</p>
         </details>
         <details>
           <summary>Are there known limits?</summary>
@@ -531,7 +511,7 @@ Display: Built-in Retina Display (on, space 5)
         </details>
         <details>
           <summary>Was it called Striple?</summary>
-          <p>Yes. Spool had the name Striple before. <code>make install</code> replaces Striple, and Spool moves your settings at its first start. See the install guide, section "Upgrade from Striple".</p>
+          <p>Yes. Spool had the name Striple before. Install Spool.dmg, and Spool moves your settings from Striple at its first start. Then delete Striple.app.</p>
         </details>
         <details>
           <summary>Is it a copy of another app?</summary>
@@ -544,13 +524,11 @@ Display: Built-in Retina Display (on, space 5)
 
 <footer>
   <div class="wrap">
-    <p><strong style="color:var(--ink)">spool</strong><br>A scrolling window manager for macOS. Free. The source is on GitHub.</p>
+    <p><strong style="color:var(--ink)">spool</strong><br>A scrolling window manager for macOS. EUR 0.99, one time.</p>
     <ul>
-      <li><a href="https://github.com/fskroes/Spool">Source on GitHub</a></li>
-      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/INSTALL.md">Install guide</a></li>
-      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/SHORTCUTS.md">Shortcuts</a></li>
-      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/CLI.md">CLI</a></li>
-      <li><a href="https://github.com/fskroes/Spool/blob/main/docs/SPEC.md">Spec</a></li>
+      <li><a href="https://1yc.dev/spool">Buy Spool</a></li>
+      <li><a href="https://1yc.dev/spool/restore">Lost your key?</a></li>
+      <li><a href="https://github.com/fskroes/spool-releases/releases">Releases</a></li>
     </ul>
   </div>
 </footer>

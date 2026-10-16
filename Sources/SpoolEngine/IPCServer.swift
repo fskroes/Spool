@@ -340,7 +340,8 @@ private final class Connection {
                 send(IPCResponse(ok: false, error: "Bad request: \(IPCWire.describe(error))"))
                 continue
             }
-            guard request.command != nil || request.query != nil else {
+            // `spool license <key>` sends only a key: the app answers it before the engine.
+            guard request.command != nil || request.query != nil || request.licenseKey != nil else {
                 send(IPCResponse(ok: false, error: "Bad request: it has no command and no query."))
                 continue
             }

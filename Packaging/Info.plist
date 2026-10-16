@@ -4,7 +4,8 @@
   Template for Spool.app/Contents/Info.plist.
   scripts/build-app.sh replaces the __SPOOL_*__ values with plutil and adds the
   Sparkle keys (SUFeedURL, SUPublicEDKey, SUEnableAutomaticChecks) only when
-  SPOOL_FEED_URL and SPOOL_ED_PUBLIC_KEY are set.
+  SPOOL_FEED_URL and SPOOL_ED_PUBLIC_KEY are set. It adds SpoolLicensePublicKey (the public key
+  that checks license keys) from SPOOL_LICENSE_PUBLIC_KEY when that is set.
 -->
 <plist version="1.0">
 <dict>
