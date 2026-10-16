@@ -112,7 +112,7 @@ You can change the build with these environment variables:
 
 Spool costs EUR 0.99 ([LICENSE-KEYS.md](LICENSE-KEYS.md)). A bundled build (`make app`, `make install`, `make dmg`) asks for a license key at its start and does not start the window manager without a valid one. The key must match the public key in the build: `SPOOL_LICENSE_PUBLIC_KEY` in `Packaging/updates.env`. A build from this repository has the key of the owner, so only the owner can issue a key for it. The owner makes one with `spool-license issue` and activates it with `spool license <key>` ([RELEASING.md](RELEASING.md), "License keys"). While the value in `Packaging/updates.env` is empty, `make app` warns and the app cannot accept any key.
 
-A binary from `swift build` (not in an app bundle) does not need a license. This is the build that the tests and `scripts/verify smoke` use.
+Only a debug binary from `swift build` (it has no bundle ID) does not need a license. This is the build that the tests and `scripts/verify smoke` use. A release build (`scripts/build-app.sh`, `make app`) always needs one, also when the app is renamed or copied.
 
 The bundle has this layout:
 
@@ -172,8 +172,8 @@ You must do these steps yourself:
 
 ## First run
 
-1. Open Spool: `open /Applications/Spool.app`. Spool shows in the menu bar. It has a Dock icon and a menu bar only while one of its windows is open: Settings, the guide, About or an update window. A minimized window counts as open.
-2. Spool asks for Accessibility permission. It needs this permission to move and resize windows.
+1. Open Spool: `open /Applications/Spool.app`. Spool shows in the menu bar. It has a Dock icon and a menu bar only while one of its windows is open: Settings, Activate Spool, the guide, About or an update window. A minimized window counts as open.
+2. Without a license key, Spool first shows "Activate Spool" (see [License](#license)). The guide opens after a valid key. Then Spool asks for Accessibility permission. It needs this permission to move and resize windows.
 3. Open System Settings > Privacy & Security > Accessibility and turn on Spool.
 
 If Spool is in the list but does not work, click Settings > Mac Setup > **Reset Permission** in Spool, then turn Spool on again. See [The switch is on, but Spool has no permission](#the-switch-is-on-but-spool-has-no-permission).

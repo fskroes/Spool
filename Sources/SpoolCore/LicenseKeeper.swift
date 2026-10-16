@@ -35,6 +35,28 @@ public struct LicenseReport: Codable, Equatable, Sendable {
     }
 }
 
+/// What the app does at launch about the license (F25). AppDelegate follows it.
+public enum LicenseLaunch {
+    public enum Window: Equatable, Sendable {
+        /// The window "Activate Spool". The guide comes after a successful activation.
+        case license
+        /// The first-launch guide, when the first run is not done.
+        case guideIfNeeded
+    }
+
+    /// Without a license the engine is asked to start anyway, so it refuses at once and its status
+    /// (menu, Settings, `spool state`) says why, also when "start at launch" is off.
+    public static func startsEngine(autoStart: Bool, status: LicenseStatus) -> Bool {
+        autoStart || status == .unlicensed
+    }
+
+    /// The window to open after launch. `status` is read after a `spool://license` URL that came in
+    /// before the launch finished was activated.
+    public static func window(for status: LicenseStatus) -> Window {
+        status == .unlicensed ? .license : .guideIfNeeded
+    }
+}
+
 /// Reads, checks and stores the key of one copy of Spool. The app owns one. It has no UI, so tests use it
 /// with a temporary file.
 public struct LicenseKeeper: Sendable {
@@ -67,8 +89,12 @@ public struct LicenseKeeper: Sendable {
         return text
     }
 
-    /// True for `Spool.app`: a bundle URL with the extension `app`. A `swift build` binary is not.
-    public static func isAppBundle(_ url: URL) -> Bool { url.pathExtension == "app" }
+    /// True when this copy needs a license key. Only a debug binary of `swift build`, which has no bundle ID,
+    /// runs without one (`scripts/verify smoke`, the tests). A release build always needs a key: a renamed
+    /// or copied bundle, or one without its Info.plist, must not unlock the app.
+    public static func needsLicense(debugBuild: Bool, bundleIdentifier: String?) -> Bool {
+        !debugBuild || bundleIdentifier != nil
+    }
 
     public var status: LicenseStatus {
         .resolve(storedKey: file.read(), publicKey: publicKey, inAppBundle: inAppBundle)

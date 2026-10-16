@@ -122,14 +122,19 @@ spool_license_key_valid() {
     [[ "$(printf '%s' "$key" | base64 -D 2>/dev/null | base64)" == "$key" ]]
 }
 
-# Prints publicKeyA of the license test vectors file $1 (docs/license-test-vectors.json). Its seed is public,
-# so a build with this key accepts keys that anyone can make. Status 1 when the file or the value is missing.
-spool_license_test_key() {
+# Prints every public key of the license test vectors file $1 (docs/license-test-vectors.json), one per
+# line: publicKeyA, publicKeyB, and any later publicKey<X>. Their seeds are public, so a build with one of
+# them accepts keys that anyone can make. Status 1 when the file has none.
+spool_license_test_keys() {
     [[ -f "$1" ]] || return 1
-    local key
-    key=$(plutil -extract publicKeyA raw -o - "$1" 2>/dev/null) || return 1
-    [[ -n "$key" ]] || return 1
-    printf '%s\n' "$key"
+    local name key found=0
+    for name in $(plutil -convert json -o - "$1" 2>/dev/null | grep -o '"publicKey[A-Z]"' | tr -d '"'); do
+        key=$(plutil -extract "$name" raw -o - "$1" 2>/dev/null) || continue
+        [[ -n "$key" ]] || continue
+        printf '%s\n' "$key"
+        found=1
+    done
+    [[ $found -eq 1 ]]
 }
 
 # Status 0 when a designated requirement (the output of `codesign -d -r -`) is the one of a Developer ID

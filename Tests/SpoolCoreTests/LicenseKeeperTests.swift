@@ -81,6 +81,19 @@ import Testing
         #expect(k.response(for: .saveFailed(message)) == IPCResponse(ok: false, error: message))
     }
 
+    // F25: the license window comes before the guide, and an unlicensed engine refuses at launch so its
+    // status says why, also with "start at launch" off.
+    @Test func theLaunchPlanPutsTheLicenseFirst() {
+        let licensed = LicenseStatus.licensed(License(id: "i", email: "e", issued: "d", key: "k"))
+        #expect(LicenseLaunch.window(for: .unlicensed) == .license)
+        #expect(LicenseLaunch.window(for: licensed) == .guideIfNeeded)
+        #expect(LicenseLaunch.window(for: .notRequired) == .guideIfNeeded)
+        #expect(LicenseLaunch.startsEngine(autoStart: false, status: .unlicensed))
+        #expect(!LicenseLaunch.startsEngine(autoStart: false, status: licensed))
+        #expect(LicenseLaunch.startsEngine(autoStart: true, status: licensed))
+        #expect(!LicenseLaunch.startsEngine(autoStart: false, status: .notRequired))
+    }
+
     @Test func infoPlistKey() {
         #expect(LicenseKeeper.publicKey(info: ["SpoolLicensePublicKey": "abc"]) == "abc")
         #expect(LicenseKeeper.publicKey(info: ["SpoolLicensePublicKey": "  \n"]) == nil)
@@ -89,11 +102,15 @@ import Testing
         #expect(LicenseKeeper.publicKey(info: nil) == nil)
     }
 
-    @Test func appBundleDetection() {
-        #expect(LicenseKeeper.isAppBundle(URL(fileURLWithPath: "/Applications/Spool.app")))
-        #expect(LicenseKeeper.isAppBundle(URL(fileURLWithPath: "/Applications/Spool.app/")))
-        #expect(!LicenseKeeper.isAppBundle(URL(fileURLWithPath: "/repo/.build/debug")))
-        #expect(!LicenseKeeper.isAppBundle(URL(fileURLWithPath: "/Applications/Spool.app/Contents/MacOS")))
+    // A release build needs a key, also when its bundle is renamed (Spool.x), copied, or has no Info.plist
+    // (no bundle ID). Only a debug binary of `swift build` runs without one.
+    @Test func onlyADebugBinaryWithoutBundleIDRunsWithoutAKey() {
+        #expect(LicenseKeeper.needsLicense(debugBuild: false, bundleIdentifier: "com.fskroes.Spool"))
+        #expect(LicenseKeeper.needsLicense(debugBuild: false, bundleIdentifier: nil))
+        #expect(LicenseKeeper.needsLicense(debugBuild: true, bundleIdentifier: "com.fskroes.Spool"))
+        #expect(!LicenseKeeper.needsLicense(debugBuild: true, bundleIdentifier: nil))
+        let release = LicenseKeeper(publicKey: nil, inAppBundle: LicenseKeeper.needsLicense(debugBuild: false, bundleIdentifier: nil))
+        #expect(release.status == .unlicensed, "a release binary with its Info.plist removed stays locked")
     }
 
     @Test func statusAnswers() {

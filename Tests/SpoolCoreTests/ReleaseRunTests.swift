@@ -799,14 +799,15 @@ import Testing
         #expect(!r.output.contains("==> Building the app"))
     }
 
-    // Its seed is public: with this key anyone can make a license key for the release.
-    @Test func theTestLicenseKeyStopsTheRunBeforeTheBuild() throws {
+    // Their seeds are public: with a test key anyone can make a license key for the release.
+    @Test(arguments: [LicenseKeyTests.vectors.publicKeyA, LicenseKeyTests.vectors.publicKeyB])
+    func aTestLicenseKeyStopsTheRunBeforeTheBuild(_ key: String) throws {
         let f = try Fixture()
-        try setLicenseKey(Self.testLicenseKey, in: f)
+        try setLicenseKey(key, in: f)
         let r = try f.release()
-        try Self.expectRefused(r, "is the public test key of docs/license-test-vectors.json", f)
+        try Self.expectRefused(r, "is a public test key of docs/license-test-vectors.json", f)
         #expect(!r.output.contains("==> Building the app"))
-        #expect(try ReleaseScriptTests.call("spool_license_key_valid", Self.testLicenseKey).status == 0,
+        #expect(try ReleaseScriptTests.call("spool_license_key_valid", key).status == 0,
                 "the test key has the right form, so only the test-key check can stop this run")
     }
 

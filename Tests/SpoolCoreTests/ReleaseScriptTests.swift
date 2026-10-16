@@ -255,14 +255,17 @@ import Testing
         #expect(try Self.call("spool_license_key_valid", key).status == status, "\(key.debugDescription)")
     }
 
-    @Test func licenseTestKeyComesFromTheVectorsFile() throws {
+    // Every test key has a public seed: release.sh refuses all of them, not only key A.
+    @Test func licenseTestKeysComeFromTheVectorsFile() throws {
         let vectors = Self.root.appendingPathComponent("docs/license-test-vectors.json").path
-        #expect(try Self.call("spool_license_test_key", vectors).output == Self.testKeyA)
-        #expect(try Self.call("spool_license_test_key", "/nonexistent/vectors.json").status == 1)
+        let keys = try Self.call("spool_license_test_keys", vectors)
+        #expect(keys.status == 0)
+        #expect(keys.output == LicenseKeyTests.vectors.publicKeyA + "\n" + LicenseKeyTests.vectors.publicKeyB)
+        #expect(try Self.call("spool_license_test_keys", "/nonexistent/vectors.json").status == 1)
         let noKey = try Self.temp("vectors.json", "{\"seedA\": \"x\"}")
-        #expect(try Self.call("spool_license_test_key", noKey.path).status == 1)
+        #expect(try Self.call("spool_license_test_keys", noKey.path).status == 1)
         let notJSON = try Self.temp("vectors.json", "publicKeyA")
-        #expect(try Self.call("spool_license_test_key", notJSON.path).status == 1)
+        #expect(try Self.call("spool_license_test_keys", notJSON.path).status == 1)
     }
 
     /// The committed key is empty until the owner runs `spool-license keygen`. Then it must be a valid key that is
@@ -274,7 +277,8 @@ import Testing
         #expect(text.contains("\nSPOOL_LICENSE_PUBLIC_KEY="), "the setting is there for the owner to fill")
         if !key.isEmpty {
             #expect(try Self.call("spool_license_key_valid", key).status == 0, "got '\(key)'")
-            #expect(key != Self.testKeyA, "the test key has a public seed")
+            #expect(key != LicenseKeyTests.vectors.publicKeyA && key != LicenseKeyTests.vectors.publicKeyB,
+                    "the test keys have a public seed")
         }
     }
 

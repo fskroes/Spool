@@ -46,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
         startIPC()
         // Without a license the start is refused at once, so the status (menu, Settings) says why,
         // also when "start at launch" is off.
-        if model.store.config.behavior.autoStart || model.license.status == .unlicensed { model.engine.start() }
+        if LicenseLaunch.startsEngine(autoStart: model.store.config.behavior.autoStart, status: model.license.status) {
+            model.engine.start()
+        }
         didLaunch = true
         for command in pending { model.engine.perform(command, source: .url) }
         pending.removeAll()
@@ -56,10 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
             model.activateLicense(fromURL: key)
         }
         // The license window comes before the guide. The guide opens after a successful activation.
-        if model.license.status == .unlicensed {
-            model.openLicenseWindow()
-        } else {
-            model.openGuideIfNeeded()
+        switch LicenseLaunch.window(for: model.license.status) {
+        case .license: model.openLicenseWindow()
+        case .guideIfNeeded: model.openGuideIfNeeded()
         }
     }
 

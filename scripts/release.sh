@@ -99,9 +99,11 @@ LICENSE_KEY=$(spool_updates_value "$UPDATES_ENV" SPOOL_LICENSE_PUBLIC_KEY)
 [[ -n "$LICENSE_KEY" ]] || die "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is empty: an app without it asks for a license that no key can open.
 Make the key pair once with spool-license keygen and put the public key in Packaging/updates.env (docs/RELEASING.md, \"License keys\")."
 spool_license_key_valid "$LICENSE_KEY" || die "SPOOL_LICENSE_PUBLIC_KEY in Packaging/updates.env is not a 32-byte public key in base64: $LICENSE_KEY"
-# The seed of the test key is public (docs/license-test-vectors.json): anyone could make keys for this app.
-[[ "$LICENSE_KEY" != "$(spool_license_test_key "$ROOT/docs/license-test-vectors.json" || echo none)" ]] \
-    || die "SPOOL_LICENSE_PUBLIC_KEY is the public test key of docs/license-test-vectors.json. Use the key that spool-license keygen made."
+# The seeds of the test keys are public (docs/license-test-vectors.json): anyone could make keys for this app.
+TEST_KEYS=$(spool_license_test_keys "$ROOT/docs/license-test-vectors.json") \
+    || die "cannot read the test keys of docs/license-test-vectors.json"
+! grep -qxF -- "$LICENSE_KEY" <<< "$TEST_KEYS" \
+    || die "SPOOL_LICENSE_PUBLIC_KEY is a public test key of docs/license-test-vectors.json. Use the key that spool-license keygen made."
 spool_team_id_valid "$TEAM" || die "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got '$TEAM'"
 [[ -z "${SIGN_IDENTITY:-}" ]] || die "unset SIGN_IDENTITY: releases are signed with the Developer ID of team $TEAM only"
 [[ "${SPOOL_UPDATES:-on}" == on ]] || die "unset SPOOL_UPDATES: a release must have updates on"

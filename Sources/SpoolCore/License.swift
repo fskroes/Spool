@@ -106,14 +106,15 @@ public enum LicenseStatus: Equatable, Sendable {
     case licensed(License)
     /// No valid key is stored. The window manager does not start.
     case unlicensed
-    /// A binary from `swift build`, outside an app bundle: a developer run (`scripts/verify smoke`, tests).
-    /// It has no Info.plist, so no public key, and needs no license.
+    /// A debug binary of `swift build` with no bundle ID: a developer run (`scripts/verify smoke`, tests).
+    /// It has no Info.plist, so no public key, and needs no license. See `LicenseKeeper.needsLicense`.
     case notRequired
 
     public var allowsStart: Bool { self != .unlicensed }
 
     /// `publicKey` is the base64 text of `SpoolLicensePublicKey` in Info.plist, or nil when there is none.
-    /// An app bundle with no valid public key is unlicensed: removing the key must not unlock the app.
+    /// `inAppBundle` is true when this copy needs a license (`LicenseKeeper.needsLicense`). Such a copy with no
+    /// valid public key is unlicensed: removing the key must not unlock the app.
     public static func resolve(storedKey: String?, publicKey: String?, inAppBundle: Bool) -> LicenseStatus {
         guard let publicKey else { return inAppBundle ? .unlicensed : .notRequired }
         guard let keyData = LicenseKey.publicKey(base64: publicKey),

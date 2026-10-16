@@ -6,7 +6,7 @@
 
 <p align="center"><img src="site/strip.svg" width="720" alt="Five windows on a strip. The view moves right along the strip, a new window opens to the right, and the other windows keep their width."></p>
 
-Spool costs EUR 0.99, one time ([1yc.dev/spool](https://1yc.dev/spool)). It is for people who keep many windows open on one screen and want to move between them with the keyboard or the trackpad, as niri and PaperWM do on Linux.
+Spool costs EUR 0.99, one time, VAT included ([1yc.dev/spool](https://1yc.dev/spool)). It is for people who keep many windows open on one screen and want to move between them with the keyboard or the trackpad, as niri and PaperWM do on Linux.
 
 ## Why a strip
 
@@ -139,7 +139,7 @@ How Spool stays fast:
 
 Requirements: macOS 13 or later.
 
-1. Buy Spool on [1yc.dev/spool](https://1yc.dev/spool): EUR 0.99, one time. The email has your license key and the download link.
+1. Buy Spool on [1yc.dev/spool](https://1yc.dev/spool): EUR 0.99, one time, VAT included. The email has your license key and the download link.
 2. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg), open it and drag Spool to Applications.
 3. Open Spool. Paste the license key and click **Activate**, or click the activation link in the email. The key is checked on your Mac, with no network connection. Lost your key? [1yc.dev/spool/restore](https://1yc.dev/spool/restore) sends it again.
 4. The guide then asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.

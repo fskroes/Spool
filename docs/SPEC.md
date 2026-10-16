@@ -229,8 +229,9 @@ test in `Tests/`.
   it and starts the window manager. A key that is not valid prints "This license key is not valid." and exits with 1.
   These two work while the window manager is gated. A window command while gated prints "Spool needs a license key.
   Open Spool, or run `spool license <key>`." and exits with 1. Queries (`ping`, `state`, `stats`) answer as usual.
-- A build from `swift build` outside an app bundle needs no license: `spool license` prints "This build of Spool
-  needs no license." and exits with 0. An app bundle without a public key in `Info.plist` stays unlicensed.
+- Only a debug binary of `swift build` (it has no bundle ID) needs no license: `spool license` prints "This build
+  of Spool needs no license." and exits with 0. A release build always needs a key: a renamed or copied bundle,
+  or one without a public key in `Info.plist`, stays unlicensed.
 
 ## Performance budget
 

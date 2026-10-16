@@ -17,8 +17,14 @@ final class LicenseGate: ObservableObject {
 
     /// Reads `SpoolLicensePublicKey` from Info.plist and the bundle type of the running process.
     nonisolated static func appKeeper(bundle: Bundle = .main) -> LicenseKeeper {
-        LicenseKeeper(publicKey: LicenseKeeper.publicKey(info: bundle.infoDictionary),
-                      inAppBundle: LicenseKeeper.isAppBundle(bundle.bundleURL))
+        #if DEBUG
+        let debugBuild = true
+        #else
+        let debugBuild = false
+        #endif
+        return LicenseKeeper(publicKey: LicenseKeeper.publicKey(info: bundle.infoDictionary),
+                             inAppBundle: LicenseKeeper.needsLicense(debugBuild: debugBuild,
+                                                                     bundleIdentifier: bundle.bundleIdentifier))
     }
 
     var allowsStart: Bool { status.allowsStart }
