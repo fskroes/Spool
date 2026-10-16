@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Connect the custom domain of the website (site/CNAME) to GitHub Pages and check it. JSON lines out.
+
+  scripts/site-domain status                 read only: show each step and what to do next
+  scripts/site-domain apply                  do the steps that are not done yet, then stop
+  scripts/site-domain apply --wait 1800      also wait (up to 1800 s) for DNS and the certificate
+
+The steps, in order. A step starts only when the step before it is done.
+  dns         the public DNS of the host is a CNAME to <owner>.github.io, not proxied by Cloudflare
+  pages       the GitHub Pages site of the repo has the host as its custom domain
+  certificate GitHub has issued the TLS certificate for the host (state "approved")
+  https       GitHub Pages enforces HTTPS
+  live        https://<host> answers 200 from GitHub, and http:// redirects to https://
+
+apply changes Cloudflare DNS only when CLOUDFLARE_API_TOKEN is set (a token with Zone, DNS, Edit for the zone).
+It then adds the CNAME with proxy off, or turns the proxy off on a CNAME that already points to GitHub. It never
+changes or deletes another record: a host with another record is a "fail" for a person to fix. The token goes
+to curl on stdin, never on a command line, and to no other process.
+
+stdout: one {"event": "step"} line per step, then one {"event": "summary"} line with "next": what to do now.
+Exit: 0 every step is done, 1 a person must act (a "todo" or a "fail"), 2 bad usage, 3 still waiting (run again).
+"""
+import argparse, json, os, re, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+REPO = "fskroes/Spool"
+RESOLVER = "1.1.1.1"
+CF_API = "https://api.cloudflare.com/client/v4"
+GITHUB_IPS = {"185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153"}
+# Certificate states after which GitHub does not try again by itself: saving the domain again starts a new try.
+CERT_RETRY = {None, "", "errored", "bad_authz", "authorization_revoked", "dns_changed", "destroy_pending"}
+TOKEN_ENV = "CLOUDFLARE_API_TOKEN"
+STEPS = ["dns", "pages", "certificate", "https", "live"]
+
+results = []
+
+
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def step(name, status, detail="", action=""):
+    row = {"event": "step", "step": name, "status": status}
+    if detail:
+        row["detail"] = detail
+    if action:
+        row["action"] = action
+    results.append(row)
+    emit(row)
+    return status
+
+
+def child_env():
+    env = dict(os.environ)
+    env.pop(TOKEN_ENV, None)
+    return env
+
+
+def run(cmd, stdin=None):
+    try:
+        p = subprocess.run(cmd, input=stdin or "", capture_output=True, text=True, timeout=60, env=child_env())
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]} not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{cmd[0]} timed out"
+    return p.returncode, p.stdout, p.stderr
+
+
+# ---------------------------------------------------------------- DNS
+
+
+def dig(host, rtype, resolver):
+    code, out, err = run(["dig", "+short", f"@{resolver}", host, rtype])
+    if code != 0:
+        raise RuntimeError(f"dig {rtype} {host}: {err.strip() or out.strip()}")
+    return [l.strip().rstrip(".").lower() for l in out.splitlines() if l.strip()]
+
+
+def public_dns(host, target, resolver):
+    """(ok, detail). ok when the host is a CNAME to target and every address is a GitHub Pages address."""
+    cname = dig(host, "CNAME", resolver)
+    addrs = [a for a in dig(host, "A", resolver) if re.fullmatch(r"[0-9.]+", a)]
+    if cname == [target] and addrs and set(addrs) <= GITHUB_IPS:
+        return True, f"{host} CNAME {target}, A {', '.join(sorted(addrs))}"
+    shown = f"CNAME {', '.join(cname)}, " if cname else "no CNAME, "
+    why = "" if cname else ". A proxied record or a wildcard record (*) answers for this name"
+    return False, f"{host}: {shown}A {', '.join(addrs) or 'none'} (resolver {resolver}){why}"
+
+
+def cf(token, method, path, body=None):
+    """One Cloudflare API call through curl. The token and the URL go on stdin, in a curl config."""
+    def q(s):
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    lines = [f"url = {q(CF_API + path)}", f"request = {q(method)}", f"header = {q('Authorization: Bearer ' + token)}"]
+    if body is not None:
+        lines += [f"header = {q('Content-Type: application/json')}", f"data = {q(json.dumps(body))}"]
+    code, out, err = run(["curl", "-sS", "--max-time", "30", "--config", "-"], stdin="\n".join(lines) + "\n")
+    if code != 0:
+        raise RuntimeError(f"Cloudflare {method} {path}: curl exit {code}: {err.strip()}")
+    try:
+        data = json.loads(out)
+    except ValueError:
+        raise RuntimeError(f"Cloudflare {method} {path}: not JSON: {out[:200]}")
+    if not data.get("success"):
+        msgs = "; ".join(e.get("message", str(e)) for e in data.get("errors") or []) or out[:200]
+        raise RuntimeError(f"Cloudflare {method} {path}: {msgs}")
+    return data.get("result")
+
+
+def fix_record(token, zone, host, target):
+    """Make the Cloudflare record right. Returns (status, detail). Changes only a missing or proxied GitHub CNAME."""
+    zones = cf(token, "GET", f"/zones?name={zone}") or []
+    if not zones:
+        return "fail", f"the token sees no zone named {zone}. Check the token, or give the zone with --zone."
+    zid = zones[0]["id"]
+    records = cf(token, "GET", f"/zones/{zid}/dns_records?name={host}") or []
+    if not records:
+        cf(token, "POST", f"/zones/{zid}/dns_records", {
+            "type": "CNAME", "name": host, "content": target, "proxied": False, "ttl": 1,
+            "comment": f"GitHub Pages for {REPO} (scripts/site-domain)"})
+        return "changed", f"added CNAME {host} -> {target}, proxy off"
+    mine = [r for r in records if r.get("type") == "CNAME" and r.get("content", "").rstrip(".").lower() == target]
+    if len(records) != 1 or not mine:
+        found = ", ".join(f"{r.get('type')} {r.get('content')}" for r in records)
+        return "fail", f"{host} already has other records ({found}). Change them by hand to one CNAME {target}, DNS only."
+    if mine[0].get("proxied"):
+        cf(token, "PATCH", f"/zones/{zid}/dns_records/{mine[0]['id']}", {"proxied": False})
+        return "changed", f"turned the proxy off on CNAME {host} -> {target}"
+    return "same", f"CNAME {host} -> {target}, proxy off"
+
+
+def manual_dns(host, zone, target):
+    sub = host[: -len(zone) - 1] if host.endswith("." + zone) else host
+    return (f"In Cloudflare, zone {zone}, DNS, Records, add: Type CNAME, Name {sub}, Target {target}, "
+            f"Proxy status DNS only (grey cloud), TTL Auto. A record with this exact name wins over a * wildcard. Or export {TOKEN_ENV} (a token with Zone, DNS, Edit "
+            f"for {zone}) and run scripts/site-domain apply.")
+
+
+# ---------------------------------------------------------------- GitHub
+
+
+def pages(repo):
+    code, out, err = run(["gh", "api", f"repos/{repo}/pages"])
+    if code != 0:
+        raise RuntimeError(f"gh api repos/{repo}/pages: {err.strip() or out.strip()}")
+    return json.loads(out)
+
+
+def pages_put(repo, *fields):
+    args = ["gh", "api", "-X", "PUT", f"repos/{repo}/pages"]
+    for f in fields:
+        args += ["-F" if f.endswith(("=true", "=false")) else "-f", f]
+    code, out, err = run(args)
+    if code != 0:
+        raise RuntimeError(f"{' '.join(args[1:])}: {err.strip() or out.strip()}")
+
+
+def cert_state(info):
+    return (info.get("https_certificate") or {}).get("state")
+
+
+# ---------------------------------------------------------------- live
+
+
+def head(url):
+    code, out, err = run(["curl", "-sSI", "--max-time", "20", url])
+    if code != 0:
+        return None, {}, err.strip() or f"curl exit {code}"
+    blocks = [b for b in out.replace("\r\n", "\n").split("\n\n") if b.strip()]
+    lines = blocks[-1].splitlines() if blocks else []
+    status = int(lines[0].split()[1]) if lines and len(lines[0].split()) > 1 else None
+    headers = {k.strip().lower(): v.strip() for k, _, v in (l.partition(":") for l in lines[1:])}
+    return status, headers, ""
+
+
+def live(host):
+    status, headers, err = head(f"https://{host}/")
+    if status != 200 or "github" not in headers.get("server", "").lower():
+        return False, f"https://{host}/ answered {status or err}, server {headers.get('server', '?')}"
+    status, headers, err = head(f"http://{host}/")
+    loc = headers.get("location", "")
+    if status not in (301, 308) or not loc.startswith(f"https://{host}"):
+        return False, f"http://{host}/ answered {status or err}, location {loc or 'none'}, not a redirect to https"
+    return True, f"https://{host}/ 200 from GitHub, http:// redirects to https://"
+
+
+# ---------------------------------------------------------------- main
+
+
+def poll(check, wait, interval):
+    """Call check() until it returns (True, detail) or wait seconds pass. Returns the last (ok, detail)."""
+    end = time.monotonic() + wait
+    while True:
+        ok, detail = check()
+        if ok or time.monotonic() >= end:
+            return ok, detail
+        time.sleep(interval)
+
+
+def steps(args, host, zone, target):
+    apply = args.mode == "apply"
+    token = os.environ.get(TOKEN_ENV, "").strip()
+
+    # dns
+    ok, detail = public_dns(host, target, args.resolver)
+    if not ok and apply and token:
+        what, fixed = fix_record(token, zone, host, target)
+        if what == "fail":
+            return step("dns", "fail", fixed)
+        ok, detail = poll(lambda: public_dns(host, target, args.resolver), args.wait, args.interval)
+        if not ok:
+            return step("dns", "wait", f"{fixed}; {detail}",
+                        "Cloudflare has the record, the resolver does not show it yet. Run apply again in a few minutes.")
+        detail = f"{fixed}; {detail}"
+    elif not ok and apply:
+        ok, detail = poll(lambda: public_dns(host, target, args.resolver), args.wait, args.interval)
+    if not ok:
+        return step("dns", "todo", detail, manual_dns(host, zone, target))
+    step("dns", "done", detail)
+
+    # pages
+    info = pages(args.repo)
+    saved = False
+    if (info.get("cname") or "").lower() != host:
+        if not apply:
+            return step("pages", "todo", f"custom domain is {info.get('cname')!r}", "Run scripts/site-domain apply.")
+        pages_put(args.repo, f"cname={host}")
+        saved = True
+        info = pages(args.repo)
+        step("pages", "done", f"set the custom domain to {host}")
+    else:
+        step("pages", "done", f"custom domain {host}")
+
+    # certificate
+    state = cert_state(info)
+    if state != "approved" and apply:
+        if state in CERT_RETRY and not saved:
+            pages_put(args.repo, f"cname={host}")
+
+        def approved():
+            nonlocal info
+            info = pages(args.repo)
+            return cert_state(info) == "approved", ""
+        poll(approved, args.wait, args.interval)
+        state = cert_state(info)
+    if state != "approved":
+        about = f"state {state}: {(info.get('https_certificate') or {}).get('description') or 'no description'}"
+        if state in CERT_RETRY and not apply:
+            return step("certificate", "todo", about, "Run scripts/site-domain apply --wait 1800.")
+        if state in ("errored", "bad_authz"):
+            return step("certificate", "fail", about,
+                        "GitHub could not issue it. Check the dns step, then run apply again: it saves the domain again.")
+        return step("certificate", "wait", about, "GitHub issues it in 5 to 60 minutes. Run apply --wait 1800 again.")
+    step("certificate", "done", "state approved")
+
+    # https
+    if not info.get("https_enforced"):
+        if not apply:
+            return step("https", "todo", "https_enforced is false", "Run scripts/site-domain apply.")
+        pages_put(args.repo, "https_enforced=true")
+        step("https", "done", "turned on https_enforced")
+    else:
+        step("https", "done", "https_enforced is true")
+
+    # live
+    ok, detail = poll(lambda: live(host), args.wait if apply else 0, args.interval)
+    if not ok:
+        return step("live", "wait", detail,
+                    "GitHub can take a few minutes. Run status again. If it stays, check the last Website run in Actions.")
+    return step("live", "done", detail)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="scripts/site-domain", description=__doc__.split("\n")[0])
+    ap.add_argument("mode", choices=["status", "apply"])
+    ap.add_argument("--repo", default=REPO, help=f"owner/name of the GitHub repo (default {REPO})")
+    ap.add_argument("--host", help="the custom domain (default: site/CNAME)")
+    ap.add_argument("--zone", help="the Cloudflare zone (default: the last two labels of the host)")
+    ap.add_argument("--resolver", default=RESOLVER, help=f"DNS server to ask (default {RESOLVER})")
+    ap.add_argument("--wait", type=int, default=0, help="apply only: seconds to wait for DNS and the certificate")
+    ap.add_argument("--interval", type=float, default=30, help="seconds between two checks while waiting")
+    try:
+        args = ap.parse_args()
+    except SystemExit as e:
+        return 2 if e.code else 0
+    if args.wait < 0 or args.interval < 0 or (args.wait and args.mode != "apply"):
+        print("site-domain: --wait needs apply and a number of seconds of 0 or more", file=sys.stderr)
+        return 2
+
+    host = (args.host or open(os.path.join(ROOT, "site", "CNAME")).read()).strip().lower().rstrip(".")
+    zone = (args.zone or ".".join(host.split(".")[-2:])).lower()
+    target = f"{args.repo.split('/')[0].lower()}.github.io"
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host) or not (host == zone or host.endswith("." + zone)):
+        print(f"site-domain: {host!r} is not a host name in zone {zone!r}", file=sys.stderr)
+        return 2
+
+    try:
+        steps(args, host, zone, target)
+    except (RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+        failed = STEPS[len(results)] if len(results) < len(STEPS) else "live"
+        step(failed, "fail", str(e) if isinstance(e, RuntimeError) else f"unexpected answer: {type(e).__name__} {e}")
+
+    done = [r["step"] for r in results if r["status"] == "done"]
+    last = results[-1]
+    for name in STEPS[len(results):]:
+        step(name, "blocked", f"waits for {last['step']}")
+    result = "done" if len(done) == len(STEPS) else ("waiting" if last["status"] == "wait" else "needs-action")
+    emit({"event": "summary", "mode": args.mode, "host": host, "result": result, "done": done,
+          "next": "" if result == "done" else f"{last['step']}: {last.get('action') or last.get('detail', '')}"})
+    return {"done": 0, "waiting": 3}.get(result, 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

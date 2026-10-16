@@ -93,7 +93,7 @@ Where the code and its tests are:
 | How `spool` parses and prints, the socket | `Sources/spool-cli`, `IPCServer.swift` | `Tests/SpoolCoreTests/IPCWireTests.swift`, `Tests/SpoolEngineTests/IPCServerTests.swift` (a stub handler, not the engine) |
 | What the running app answers to a `spool` command: `ok`, the error text, the exit code | `Engine.handle` in `Engine.swift` | A new suite with `TestEngine` in `EngineFrameTests.swift` that calls `engine.handle(IPCRequest(command: .focusLeft))` (step 3) |
 | The live end-to-end test | `Sources/spool-e2e*`, `Sources/SpoolE2EKit` | `Tests/SpoolE2EKitTests/E2EKitTests.swift` |
-| `scripts/verify`, `scripts/install.sh`, the Makefile, README shell blocks | `scripts/`, `Makefile`, `README.md`, `docs/` | `Tests/SpoolCoreTests/VerifyScriptTests.swift`, `InstallScriptTests.swift`, `MakefileTests.swift`, `DocsTests.swift` |
+| `scripts/verify`, `scripts/site-domain`, `scripts/install.sh`, the Makefile, README shell blocks | `scripts/`, `Makefile`, `README.md`, `docs/` | `Tests/SpoolCoreTests/VerifyScriptTests.swift`, `SiteDomainScriptTests.swift`, `InstallScriptTests.swift`, `MakefileTests.swift`, `DocsTests.swift` |
 
 A command's name in code is camelCase: "cycle width" is `.cycleWidth`. To
 find its code and tests, run `grep -rn "cycleWidth" Sources Tests`.
@@ -252,3 +252,19 @@ the owner. Agents never set these keys.
 and JS, no build step, no tracking, no external scripts. Every claim and number
 on it must match README.md. When a feature or a measured number changes, update
 both in the same PR.
+
+`scripts/site-domain` connects the domain in `site/CNAME` to GitHub Pages:
+Cloudflare DNS (a CNAME to `fskroes.github.io`, proxy off), the Pages custom
+domain, the TLS certificate, HTTPS enforcement, and a live check.
+
+```sh
+scripts/site-domain status
+scripts/site-domain apply --wait 1800
+```
+
+`status` only reads. It prints one JSON line per step and a summary whose
+`next` field says what to do. Exit 0 means every step is done, 1 a person
+must act, 3 still waiting (run it again later). `apply` changes Cloudflare
+only when `CLOUDFLARE_API_TOKEN` is set, and it never changes or deletes a
+record that does not point to GitHub. Run `apply` only when the owner asks
+for it.

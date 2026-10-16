@@ -256,7 +256,7 @@ scripts/verify smoke
 
 To hand a bug to an agent, open an issue with the **Agent task** template. It adds the label `agent`, and the agent queue picks it up, reproduces it on `main` and opens a PR.
 
-The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pages when `site/` changes on `main`.
+The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pages when `site/` changes on `main`. `scripts/site-domain status` checks the domain, the DNS and the certificate (see [AGENTS.md](AGENTS.md#the-website)).
 
 ## Known limits
 
