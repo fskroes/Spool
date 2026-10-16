@@ -89,10 +89,12 @@ final class AppModel: ObservableObject {
         return outcome
     }
 
-    /// `spool://license?key=<key>`. A URL without a key opens the window.
+    /// `spool://license?key=<key>`. A valid key also replaces the key of a licensed copy, like
+    /// `spool license <key>` (a buyer with a new key clicks the link in the email). A URL without a key opens
+    /// the window, or Settings when there is a license.
     func activateLicense(fromURL key: String) {
-        guard license.status == .unlicensed else { return }
-        if key.isEmpty { return openLicenseWindow() }
+        guard license.status != .notRequired else { return }
+        if key.isEmpty { return license.status == .unlicensed ? openLicenseWindow() : openSettings() }
         // A key that fails opens the window, which shows the error.
         switch activateLicense(key) {
         case .invalid, .saveFailed: openLicenseWindow()

@@ -223,6 +223,8 @@ if same_file "$SOURCE_APP" "$DEST"; then
 fi
 [[ "$(bundle_id_of "$SOURCE_APP")" == "$BUNDLE_ID" ]] || die "$SOURCE_APP is not $BUNDLE_ID"
 codesign --verify --deep --strict "$SOURCE_APP" || die "$SOURCE_APP has a bad code signature. Run 'make app' again."
+! spool_app_has_test_license_key "$SOURCE_APP" "$ROOT/docs/license-test-vectors.json" \
+    || die "$SOURCE_APP has the public test license key of the E2E test (make e2e): anyone can make keys for it. Run 'make install', which builds it again."
 # Another signature than the one of the releases: an Accessibility entry for it stops working, while the
 # switch still shows on. For an ad hoc app after the next build, for another identity after an update
 # (releases have the Developer ID signature of the team).

@@ -137,6 +137,15 @@ spool_license_test_keys() {
     [[ $found -eq 1 ]]
 }
 
+# Status 0 when the app $1 has a public test key of the vectors file $2 as SpoolLicensePublicKey: a build
+# of `make e2e`. Anyone can make license keys for it, so it must not be installed or put in a DMG.
+spool_app_has_test_license_key() {
+    local key keys
+    key=$(plutil -extract SpoolLicensePublicKey raw -o - "$1/Contents/Info.plist" 2>/dev/null) || return 1
+    keys=$(spool_license_test_keys "$2") || return 1
+    grep -qxF -- "$key" <<< "$keys"
+}
+
 # Status 0 when a designated requirement (the output of `codesign -d -r -`) is the one of a Developer ID
 # signature of team $3 for the bundle ID $2. macOS stores the Accessibility permission with this requirement.
 # It names the team, not one certificate, so it stays the same when the certificate is renewed.
