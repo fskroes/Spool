@@ -67,8 +67,10 @@ import Testing
         #expect(!profile.isEmpty && !profile.contains(" "), "a notarytool profile name, got '\(profile)'")
         // The old pin of a self-signed certificate is gone: releases are signed by the team.
         #expect(try Self.call("spool_updates_value", env, "SPOOL_SIGNING_CERT_SHA1").output.isEmpty)
-        // The source is public: the releases, the feed and the downloads are in the same repository.
-        #expect(repo == "fskroes/Spool")
+        // The source is private. The releases, the feed and the downloads are in a public repository
+        // with release files only.
+        #expect(repo == "fskroes/spool-releases")
+        #expect(try Self.call("spool_updates_value", env, "SPOOL_SOURCE_REPO").output == "fskroes/Spool")
         #expect(feed == (try Self.call("spool_feed_url_for_repo", repo).output))
         #expect(feed.hasPrefix("https://"))
         #expect(Data(base64Encoded: key)?.count == 32, "an Ed25519 public key is 32 bytes")
@@ -583,7 +585,8 @@ import Testing
         return bin
     }
 
-    // GitHub makes the release tag from the commit: it must be on main there. "Cannot tell" stops the run.
+    // A release is built from reviewed, pushed code: the commit must be on main of the source repository.
+    // "Cannot tell" stops the run.
     @Test func theCommitMustBeOnMainOnGitHub() throws {
         let bin = try Self.fakeGh()
         defer { try? FileManager.default.removeItem(at: bin) }
@@ -743,8 +746,6 @@ import Testing
         let r = try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", first)
         #expect(r.status == 0, "\(r.error)")
         #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "rev-parse", "v1.0.0^{commit}").output == first)
-        // GitHub makes a lightweight tag when it publishes. The same kind here: `git fetch --tags` does
-        // not refuse it as "would clobber existing tag".
         #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "cat-file", "-t", "v1.0.0").output == "commit")
         // An existing tag is not moved.
         #expect(try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", "HEAD").status != 0)
@@ -840,10 +841,11 @@ import Testing
         let stapleDMG = try #require(line("staple \"$OUT/Spool.dmg\" Spool.dmg"))
         let gatekeeperDMG = try #require(line("gatekeeper \"$OUT/Spool.dmg\" Spool.dmg open"))
         #expect(dmg < notarizeDMG && notarizeDMG < stapleDMG && stapleDMG < gatekeeperDMG && gatekeeperDMG < upload)
-        // The tag on GitHub comes from the commit of the build.
-        let onMain = try #require(line("ONMAIN=$(spool_release_commit_on_main \"$REPO\" \"$COMMIT\") || die"))
+        // The commit of the build is on main of the source. The releases repository has no source
+        // commit, so the release names none (GitHub tags its own main).
+        let onMain = try #require(line("ONMAIN=$(spool_release_commit_on_main \"$SOURCE\" \"$COMMIT\") || die"))
         #expect(onMain < runBuild)
-        #expect(lines[upload].contains("--target \"$COMMIT\""))
+        #expect(!lines[upload].contains("--target"))
         #expect(line("git tag") == nil, "only spool_release_tag makes the tag")
         #expect(line("git rev-parse HEAD", after: commit + 1) == nil, "HEAD is read once")
         #expect(line("OUT=\"$ROOT/dist/release/dry-run/$VERSION\"") != nil, "a dry run does not replace a real run")

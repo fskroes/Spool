@@ -9,7 +9,7 @@ This page tells you how to install, build, sign, update and remove Spool.
 
 ## Install the release
 
-1. Download [Spool.dmg](https://github.com/fskroes/Spool/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/Spool/releases/latest).
+1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
 2. Open `Spool.dmg` and drag Spool to Applications.
 3. Open Spool from Applications. Then do the [first run](#first-run) steps.
 
@@ -42,7 +42,7 @@ set -e
 D=$(mktemp -d)
 trap 'cd /; hdiutil detach -quiet "$D/dmg" 2>/dev/null || true; rm -rf "$D"' EXIT
 cd "$D"
-U=https://github.com/fskroes/Spool/releases/latest/download
+U=https://github.com/fskroes/spool-releases/releases/latest/download
 curl -fsSLO "$U/Spool.dmg"
 curl -fsSLO "$U/SHA256SUMS.txt"
 shasum -a 256 -c --ignore-missing SHA256SUMS.txt
@@ -343,7 +343,7 @@ Spool uses the plain login item only when the agent is `notRegistered` or `notFo
 
 ## Updates (Sparkle)
 
-Spool uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates come from the releases of [fskroes/Spool](https://github.com/fskroes/Spool/releases). `build-app.sh` reads the feed URL and the public EdDSA key from `Packaging/updates.env` and writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist. Then Spool checks for updates every 24 hours, and "Check for Updates…" in the menu is on.
+Spool uses [Sparkle 2](https://sparkle-project.org) (version 2.10.0, from SwiftPM). Updates come from the releases of [fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). `build-app.sh` reads the feed URL and the public EdDSA key from `Packaging/updates.env` and writes `SUFeedURL`, `SUPublicEDKey` and `SUEnableAutomaticChecks` into the Info.plist. Then Spool checks for updates every 24 hours, and "Check for Updates…" in the menu is on.
 
 `SPOOL_UPDATES=off make app` builds without updates. Without the keys, Spool makes no Sparkle object and shows no update errors. This is also true for `swift run`.
 

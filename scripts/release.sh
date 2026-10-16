@@ -7,7 +7,8 @@
 #      VERSION, the Sparkle private key matches Packaging/updates.env, this Mac has a
 #      "Developer ID Application" identity of the team in Packaging/updates.env (SPOOL_TEAM_ID),
 #      and the notarytool profile SPOOL_NOTARY_PROFILE works. A real run also needs the commit
-#      on main on GitHub and no tag v<version> there yet.
+#      on main of the source repository (SPOOL_SOURCE_REPO) on GitHub, and no tag v<version> in the
+#      releases repository yet.
 #      The published archive must have the same signing team and update key.
 #   2. Builds dist/Spool.app (universal, updates on, hardened runtime) and checks its Info.plist
 #      and signature.
@@ -18,9 +19,10 @@
 #      commit of the build).
 #   5. Verifies the EdDSA signature of the archive, the ticket of the app in it, and that no file
 #      in the zip or the DMG has your home path, user name or Git email in it.
-#   6. Not with --dry-run: uploads a draft release, publishes it (GitHub makes the tag v<version> on
-#      the commit of the build), downloads the feed and the archive again and compares them, checks
-#      the tag on GitHub, then makes the same tag in this repository.
+#   6. Not with --dry-run: makes the public releases repository when it does not exist, uploads a
+#      draft release, publishes it, downloads the feed, the archive and the DMG again and compares
+#      them, checks the tag in the releases repository, then tags the commit of the build v<version>
+#      in this repository (a local tag, nothing is pushed).
 #
 # A dry run sends the app and the DMG to Apple's notary service too (not public), so it checks the
 # whole chain. Notarization takes some minutes. Run it in the foreground: notarytool reads its
@@ -80,13 +82,16 @@ done
 
 # --- 1. Checks -----------------------------------------------------------------------------
 REPO=$(spool_updates_value "$UPDATES_ENV" SPOOL_RELEASES_REPO)
+SOURCE=$(spool_updates_value "$UPDATES_ENV" SPOOL_SOURCE_REPO)
 FEED=$(spool_updates_value "$UPDATES_ENV" SPOOL_FEED_URL)
 KEY=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_PUBLIC_KEY)
 ACCOUNT=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_KEY_ACCOUNT)
 TEAM=$(spool_updates_value "$UPDATES_ENV" SPOOL_TEAM_ID)
 PROFILE=$(spool_updates_value "$UPDATES_ENV" SPOOL_NOTARY_PROFILE)
-[[ -n "$REPO" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$TEAM" && -n "$PROFILE" ]] \
-    || die "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_FEED_URL, SPOOL_ED_PUBLIC_KEY, SPOOL_ED_KEY_ACCOUNT, SPOOL_TEAM_ID and SPOOL_NOTARY_PROFILE"
+[[ -n "$REPO" && -n "$SOURCE" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$TEAM" && -n "$PROFILE" ]] \
+    || die "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_SOURCE_REPO, SPOOL_FEED_URL, SPOOL_ED_PUBLIC_KEY, SPOOL_ED_KEY_ACCOUNT, SPOOL_TEAM_ID and SPOOL_NOTARY_PROFILE"
+# The source is private, the releases repository is public: a release must never go to the source.
+[[ "$REPO" != "$SOURCE" ]] || die "SPOOL_RELEASES_REPO must not be the source repository $SOURCE"
 [[ "$FEED" == "$(spool_feed_url_for_repo "$REPO")" ]] \
     || die "SPOOL_FEED_URL must be $(spool_feed_url_for_repo "$REPO")"
 spool_team_id_valid "$TEAM" || die "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got '$TEAM'"
@@ -150,11 +155,11 @@ then run: scripts/release.sh --finish"
     curl -fsSL --max-time 300 -o "$TMP/Spool.dmg" "$(spool_latest_download "$REPO")Spool.dmg" \
         || die "cannot download $(spool_latest_download "$REPO")Spool.dmg"
     cmp -s "$TMP/Spool.dmg" "$OUT/Spool.dmg" || die "the downloaded Spool.dmg is not the same as the uploaded one"
-    # GitHub made the tag when it published the release. It must be on the commit of the build.
+    # GitHub made the release tag in the releases repository when it published. The tag of the source
+    # is the local one below: the releases repository holds no source, so its tag cannot name the commit.
     local remote
     remote=$(spool_release_remote_tag "$REPO" "$TAG") || die "$remote"
-    [[ "$remote" == "$COMMIT" ]] || die "the tag $TAG on GitHub is on '${remote:-no commit}', not on the commit of the build $COMMIT.
-Check https://github.com/$REPO/releases/tag/$TAG"
+    [[ -n "$remote" ]] || die "the tag $TAG does not exist in $REPO. Check https://github.com/$REPO/releases/tag/$TAG"
     spool_release_tag "$TAG" "$COMMIT" || die "cannot tag $COMMIT as $TAG"
     log "Published Spool $VERSION: https://github.com/$REPO/releases/tag/$TAG"
     log "Feed: $FEED"
@@ -227,11 +232,11 @@ esac
 # Before the build: a second run must not delete the files that --finish needs.
 if [[ $DRY -eq 0 ]]; then
     EXISTING=$(spool_release_existing "$TAG" "$REPO") || die "$EXISTING"
-    # GitHub makes the tag from the commit when it publishes: the commit must be on main there, and
-    # the tag must not exist (a release on an existing tag ignores the commit).
-    ONMAIN=$(spool_release_commit_on_main "$REPO" "$COMMIT") || die "$ONMAIN"
+    # A release is built from reviewed code: the commit must be on main of the source repository.
+    # The releases repository must not have the tag yet (a release on an existing tag keeps that tag).
+    ONMAIN=$(spool_release_commit_on_main "$SOURCE" "$COMMIT") || die "$ONMAIN"
     REMOTE_TAG=$(spool_release_remote_tag "$REPO" "$TAG") || die "$REMOTE_TAG"
-    [[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists on GitHub (on $REMOTE_TAG). Increase VERSION."
+    [[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists in $REPO (on $REMOTE_TAG). Increase VERSION."
 fi
 
 # --- 2. Build --------------------------------------------------------------------------------
@@ -367,24 +372,37 @@ fi
 # --- 6. Publish -------------------------------------------------------------------------------
 LOGIN=$(gh api user --jq .login)
 [[ "${REPO%%/*}" == "$LOGIN" ]] || die "gh is logged in as $LOGIN, but the releases repository is $REPO"
-gh repo view "$REPO" >/dev/null 2>&1 || die "the releases repository $REPO does not exist, or gh cannot read it"
+NOREPLY="$LOGIN@users.noreply.github.com"
+if ! gh repo view "$REPO" >/dev/null 2>&1; then
+    log "Making the public repository $REPO"
+    gh api -X POST user/repos -f name="${REPO#*/}" -F private=false -F has_issues=false \
+        -F has_wiki=false -F has_projects=false \
+        -f description="Spool release files and the update feed. Source is private." >/dev/null
+    # The first commit through the API, with the noreply address: no local Git identity is used.
+    gh api -X PUT "repos/$REPO/contents/README.md" -f message="Say what this repository holds" \
+        -f content="$(base64 < "$ROOT/Packaging/releases-README.md")" \
+        -f "committer[name]=$LOGIN" -f "committer[email]=$NOREPLY" \
+        -f "author[name]=$LOGIN" -f "author[email]=$NOREPLY" >/dev/null
+fi
+# Spool downloads its updates from this repository, with no login.
+[[ "$(gh repo view "$REPO" --json visibility --jq .visibility 2>/dev/null)" == PUBLIC ]] \
+    || die "the releases repository $REPO is not public. Spool cannot download its updates from it."
 # Checked in step 1 too. Again here: the build and the notarization take minutes, and in that time
-# another run can make the release, or someone can push the tag (GitHub then ignores --target).
+# another run can make the release or push the tag.
 EXISTING=$(spool_release_existing "$TAG" "$REPO") || die "$EXISTING"
 REMOTE_TAG=$(spool_release_remote_tag "$REPO" "$TAG") || die "$REMOTE_TAG"
-[[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists on GitHub (on $REMOTE_TAG). Increase VERSION."
+[[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists in $REPO (on $REMOTE_TAG). Increase VERSION."
 
 {
     printf '# Spool %s, build %s\n\n%s\n\n' "$VERSION" "$BUILD" "$NOTES"
     printf '**Install:** download `Spool.dmg`, open it, and drag Spool to Applications. '
     printf 'The app is signed with a Developer ID and notarized by Apple.\n\n'
     printf 'Spool updates itself: **Check for Updates…** in the menu bar menu.\n'
-    printf 'Checksums: `SHA256SUMS.txt`.\n'
+    printf 'Checksums: `SHA256SUMS.txt`. Source commit: `%s`.\n' "$COMMIT"
 } > "$TMP/body.md"
 
 log "Uploading the draft release $TAG"
-# --target: GitHub makes the tag on the commit of the build when it publishes, not on the newest main.
-gh release create "$TAG" --repo "$REPO" --draft --target "$COMMIT" --title "Spool $VERSION" --notes-file "$TMP/body.md" \
+gh release create "$TAG" --repo "$REPO" --draft --title "Spool $VERSION" --notes-file "$TMP/body.md" \
     "$OUT/$ZIP_NAME" "$OUT/Spool.dmg" "$OUT/SHA256SUMS.txt" "$OUT/appcast.xml" >/dev/null
 log "Publishing $TAG"
 gh release edit "$TAG" --repo "$REPO" --draft=false --latest >/dev/null

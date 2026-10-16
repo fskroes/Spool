@@ -29,6 +29,10 @@ import Testing
     static let key = Data(repeating: 7, count: 32).base64EncodedString()
     static let otherKey = Data(repeating: 9, count: 32).base64EncodedString()
     static let releases = "fskroes/spool-test"
+    /// The private source repository: a release is built from a commit on its main.
+    static let source = "fskroes/spool-test-source"
+    /// The commit GitHub tags in the releases repository: its own main, not a commit of the source.
+    static let releasesMain = "fedcba9876543210fedcba9876543210fedcba98"
     static let feed = "https://github.com/\(releases)/releases/latest/download/appcast.xml"
     static let version = "1.2.0"
     /// The temporary repository has three commits.
@@ -67,6 +71,7 @@ import Testing
             try write("CHANGELOG.md", "# Changelog\n\n## 1.2.0\n\n- A test release.\n\n## 1.1.0\n\n- Older.\n")
             try write("Packaging/updates.env", """
             SPOOL_RELEASES_REPO=\(ReleaseRunTests.releases)
+            SPOOL_SOURCE_REPO=\(ReleaseRunTests.source)
             SPOOL_FEED_URL=\(ReleaseRunTests.feed)
             SPOOL_ED_PUBLIC_KEY=\(ReleaseRunTests.key)
             SPOOL_ED_KEY_ACCOUNT=com.fskroes.Striple
@@ -294,7 +299,15 @@ import Testing
               "api repos/"*"/commits/refs/tags/"*)
                 if [ -f "$S/remote-${2##*/}" ]; then cat "$S/remote-${2##*/}"
                 else echo "gh: No commit found for SHA: refs/tags/${2##*/} (HTTP 422)" >&2; exit 1; fi ;;
-              "repo view") [ -z "${FAKE_GH_NO_REPO:-}" ] ;;
+              "repo view")
+                [ -z "${FAKE_GH_NO_REPO:-}" ] || [ -f "$S/repo-made" ] || exit 1
+                case "$*" in *visibility*) if [ -n "${FAKE_GH_PRIVATE:-}" ]; then echo PRIVATE; else echo PUBLIC; fi ;; esac ;;
+              "api -X")
+                case "$*" in
+                  *" user/repos "*) : > "$S/repo-made" ;;
+                  *"/contents/README.md "*) : > "$S/readme-made" ;;
+                  *) echo "fake gh: unexpected: $*" >&2; exit 1 ;;
+                esac ;;
               "release list")
                 case "${FAKE_GH_LIST:-zero}" in
                   zero) echo 0 ;;
@@ -310,7 +323,7 @@ import Testing
                 d="$W/$repo/releases/download/$tag"
                 mkdir -p "$d"
                 while [ $# -gt 0 ]; do
-                  case "$1" in --target) echo "$2" > "$S/target-$tag"; shift ;; --title|--notes-file) shift ;; --*) ;; *) cp "$1" "$d/" ;; esac
+                  case "$1" in --title|--notes-file) shift ;; --*) ;; *) cp "$1" "$d/" ;; esac
                   shift
                 done
                 [ -z "${FAKE_GH_CORRUPT_UPLOAD:-}" ] || for z in "$d"/*.zip; do printf x >> "$z"; done
@@ -318,9 +331,8 @@ import Testing
               "release edit")
                 tag=$3 repo=$5
                 echo false > "$S/$tag"
-                # GitHub makes the tag on the target commit when it publishes.
-                if [ -n "${FAKE_GH_TAG_ELSEWHERE:-}" ]; then echo 0123456789abcdef0123456789abcdef01234567 > "$S/remote-$tag"
-                else cp "$S/target-$tag" "$S/remote-$tag"; fi
+                # GitHub makes the tag on main of the releases repository when it publishes.
+                [ -n "${FAKE_GH_NO_TAG:-}" ] || echo \#(ReleaseRunTests.releasesMain) > "$S/remote-$tag"
                 [ -z "${FAKE_GH_NO_LATEST:-}" ] || exit 0
                 mkdir -p "$W/$repo/releases/latest/download"
                 cp "$W/$repo/releases/download/$tag/appcast.xml" "$W/$repo/releases/download/$tag/Spool.dmg" "$W/$repo/releases/latest/download/"
@@ -488,12 +500,15 @@ import Testing
         #expect(r.status == 0, "\(r.all)")
         #expect(r.output.contains("No release published yet. New: \(Self.version) (\(Self.build))"))
         #expect(r.output.contains("Published Spool \(Self.version): https://github.com/\(Self.releases)/releases/tag/v\(Self.version)"))
-        #expect(f.ghCalls.contains("api repos/\(Self.releases)/compare/\(head)...main --jq .status"))
-        #expect(f.ghCalls.contains("release create v\(Self.version) --repo \(Self.releases) --draft --target \(head)"))
+        #expect(f.ghCalls.contains("api repos/\(Self.source)/compare/\(head)...main --jq .status"),
+                "the commit is on main of the source, not of the releases repository")
+        #expect(!f.ghCalls.contains("api repos/\(Self.releases)/compare/"))
+        #expect(f.ghCalls.contains("release create v\(Self.version) --repo \(Self.releases) --draft --title"))
+        #expect(!f.ghCalls.contains("--target"), "the releases repository has no commit of the source")
         #expect(f.ghCalls.contains("release edit v\(Self.version) --repo \(Self.releases) --draft=false --latest"))
         #expect(!f.ghCalls.contains("user/repos"), "the run never makes a repository")
         #expect(try f.sh("git rev-parse 'v\(Self.version)^{commit}'") == head)
-        #expect(try f.sh("git cat-file -t v\(Self.version)") == "commit", "the same lightweight tag as on GitHub")
+        #expect(try f.sh("git cat-file -t v\(Self.version)") == "commit")
         let commit = try String(contentsOf: f.out.appendingPathComponent("commit.txt"), encoding: .utf8)
         #expect(commit == head + "\n")
     }
@@ -517,7 +532,7 @@ import Testing
         (["FAKE_SPARKLE_KEY": otherKey], "does not match SPOOL_ED_PUBLIC_KEY"),
         (["FAKE_HASH": ""], "this Mac has no \"Developer ID Application\" identity of team \(team)"),
         (["FAKE_NO_NOTARY_PROFILE": "1"], "the notarytool profile \(profile) does not work. Make it once"),
-        (["FAKE_GH_COMPARE": "behind"], "is not on main of \(releases) (behind). Push main first"),
+        (["FAKE_GH_COMPARE": "behind"], "is not on main of \(source) (behind). Push main first"),
     ])
     func aWrongSettingStopsTheRunBeforeTheBuild(_ env: [String: String], _ message: String) throws {
         let f = try Fixture()
@@ -542,11 +557,11 @@ import Testing
         try Self.expectRefused(try f.release(), "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got 'a1b2'", f)
     }
 
-    // A release on an existing tag ignores --target: GitHub would publish it on the commit of the old tag.
-    @Test func aTagOnGitHubStopsTheRunBeforeTheBuild() throws {
+    // A release on an existing tag keeps that tag: the version is taken.
+    @Test func aTagInTheReleasesRepositoryStopsTheRunBeforeTheBuild() throws {
         let f = try Fixture()
         try f.write(f.state.appendingPathComponent("remote-v\(Self.version)"), "0123456789abcdef0123456789abcdef01234567\n")
-        try Self.expectRefused(try f.release(), "the tag v\(Self.version) exists on GitHub (on 0123456789abcdef0123456789abcdef01234567). Increase VERSION.", f)
+        try Self.expectRefused(try f.release(), "the tag v\(Self.version) exists in \(Self.releases) (on 0123456789abcdef0123456789abcdef01234567). Increase VERSION.", f)
         #expect(!FileManager.default.fileExists(atPath: f.repo.appendingPathComponent("dist/Spool.app").path))
     }
 
@@ -716,7 +731,7 @@ import Testing
     }
 
     // Each value is needed: without one, the run cannot check the feed, the update key or the identity.
-    @Test(arguments: ["SPOOL_RELEASES_REPO", "SPOOL_FEED_URL", "SPOOL_ED_PUBLIC_KEY", "SPOOL_ED_KEY_ACCOUNT",
+    @Test(arguments: ["SPOOL_RELEASES_REPO", "SPOOL_SOURCE_REPO", "SPOOL_FEED_URL", "SPOOL_ED_PUBLIC_KEY", "SPOOL_ED_KEY_ACCOUNT",
                       "SPOOL_TEAM_ID", "SPOOL_NOTARY_PROFILE"])
     func aSettingThatIsMissingStopsTheRun(_ key: String) throws {
         let f = try Fixture()
@@ -725,7 +740,7 @@ import Testing
         #expect(lines.contains { $0.hasPrefix(key + "=") })
         try f.write("Packaging/updates.env", lines.filter { !$0.hasPrefix(key + "=") }.joined(separator: "\n") + "\n")
         try f.sh("git commit -qam 'no \(key)'")
-        try Self.expectRefused(try f.release(), "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_FEED_URL", f)
+        try Self.expectRefused(try f.release(), "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_SOURCE_REPO, SPOOL_FEED_URL", f)
     }
 
     @Test func aFeedThatIsNotTheFeedOfTheRepositoryStopsTheRun() throws {
@@ -860,10 +875,33 @@ import Testing
 
     // MARK: the publish
 
-    @Test func aMissingRepositoryStopsTheRunBeforeTheUpload() throws {
+    // The first real run makes the public releases repository, with a README, through the API.
+    @Test func aMissingReleasesRepositoryIsMadePublicWithItsReadme() throws {
         let f = try Fixture()
-        try Self.expectRefused(try f.release(env: ["FAKE_GH_NO_REPO": "1"]),
-                               "the releases repository \(Self.releases) does not exist, or gh cannot read it", f)
+        let r = try f.release(env: ["FAKE_GH_NO_REPO": "1"])
+        #expect(r.status == 0, "\(r.all)")
+        #expect(r.output.contains("==> Making the public repository \(Self.releases)"))
+        let made = try #require(f.ghCalls.split(separator: "\n").first { $0.contains(" user/repos ") })
+        #expect(made.contains("-f name=spool-test") && made.contains("-F private=false"), "\(made)")
+        #expect(f.ghCalls.contains("api -X PUT repos/\(Self.releases)/contents/README.md"))
+    }
+
+    // Spool downloads its updates with no login: a private releases repository breaks every update.
+    @Test func aPrivateReleasesRepositoryStopsTheRunBeforeTheUpload() throws {
+        let f = try Fixture()
+        try Self.expectRefused(try f.release(env: ["FAKE_GH_PRIVATE": "1"]),
+                               "the releases repository \(Self.releases) is not public", f)
+    }
+
+    // The source is private: a release there would be a release nobody can download.
+    @Test func theReleasesRepositoryMustNotBeTheSource() throws {
+        let f = try Fixture()
+        let file = f.repo.appendingPathComponent("Packaging/updates.env")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        try f.write("Packaging/updates.env", text.replacingOccurrences(of: "SPOOL_SOURCE_REPO=\(Self.source)",
+                                                                       with: "SPOOL_SOURCE_REPO=\(Self.releases)"))
+        try f.sh("git commit -qam 'same repository'")
+        try Self.expectRefused(try f.release(), "SPOOL_RELEASES_REPO must not be the source repository \(Self.releases)", f)
     }
 
     @Test func aGhLoginThatDoesNotOwnTheRepositoryStopsTheRun() throws {
@@ -873,11 +911,11 @@ import Testing
     }
 
     // Another run can make the release during this build: the check runs again before the upload.
-    // Notarization takes minutes. A tag pushed in that time would make GitHub ignore --target.
+    // Notarization takes minutes. Another run can publish the version in that time.
     @Test func aTagMadeDuringTheBuildStopsTheRunBeforeTheUpload() throws {
         let f = try Fixture()
         let r = try f.release(env: ["FAKE_BUILD_MAKES_TAG": "1"])
-        try Self.expectRefused(r, "the tag v\(Self.version) exists on GitHub (on 0123456789abcdef0123456789abcdef01234567)", f)
+        try Self.expectRefused(r, "the tag v\(Self.version) exists in \(Self.releases) (on 0123456789abcdef0123456789abcdef01234567)", f)
         #expect(r.output.contains("==> Apple notarized Spool.dmg"), "the check runs again after the notarization")
     }
 
@@ -893,7 +931,7 @@ import Testing
         (["FAKE_GH_NO_LATEST": "1"], "\(feed) does not return the new appcast"),
         (["FAKE_GH_CORRUPT_UPLOAD": "1"], "the downloaded Spool-\(version).zip is not the same as the uploaded one"),
         (["FAKE_GH_CORRUPT_DMG": "1"], "the downloaded Spool.dmg is not the same as the uploaded one"),
-        (["FAKE_GH_TAG_ELSEWHERE": "1"], "the tag v\(version) on GitHub is on '0123456789abcdef0123456789abcdef01234567', not on the commit of the build"),
+        (["FAKE_GH_NO_TAG": "1"], "the tag v\(version) does not exist in \(releases)"),
     ])
     func aPublishedReleaseThatIsNotTheUploadedOneIsNotTagged(_ env: [String: String], _ message: String) throws {
         let f = try Fixture()

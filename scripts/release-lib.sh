@@ -253,13 +253,11 @@ spool_release_head_is() {
     fi
 }
 
-# Tags COMMIT (not HEAD) with TAG in this repository. GitHub makes the same tag when it publishes the
-# release, as a lightweight tag on COMMIT. The local tag is lightweight too, so `git fetch --tags`
-# finds the same object and does not refuse it as "would clobber existing tag".
+# Tags COMMIT (not HEAD) with TAG in this repository: the source of the release. Nothing is pushed.
 spool_release_tag() { git tag "$1" "$2"; }
 
-# Status 0 when COMMIT is on the branch main of REPO on GitHub. GitHub makes the release tag from the
-# commit, so it must be pushed. Status 1 with advice on stdout when it is not on main;
+# Status 0 when COMMIT is on the branch main of REPO (the source repository) on GitHub: a release is
+# built from reviewed, pushed code. Status 1 with advice on stdout when it is not on main;
 # status 2 with a message on stdout when gh cannot tell.
 spool_release_commit_on_main() {
     local repo=$1 commit=$2 out err status=0 msg

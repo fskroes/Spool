@@ -1,11 +1,11 @@
 # Release Spool
 
-Spool publishes its builds on the releases page of this repository, [fskroes/Spool](https://github.com/fskroes/Spool/releases). Each release is signed with a Developer ID, notarized by Apple and stapled, so anyone can download it with a browser and open it. The installed app finds new versions through the Sparkle feed of the latest release and installs them itself.
+Spool publishes its builds on the releases page of the public repository [fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). That repository holds release files only: the source in `fskroes/Spool` is private. The first real `make publish` makes it, with a README from `Packaging/releases-README.md`. Each release is signed with a Developer ID, notarized by Apple and stapled, so anyone can download it with a browser and open it. The installed app finds new versions through the Sparkle feed of the latest release and installs them itself.
 
 ```
- the Mac of the maintainer                        github.com/fskroes/Spool/releases
+ the Mac of the maintainer                        github.com/fskroes/spool-releases/releases
 ┌───────────────────────────────┐                ┌──────────────────────────────────────────┐
-│ make publish                  │  gh release    │ release v0.2.0  (tag on the built commit)│
+│ make publish                  │  gh release    │ release v0.2.0                           │
 │  build + sign (Developer ID)  ├───────────────►│   Spool-0.2.0.zip   (Sparkle archive)    │
 │  notarize + staple app, DMG   │                │   Spool.dmg         (notarized, stapled) │
 │  zip + appcast (EdDSA)        │                │   appcast.xml       (one item)           │
@@ -26,7 +26,7 @@ Spool publishes its builds on the releases page of this repository, [fskroes/Spo
 
 | Thing | Where | Secret? |
 |---|---|---|
-| Releases repository, feed URL, public EdDSA key, key account, Team ID, notarytool profile name | `Packaging/updates.env` (committed) | No |
+| Releases repository, source repository, feed URL, public EdDSA key, key account, Team ID, notarytool profile name | `Packaging/updates.env` (committed) | No |
 | Code signing identity "Developer ID Application: … (98L4368F9K)" | login keychain; a `.p12` backup in your password manager | **Yes** |
 | Notarization credential (Apple ID and an app-specific password) | login keychain, as the notarytool profile `spool-notary` | **Yes** |
 | Sparkle private EdDSA key | login keychain, account `com.fskroes.Striple`; backup in your password manager | **Yes** |
@@ -37,7 +37,7 @@ The Sparkle key keeps the old name of Spool, Striple: the name is in the keychai
 
 Every `make app` reads `Packaging/updates.env`, so every build checks for updates. `SPOOL_UPDATES=off make app` builds without updates.
 
-The feed URL is `https://github.com/fskroes/Spool/releases/latest/download/appcast.xml`. GitHub sends it to the `appcast.xml` of the newest published release. Each release has an appcast with one item: its own version. Do not mark another release of this repository as "Latest": the feed follows "Latest".
+The feed URL is `https://github.com/fskroes/spool-releases/releases/latest/download/appcast.xml`. GitHub sends it to the `appcast.xml` of the newest published release. Each release has an appcast with one item: its own version. Do not mark another release of this repository as "Latest": the feed follows "Latest".
 
 ## Why the Accessibility permission stays after an update
 
@@ -116,8 +116,9 @@ Every release has the same team, so every update matches the stored entry. A ren
 | Check | Why |
 |---|---|
 | The working tree is clean and the branch is `main` | The release is a commit you can find again. |
-| `VERSION` looks like `1.2.3`, the tag `v<version>` does not exist here or on GitHub | One release per version. A release on an existing tag ignores the commit of the build. |
-| The commit is on `main` on GitHub | GitHub makes the tag from that commit when it publishes. |
+| `VERSION` looks like `1.2.3`, the tag `v<version>` does not exist here or in the releases repository | One release per version. A release on an existing tag keeps that tag. |
+| The commit is on `main` of the source repository (`SPOOL_SOURCE_REPO`) on GitHub | A release is built from pushed, reviewed code. |
+| The releases repository is not the source repository, and it is public | Spool downloads its updates with no login. |
 | The releases repository has no release `v<version>`, also no draft. This check comes before the build | A second run does not delete the files that `make publish-finish` needs. |
 | `VERSION` and the build number are higher than the ones in the published feed | Sparkle offers only a higher build. |
 | `CHANGELOG.md` has a section for `VERSION` | The update window shows these notes. |
@@ -132,7 +133,7 @@ Every release has the same team, so every update matches the stored entry. A ren
 | The archive unpacks to an app with a valid signature of the team and a stapled ticket | This is what an update installs. The archive is made after the staple, so it carries the ticket. |
 | No file in the zip or the DMG contains your home path, `/Users/<your user name>/` or your Git email | The files are public. The user name alone is not a leak: it is also the GitHub owner, and the bundle ID and the feed URL have it. `build-app.sh` removes the debug map (`strip -S`), which had the build paths. If the check itself fails (for example a file it cannot read), the release stops too. |
 
-Then it uploads the files to a **draft** release with the commit of the build as its target, and publishes it. GitHub then makes the tag `v<version>` on that commit. The script downloads the feed, the archive and the DMG (from `releases/latest/download/`, the link of the website) again and compares them byte for byte, checks that the tag on GitHub is on the commit of the build, and makes the same tag here (a lightweight tag, the same kind that GitHub makes, so `git fetch --tags` takes it without a conflict).
+Then it uploads the files to a **draft** release and publishes it. GitHub makes the tag `v<version>` in the releases repository, on its own `main`: that repository has no source commit. The release text names the source commit. The script downloads the feed, the archive and the DMG (from `releases/latest/download/`, the link of the website) again and compares them byte for byte, checks that the tag exists in the releases repository, and tags the commit of the build `v<version>` here. That local tag is not pushed: push it with `git push origin v<version>` when you want it on GitHub.
 
 The script reads the commit once, at the start. The build must come from that commit: if HEAD moves or the working tree changes during the build, the release stops before the upload.
 
@@ -150,14 +151,15 @@ If the script stops while the DMG is open, its exit handler detaches the DMG bef
 | "Apple did not notarize …: no answer", with `HTTP status code: 401` | The profile has your Apple ID password, or the app-specific password was revoked. Make a new app-specific password and run `store-credentials` again. |
 | "Gatekeeper does not accept … as notarized" | The ticket is not on the file. Run again: the script staples before it asks Gatekeeper. If it stays, check the date and time of the Mac, and the network to Apple. |
 | "the commit … is not on main of …" | Push `main` first: `git push origin main`. |
-| "the tag v… exists on GitHub" | Increase `VERSION`. Do not move a tag of a published release. |
-| "a draft release vX exists" after a failed run | The upload stopped before the publish. `gh release delete vX --repo fskroes/Spool --yes`, then run again. |
+| "the tag v… exists in fskroes/spool-releases" | Increase `VERSION`. Do not move a tag of a published release. |
+| "the releases repository … is not public" | Spool downloads its updates with no login. Make the repository public again: `gh repo edit fskroes/spool-releases --visibility public --accept-visibility-change-consequences`. |
+| "a draft release vX exists" after a failed run | The upload stopped before the publish. `gh release delete vX --repo fskroes/spool-releases --yes`, then run again. |
 | "vX is published" | Do not delete it. The run stopped after the publish: see the next row. |
-| "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the checks and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed, the archive and the DMG with them, checks the tag on GitHub, and makes the tag here. |
+| "does not return the new appcast", or the run stopped after "Publishing vX" | The release is public, but the checks and the tag did not run. Open the release page and check that it is published and "Latest". Then, on the same commit and without a new build: `make publish-finish`. It stops if HEAD is not the commit in `dist/release/<version>/commit.txt`. It checks the files in `dist/release/<version>/` against `SHA256SUMS.txt`, compares the feed, the archive and the DMG with them, checks the tag in the releases repository, and makes the tag here. |
 | "X is published already" | Same as above: `make publish-finish`. If the tag exists, increase `VERSION`. |
-| "the tag vX on GitHub is on …, not on the commit of the build" | The release is public on another commit than the build. Do not delete it: publish a fixed version with a higher `VERSION`. |
+| "the tag vX does not exist in fskroes/spool-releases" | GitHub did not make the tag when it published. Open the release page. When the release is public, run `make publish-finish` again after some minutes. |
 | "the Sparkle key … does not match" | Import the backup with `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.fskroes.Striple -f <file>`. |
-| "dist/release/<version>/… is missing" from `make publish-finish` | The files of the run are not there. Run `make publish-finish` on the Mac and in the folder of the run. `make clean` keeps these files. If you deleted them, check the release on GitHub by hand and make the tag yourself: `git fetch origin tag v<version>`. |
+| "dist/release/<version>/… is missing" from `make publish-finish` | The files of the run are not there. Run `make publish-finish` on the Mac and in the folder of the run. `make clean` keeps these files. If you deleted them, check the release on GitHub by hand and make the tag yourself on the commit of the release text: `git tag v<version> <commit>`. |
 | Spool is on in System Settings > Accessibility, but Spool says "Accessibility permission needed" | The entry stores the requirement of an old build, for example a build from source. Settings > Mac Setup > Reset Permission, then turn Spool on. See docs/INSTALL.md, "The switch is on, but Spool has no permission". |
 | A bad release is out | Publish a fixed version with a higher `VERSION`. Do not delete a published archive: installed apps can be in the middle of an update. |
 

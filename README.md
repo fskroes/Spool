@@ -138,7 +138,7 @@ How Spool stays fast:
 
 Requirements: macOS 13 or later.
 
-1. Download [Spool.dmg](https://github.com/fskroes/Spool/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/Spool/releases/latest).
+1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
 2. Open it and drag Spool to Applications.
 3. Open Spool. At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.
 
@@ -267,7 +267,7 @@ The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pa
 - Window focus uses private SkyLight calls, as other window managers on macOS do. A future macOS can change them; Spool then falls back to normal app activation.
 - Trackpad swipes use the private MultitouchSupport framework.
 - On a Mac that your employer manages, ask IT before you use Spool. See [Use on a managed work Mac](docs/INSTALL.md#use-on-a-managed-work-mac).
-- Releases are signed with a Developer ID and notarized by Apple. Downloads and updates come from the [releases of this repository](https://github.com/fskroes/Spool/releases). See [docs/RELEASING.md](docs/RELEASING.md).
+- Releases are signed with a Developer ID and notarized by Apple. Downloads and updates come from the [releases of fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). See [docs/RELEASING.md](docs/RELEASING.md).
 - There is no license file yet. The source is public, but until a license is added, the default copyright rules apply.
 
 ## Related projects
