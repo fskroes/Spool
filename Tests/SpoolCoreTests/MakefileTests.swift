@@ -62,7 +62,7 @@ import Testing
         p.waitUntilExit()
         #expect(p.terminationStatus == 0, "\(plan)")
         let lines = plan.components(separatedBy: "\n")
-        #expect(lines.first == "SPOOL_LICENSE_PUBLIC_KEY='\(LicenseKeyTests.vectors.publicKeyA)' ./scripts/build-app.sh", "\(plan)")
+        #expect(lines.first == "SPOOL_E2E_BUILD=1 SPOOL_LICENSE_PUBLIC_KEY='\(LicenseKeyTests.vectors.publicKeyA)' ./scripts/build-app.sh", "\(plan)")
         #expect(!plan.contains("from-the-caller"))
         #expect(lines.contains { $0.contains("spool-e2e\" --app dist/Spool.app") })
     }

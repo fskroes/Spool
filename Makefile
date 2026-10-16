@@ -46,7 +46,7 @@ E2E_LICENSE_PUBLIC_KEY := $(shell plutil -extract publicKeyA raw -o - $(dir $(la
 # The app is built with the test license key, and the runner writes the matching license.key to the SPOOL_HOME
 # of the run, so the test Spool starts its window manager. It does not use the key of Packaging/updates.env.
 e2e:
-	SPOOL_LICENSE_PUBLIC_KEY='$(E2E_LICENSE_PUBLIC_KEY)' ./scripts/build-app.sh
+	SPOOL_E2E_BUILD=1 SPOOL_LICENSE_PUBLIC_KEY='$(E2E_LICENSE_PUBLIC_KEY)' ./scripts/build-app.sh
 	swift build --product spool-e2e
 	swift build --product spool-e2e-windows
 	"$$(swift build --show-bin-path)/spool-e2e" --app dist/Spool.app $(E2E_ARGS)

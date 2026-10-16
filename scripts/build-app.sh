@@ -16,6 +16,8 @@
 #                          SpoolLicensePublicKey in Info.plist. Default: from Packaging/updates.env.
 #                          make e2e sets the public test key of docs/license-test-vectors.json.
 #                          Without a key the app asks for a license that it cannot accept.
+#   SPOOL_E2E_BUILD        "1" only for make e2e: compiles with SPOOL_E2E, so the ad hoc E2E app trusts its
+#                          Info.plist key without the signature of the release team. Never for a release.
 #
 # The script does not install, open or register anything.
 set -euo pipefail
@@ -112,6 +114,10 @@ fi
 read -r -a ARCHS <<< "${SPOOL_ARCHS:-arm64 x86_64}"
 ARCH_FLAGS=()
 for arch in "${ARCHS[@]}"; do ARCH_FLAGS+=(--arch "$arch"); done
+if [[ "${SPOOL_E2E_BUILD:-}" == 1 ]]; then
+    ARCH_FLAGS+=(-Xswiftc -DSPOOL_E2E)
+    warn "E2E build (SPOOL_E2E_BUILD=1): the app trusts its license key without the signature of the team"
+fi
 log "Building Spool $VERSION ($BUILD) for ${ARCHS[*]}"
 swift build -c release "${ARCH_FLAGS[@]}" --product SpoolApp
 swift build -c release "${ARCH_FLAGS[@]}" --product spool

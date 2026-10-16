@@ -93,12 +93,16 @@ final class AppModel: ObservableObject {
     /// `spool license <key>` (a buyer with a new key clicks the link in the email). A URL without a key opens
     /// the window, or Settings when there is a license.
     func activateLicense(fromURL key: String) {
-        guard license.status != .notRequired else { return }
-        if key.isEmpty { return license.status == .unlicensed ? openLicenseWindow() : openSettings() }
-        // A key that fails opens the window, which shows the error.
-        switch activateLicense(key) {
-        case .invalid, .saveFailed: openLicenseWindow()
-        case .activated, .notRequired: break
+        switch LicenseLaunch.urlAction(key: key, status: license.status) {
+        case .ignore: return
+        case .openLicenseWindow: openLicenseWindow()
+        case .openSettings: openSettings()
+        case .activate(let key):
+            // A key that fails opens the window, which shows the error.
+            switch activateLicense(key) {
+            case .invalid, .saveFailed: openLicenseWindow()
+            case .activated, .notRequired: break
+            }
         }
     }
 

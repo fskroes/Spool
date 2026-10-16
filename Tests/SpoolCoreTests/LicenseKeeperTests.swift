@@ -94,6 +94,51 @@ import Testing
         #expect(!LicenseLaunch.startsEngine(autoStart: false, status: .notRequired))
     }
 
+    // An edited or re-signed copy is not signed by the release team: its Info.plist key is not used, so a key
+    // the cracker put there cannot unlock it.
+    @Test func onlyACopySignedByTheTeamUsesItsInfoPlistKey() {
+        let info: [String: Any] = ["SpoolLicensePublicKey": Self.vectors.publicKeyA]
+        #expect(LicenseKeeper.trustedPublicKey(info: info, signedByReleaseTeam: true) == Self.vectors.publicKeyA)
+        #expect(LicenseKeeper.trustedPublicKey(info: info, signedByReleaseTeam: false) == nil)
+        // A key signed by the cracker's own pair, stored next to the copy: still locked.
+        let original = keeper()
+        guard case .activated = original.activate(Self.valid.key) else {
+            Issue.record("a valid key must activate")
+            return
+        }
+        let resigned = LicenseKeeper(publicKey: LicenseKeeper.trustedPublicKey(info: info, signedByReleaseTeam: false),
+                                     inAppBundle: true, file: original.file)
+        #expect(resigned.status == .unlicensed)
+    }
+
+    // The team in the binary is the team of the releases.
+    @Test func theCompiledTeamIsTheTeamOfTheReleases() throws {
+        let env = try String(contentsOf: LicenseKeyTests.root.appendingPathComponent("Packaging/updates.env"), encoding: .utf8)
+        #expect(env.contains("\nSPOOL_TEAM_ID=\(LicenseKeeper.releaseTeam)\n"))
+    }
+
+    @Test func whatALicenseLinkDoes() {
+        let licensed = LicenseStatus.licensed(License(id: "i", email: "e", issued: "d", key: "k"))
+        #expect(LicenseLaunch.urlAction(key: "SPOOL-x.y", status: .notRequired) == .ignore)
+        #expect(LicenseLaunch.urlAction(key: "", status: .unlicensed) == .openLicenseWindow)
+        #expect(LicenseLaunch.urlAction(key: "", status: licensed) == .openSettings)
+        #expect(LicenseLaunch.urlAction(key: "SPOOL-x.y", status: .unlicensed) == .activate("SPOOL-x.y"))
+        #expect(LicenseLaunch.urlAction(key: "SPOOL-x.y", status: licensed) == .activate("SPOOL-x.y"),
+                "a new key from the email replaces the old one")
+    }
+
+    // The file never has another mode than 600, and a second write leaves no temporary file.
+    @Test func theKeyFileIsMode600AndReplacedInPlace() throws {
+        let k = keeper()
+        try k.file.write("first")
+        try k.file.write("second")
+        #expect(k.file.read() == "second\n")
+        let mode = try FileManager.default.attributesOfItem(atPath: k.file.url.path)[.posixPermissions] as? NSNumber
+        #expect(mode?.intValue == 0o600)
+        let names = try FileManager.default.contentsOfDirectory(atPath: k.file.url.deletingLastPathComponent().path)
+        #expect(names == ["license.key"])
+    }
+
     @Test func infoPlistKey() {
         #expect(LicenseKeeper.publicKey(info: ["SpoolLicensePublicKey": "abc"]) == "abc")
         #expect(LicenseKeeper.publicKey(info: ["SpoolLicensePublicKey": "  \n"]) == nil)

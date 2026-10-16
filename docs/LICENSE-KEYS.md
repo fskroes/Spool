@@ -52,6 +52,15 @@ only then reads the JSON.
 A key that fails any step is not valid. The app shows one message for all of
 them: "This license key is not valid." It does not say which step failed.
 
+A release build uses the public key of its `Info.plist` only when the app on
+disk has a valid signature of the release team (`LicenseKeeper.releaseTeam`,
+the same Team ID as `SPOOL_TEAM_ID`). An edited `Info.plist` or binary breaks
+that signature, and a copy signed again (ad hoc or by someone else) has no
+certificate of the team. Such a copy has no public key and stays unlicensed.
+Only the E2E build (`make e2e`, compiled with `SPOOL_E2E`) skips this check;
+it has a public test key, which `release.sh`, `install.sh` and `make-dmg.sh`
+refuse.
+
 ## The keys of the owner
 
 | Key | Where |

@@ -55,6 +55,23 @@ public enum LicenseLaunch {
     public static func window(for status: LicenseStatus) -> Window {
         status == .unlicensed ? .license : .guideIfNeeded
     }
+
+    /// What `spool://license?key=<key>` does.
+    public enum URLAction: Equatable, Sendable {
+        /// A developer build: there is nothing to activate.
+        case ignore
+        case openLicenseWindow
+        case openSettings
+        /// Check and store the key, like `spool license <key>`. It also replaces the key of a licensed copy:
+        /// a buyer with a new key clicks the link in the email. A key that fails opens the license window.
+        case activate(String)
+    }
+
+    public static func urlAction(key: String, status: LicenseStatus) -> URLAction {
+        if status == .notRequired { return .ignore }
+        if key.isEmpty { return status == .unlicensed ? .openLicenseWindow : .openSettings }
+        return .activate(key)
+    }
 }
 
 /// Reads, checks and stores the key of one copy of Spool. The app owns one. It has no UI, so tests use it
@@ -80,6 +97,17 @@ public struct LicenseKeeper: Sendable {
         self.publicKey = publicKey
         self.inAppBundle = inAppBundle
         self.file = file
+    }
+
+    /// The Apple team that signs every release (SPOOL_TEAM_ID in Packaging/updates.env; a test keeps the two
+    /// the same). It is compiled in: a value in Info.plist could be edited.
+    public static let releaseTeam = "98L4368F9K"
+
+    /// The public key a release build may use. Any change to the app (another key in Info.plist, a patched
+    /// binary) breaks the signature of the team, and the re-signed copy is not signed by the team: then there
+    /// is no trusted key, and the copy stays unlicensed. Nil also when Info.plist has no key.
+    public static func trustedPublicKey(info: [String: Any]?, signedByReleaseTeam: Bool) -> String? {
+        signedByReleaseTeam ? publicKey(info: info) : nil
     }
 
     /// The `SpoolLicensePublicKey` of an Info.plist dictionary. Nil when it is missing, not text, or empty.

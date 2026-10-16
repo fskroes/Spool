@@ -230,7 +230,7 @@ Use this only when the releases must move to another Apple team. A renewed or a 
 
 A release of another team works, and Sparkle installs it (the EdDSA key does not change). But after the update each installed copy loses the Accessibility permission, while the switch still shows on.
 
-1. Set `SPOOL_TEAM_ID` in `Packaging/updates.env` to the new Team ID. Commit it.
+1. Set `SPOOL_TEAM_ID` in `Packaging/updates.env` to the new Team ID, and `LicenseKeeper.releaseTeam` in `Sources/SpoolCore/LicenseKeeper.swift` to the same value (a test checks that they match). The app trusts its license public key only with a signature of that team. Commit both.
 2. In the `CHANGELOG.md` section of the next version, tell the users what to do after the update: in Spool, click Settings > Mac Setup > Reset Permission, then turn Spool on in System Settings > Privacy & Security > Accessibility. Turning the switch off and on is not enough.
 3. Publish with `./scripts/release.sh --new-identity` (a dry run first: `./scripts/release.sh --dry-run --new-identity`). `make publish` refuses this release, because the published release has the old team ("the published … is not signed by team …"). That check stops a change by mistake. `--new-identity` turns it into a warning, and stops when the published release has the new team already. All other checks stay on.
 

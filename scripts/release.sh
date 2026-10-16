@@ -251,7 +251,7 @@ fi
 
 # --- 2. Build --------------------------------------------------------------------------------
 log "Building the app"
-env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY -u SPOOL_ARCHS -u SPOOL_UPDATES \
+env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY -u SPOOL_E2E_BUILD -u SPOOL_ARCHS -u SPOOL_UPDATES \
     "$ROOT/scripts/build-app.sh"
 
 PLIST="$APP/Contents/Info.plist"

@@ -232,6 +232,10 @@ test in `Tests/`.
 - Only a debug binary of `swift build` (it has no bundle ID) needs no license: `spool license` prints "This build
   of Spool needs no license." and exits with 0. A release build always needs a key: a renamed or copied bundle,
   or one without a public key in `Info.plist`, stays unlicensed.
+- A release build trusts the public key in its `Info.plist` only when the app has a valid signature of the release
+  team. A copy with another key in `Info.plist`, signed again, stays unlicensed, also with a key that the other
+  key signed.
+- `spool://license?key=<key>` with a valid key also replaces the key of a licensed copy.
 
 ## Performance budget
 

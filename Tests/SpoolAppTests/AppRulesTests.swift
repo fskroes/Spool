@@ -197,6 +197,13 @@ import SpoolEngine
         #expect(g.licensedEmail == "buyer@example.com")
     }
 
+    // The test runner is not signed by the team of the releases, like a copy that was edited and signed again.
+    @Test func aBundleNotSignedByTheTeamIsNotTrusted() {
+        #expect(!LicenseGate.isSigned(Bundle.main, byTeam: LicenseKeeper.releaseTeam))
+        #expect(!LicenseGate.isSigned(Bundle(path: "/System/Applications/Calculator.app")!, byTeam: LicenseKeeper.releaseTeam),
+                "Apple's own signature is not the signature of the team")
+    }
+
     // The engine asks before every start. A key file removed while Spool runs stops the next start.
     @Test func theCheckBeforeStartReadsTheKeyFileAgain() throws {
         let g = gate()

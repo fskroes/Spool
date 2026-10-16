@@ -136,10 +136,21 @@ public struct LicenseFile: Sendable {
         try? String(contentsOf: url, encoding: .utf8)
     }
 
-    /// Writes the key (one line) readable by this user only.
+    /// Writes the key (one line) readable by this user only. The file has mode 600 from the moment it exists:
+    /// it is made with that mode under another name, then renamed over the old file.
     public func write(_ key: String) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data((key + "\n").utf8).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let folder = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let temp = folder.appendingPathComponent(".license.key.\(UUID().uuidString)")
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let data = Data((key + "\n").utf8)
+        let written = data.withUnsafeBytes { Foundation.write(fd, $0.baseAddress, $0.count) }
+        let closed = close(fd)
+        guard written == data.count, closed == 0, rename(temp.path, url.path) == 0 else {
+            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+            unlink(temp.path)
+            throw POSIXError(code)
+        }
     }
 }

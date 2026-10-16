@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftUI
 import SpoolCore
 
@@ -22,9 +23,28 @@ final class LicenseGate: ObservableObject {
         #else
         let debugBuild = false
         #endif
-        return LicenseKeeper(publicKey: LicenseKeeper.publicKey(info: bundle.infoDictionary),
+        // The E2E build (`make e2e`, SPOOL_E2E) is signed ad hoc and has the public test key. release.sh,
+        // install.sh and make-dmg.sh refuse an app with that key.
+        #if SPOOL_E2E
+        let signed = true
+        #else
+        let signed = debugBuild || isSigned(bundle, byTeam: LicenseKeeper.releaseTeam)
+        #endif
+        return LicenseKeeper(publicKey: LicenseKeeper.trustedPublicKey(info: bundle.infoDictionary, signedByReleaseTeam: signed),
                              inAppBundle: LicenseKeeper.needsLicense(debugBuild: debugBuild,
                                                                      bundleIdentifier: bundle.bundleIdentifier))
+    }
+
+    /// True when the bundle on disk has a valid signature of an Apple certificate of `team`. An edited
+    /// Info.plist or binary breaks the signature; a copy signed again (ad hoc, or by someone else) has no
+    /// certificate of the team.
+    nonisolated static func isSigned(_ bundle: Bundle, byTeam team: String) -> Bool {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(bundle.bundleURL as CFURL, [], &code) == errSecSuccess, let code else { return false }
+        var requirement: SecRequirement?
+        let text = "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"" as CFString
+        guard SecRequirementCreateWithString(text, [], &requirement) == errSecSuccess, let requirement else { return false }
+        return SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess
     }
 
     var allowsStart: Bool { status.allowsStart }

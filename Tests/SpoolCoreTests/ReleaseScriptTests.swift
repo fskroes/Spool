@@ -384,7 +384,7 @@ import Testing
         #expect(build.contains("plutil -replace SpoolLicensePublicKey -string \"$LICENSE_KEY\" \"$PLIST\""))
         #expect(build.contains("spool_license_key_valid \"$LICENSE_KEY\""))
         let release = try String(contentsOf: scripts.appendingPathComponent("release.sh"), encoding: .utf8)
-        #expect(release.contains("env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY "))
+        #expect(release.contains("env -u SPOOL_FEED_URL -u SPOOL_ED_PUBLIC_KEY -u SPOOL_LICENSE_PUBLIC_KEY -u SPOOL_E2E_BUILD "))
     }
 
     // The check runs before swift build and before any keychain call: a wrong key costs no minutes.
