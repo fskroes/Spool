@@ -5,9 +5,6 @@ import SpoolCore
 /// The license of this copy of Spool, for the app. The rules live in `LicenseKeeper` (SpoolCore).
 @MainActor
 final class LicenseGate: ObservableObject {
-    static let buyURL = URL(string: "https://1yc.dev/spool")!
-    static let restoreURL = URL(string: "https://1yc.dev/spool/restore")!
-
     let keeper: LicenseKeeper
     @Published private(set) var status: LicenseStatus
     /// The text under the paste field: the last key that failed. Nil after a success.
@@ -25,6 +22,14 @@ final class LicenseGate: ObservableObject {
     }
 
     var allowsStart: Bool { status.allowsStart }
+
+    /// Reads the key file again, then answers. The engine asks before every start, so a key that was
+    /// removed while Spool runs stops the next start.
+    func checkBeforeStart() -> Bool {
+        let now = keeper.status
+        if now != status { status = now }
+        return now.allowsStart
+    }
 
     /// The email of the license, for the Settings line. Nil when there is none.
     var licensedEmail: String? {

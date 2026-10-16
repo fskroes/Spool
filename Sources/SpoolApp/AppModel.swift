@@ -57,7 +57,7 @@ final class AppModel: ObservableObject {
         let license = license ?? LicenseGate()
         self.license = license
         self.recorder = ShortcutRecorder(engine: engine, store: store)
-        engine.licenseCheck = { [unowned license] in license.allowsStart }
+        engine.licenseCheck = { [unowned license] in license.checkBeforeStart() }
     }
 
     func openSettings(_ tab: SettingsTab? = nil) {

@@ -20,6 +20,9 @@ public enum LicenseKey {
     public static let version = 1
     /// The text the app shows for every key that is not valid. It does not say which check failed.
     public static let invalidMessage = "This license key is not valid."
+    /// Where a user buys a key, and where 1yc.dev sends a lost key again (docs/LICENSE-KEYS.md).
+    public static let buyURL = URL(string: "https://1yc.dev/spool")!
+    public static let restoreURL = URL(string: "https://1yc.dev/spool/restore")!
 
     /// The key without white space: email clients wrap long lines.
     public static func normalized(_ text: String) -> String {

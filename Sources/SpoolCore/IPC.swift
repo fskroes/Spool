@@ -108,13 +108,18 @@ public struct EngineState: Codable, Equatable, Sendable {
 
     public var running: Bool
     public var accessibilityTrusted: Bool
+    /// True when the engine does not start because there is no valid license key (F25). Nil otherwise,
+    /// so the JSON of a licensed app does not change.
+    public var needsLicense: Bool?
     public var focusedWindow: WindowInfo?
     public var displays: [DisplayState]
     public var floating: [WindowInfo]
 
-    public init(running: Bool, accessibilityTrusted: Bool, focusedWindow: WindowInfo?, displays: [DisplayState], floating: [WindowInfo]) {
+    public init(running: Bool, accessibilityTrusted: Bool, needsLicense: Bool? = nil, focusedWindow: WindowInfo?,
+                displays: [DisplayState], floating: [WindowInfo]) {
         self.running = running
         self.accessibilityTrusted = accessibilityTrusted
+        self.needsLicense = needsLicense
         self.focusedWindow = focusedWindow
         self.displays = displays
         self.floating = floating

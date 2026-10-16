@@ -426,6 +426,22 @@ private func distance(_ a: CGRect, _ b: CGRect) -> CGFloat { hypot(a.minX - b.mi
         #expect(t.engine.status == .unlicensed)
     }
 
+    // `spool state` must say why the engine is stopped. A licensed engine keeps its JSON as before.
+    @Test func theStateSaysTheEngineNeedsALicense() throws {
+        let t = gated()
+        defer { t.stop() }
+        #expect(t.engine.currentState().needsLicense == nil)
+        t.engine.start()
+        let state = t.engine.currentState()
+        #expect(state.needsLicense == true && !state.running)
+        #expect(SpoolCLI.format(state: state).hasPrefix("Engine: stopped, it needs a license key (spool license <key>)."))
+        let json = String(decoding: try JSONEncoder().encode(t.engine.currentState()), as: UTF8.self)
+        #expect(json.contains("\"needsLicense\":true"))
+        t.engine.licenseCheck = { true }
+        t.engine.start()
+        #expect(!String(decoding: try JSONEncoder().encode(t.engine.currentState()), as: UTF8.self).contains("needsLicense"))
+    }
+
     @Test func everyStartCommandOfTheCLIAnswersWithTheLicenseMessage() {
         let t = gated()
         defer { t.stop() }

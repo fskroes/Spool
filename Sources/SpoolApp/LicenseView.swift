@@ -22,11 +22,14 @@ struct LicenseView: View {
                 Text(error).font(.callout).foregroundColor(.red).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                Button("Buy Spool") { NSWorkspace.shared.open(LicenseGate.buyURL) }
-                Button("Lost your key?") { NSWorkspace.shared.open(LicenseGate.restoreURL) }
+                Button("Buy Spool (EUR 0.99)") { NSWorkspace.shared.open(LicenseKey.buyURL) }
+                Button("Lost your key?") { NSWorkspace.shared.open(LicenseKey.restoreURL) }
                 Spacer()
+                // Return makes a new line in the paste field, so Activate has Command-Return.
                 Button("Activate") { app.activateLicense(text) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .buttonStyle(.borderedProminent)
+                    .help("Activate (Command-Return)")
                     .disabled(LicenseKey.normalized(text).isEmpty)
             }
         }

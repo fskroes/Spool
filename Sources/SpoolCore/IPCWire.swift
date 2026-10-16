@@ -851,7 +851,8 @@ public enum SpoolCLI {
     /// Human text for `spool state`.
     public static func format(state s: EngineState) -> String {
         var lines: [String] = []
-        lines.append("Engine: \(s.running ? "running" : "stopped"). Accessibility: \(s.accessibilityTrusted ? "granted" : "not granted").")
+        let engine = s.running ? "running" : s.needsLicense == true ? "stopped, it needs a license key (spool license <key>)" : "stopped"
+        lines.append("Engine: \(engine). Accessibility: \(s.accessibilityTrusted ? "granted" : "not granted").")
         if let f = s.focusedWindow {
             lines.append("Focused: \(label(f)) (window \(f.id))")
         } else {

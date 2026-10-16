@@ -6,7 +6,7 @@
 
 <p align="center"><img src="site/strip.svg" width="720" alt="Five windows on a strip. The view moves right along the strip, a new window opens to the right, and the other windows keep their width."></p>
 
-Spool is free and the source is on GitHub. It is for people who keep many windows open on one screen and want to move between them with the keyboard or the trackpad, as niri and PaperWM do on Linux.
+Spool costs EUR 0.99, one time ([1yc.dev/spool](https://1yc.dev/spool)). It is for people who keep many windows open on one screen and want to move between them with the keyboard or the trackpad, as niri and PaperWM do on Linux.
 
 ## Why a strip
 
@@ -139,15 +139,16 @@ How Spool stays fast:
 
 Requirements: macOS 13 or later.
 
-1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
-2. Open it and drag Spool to Applications.
-3. Open Spool. At first launch the guide asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.
+1. Buy Spool on [1yc.dev/spool](https://1yc.dev/spool): EUR 0.99, one time. The email has your license key and the download link.
+2. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg), open it and drag Spool to Applications.
+3. Open Spool. Paste the license key and click **Activate**, or click the activation link in the email. The key is checked on your Mac, with no network connection. Lost your key? [1yc.dev/spool/restore](https://1yc.dev/spool/restore) sends it again.
+4. The guide then asks for the **Accessibility** permission (System Settings > Privacy & Security > Accessibility). That is the only permission Spool needs.
 
 The app is signed with a Developer ID and notarized by Apple, so macOS opens it with no extra step. Spool updates itself: **Check for Updates…** in the menu bar menu, or automatically every 24 hours. The Accessibility permission stays after each update, because every release is signed by the same Apple team. To link the `spool` CLI, see [docs/INSTALL.md](docs/INSTALL.md#install-the-release).
 
 ### Build from source
 
-Requirements: the Xcode Command Line Tools (`xcode-select --install`).
+The source is private. This is for the maintainer. Requirements: the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
 scripts/make-signing-cert.sh
@@ -155,7 +156,7 @@ make install
 open /Applications/Spool.app
 ```
 
-`scripts/make-signing-cert.sh` makes a free, self-signed signing identity one time. With it, every build has the same signature, so the Accessibility permission stays after a rebuild. `make install` builds `dist/Spool.app`, copies it to `/Applications` and links `spool` to `~/.local/bin`. On the maintainer's Mac, `make install` signs with the Developer ID of the releases instead. Without either identity, `make install` stops and lists the ways on. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild).
+`scripts/make-signing-cert.sh` makes a free, self-signed signing identity one time. With it, every build has the same signature, so the Accessibility permission stays after a rebuild. `make install` builds `dist/Spool.app`, copies it to `/Applications` and links `spool` to `~/.local/bin`. On the maintainer's Mac, `make install` signs with the Developer ID of the releases instead. Without either identity, `make install` stops and lists the ways on. See [docs/INSTALL.md](docs/INSTALL.md#keep-the-accessibility-permission-after-a-rebuild). A bundled build needs a license key too: make one with `spool-license issue` (see [docs/RELEASING.md](docs/RELEASING.md#license-keys)).
 
 A build from source is not signed like a release. When Sparkle updates it to a release, the Accessibility entry no longer matches: click Settings > Mac Setup > **Reset Permission** once. To keep your own build, build it with `SPOOL_UPDATES=off make install`.
 
@@ -269,7 +270,7 @@ The website in [site/](site/) is published to https://spool.1yc.dev by GitHub Pa
 - Trackpad swipes use the private MultitouchSupport framework.
 - On a Mac that your employer manages, ask IT before you use Spool. See [Use on a managed work Mac](docs/INSTALL.md#use-on-a-managed-work-mac).
 - Releases are signed with a Developer ID and notarized by Apple. Downloads and updates come from the [releases of fskroes/spool-releases](https://github.com/fskroes/spool-releases/releases). See [docs/RELEASING.md](docs/RELEASING.md).
-- There is no license file yet. The source is public, but until a license is added, the default copyright rules apply.
+- Spool is a paid app with a private source. A license key unlocks it (F25, [docs/LICENSE-KEYS.md](docs/LICENSE-KEYS.md)).
 
 ## Related projects
 

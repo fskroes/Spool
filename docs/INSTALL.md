@@ -9,9 +9,11 @@ This page tells you how to install, build, sign, update and remove Spool.
 
 ## Install the release
 
-1. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
-2. Open `Spool.dmg` and drag Spool to Applications.
-3. Open Spool from Applications. Then do the [first run](#first-run) steps.
+1. Buy Spool on https://1yc.dev/spool (EUR 0.99, one time). The email has your license key, an activation link and the download link.
+2. Download [Spool.dmg](https://github.com/fskroes/spool-releases/releases/latest/download/Spool.dmg) from the [latest release](https://github.com/fskroes/spool-releases/releases/latest).
+3. Open `Spool.dmg` and drag Spool to Applications.
+4. Open Spool from Applications. Spool shows the window "Activate Spool". Paste the key and click **Activate** (or press Command-Return), or click the activation link in the email. Spool checks the key on your Mac, with no network connection, and stores it. The window manager starts when the key is valid. Lost your key? https://1yc.dev/spool/restore sends it again.
+5. Do the [first run](#first-run) steps.
 
 The app and the DMG are signed with a Developer ID and notarized by Apple, and the ticket is stapled to both. Thus macOS opens Spool after a download with a browser, with no "Open Anyway" step and without a network connection. You can check it:
 

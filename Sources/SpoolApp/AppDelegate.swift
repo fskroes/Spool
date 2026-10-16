@@ -44,7 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, MainMenuActions, NSMen
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         model.engine.enableMetrics { MetricsStore(directory: SpoolPaths.metricsDirectory, appVersion: version) }
         startIPC()
-        if model.store.config.behavior.autoStart { model.engine.start() }
+        // Without a license the start is refused at once, so the status (menu, Settings) says why,
+        // also when "start at launch" is off.
+        if model.store.config.behavior.autoStart || model.license.status == .unlicensed { model.engine.start() }
         didLaunch = true
         for command in pending { model.engine.perform(command, source: .url) }
         pending.removeAll()

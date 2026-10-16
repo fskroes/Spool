@@ -562,6 +562,7 @@ public final class Engine: ObservableObject {
         }
         let floating = windows.values.filter { $0.state == .floating }.map(\.info).sorted { $0.id < $1.id }
         return EngineState(running: status == .running, accessibilityTrusted: Permissions.isTrusted,
+                           needsLicense: status == .unlicensed ? true : nil,
                            focusedWindow: focusedID.flatMap { windows[$0]?.info }, displays: ds, floating: floating)
     }
 

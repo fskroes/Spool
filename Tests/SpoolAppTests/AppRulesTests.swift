@@ -197,6 +197,21 @@ import SpoolEngine
         #expect(g.licensedEmail == "buyer@example.com")
     }
 
+    // The engine asks before every start. A key file removed while Spool runs stops the next start.
+    @Test func theCheckBeforeStartReadsTheKeyFileAgain() throws {
+        let g = gate()
+        #expect(!g.checkBeforeStart())
+        guard case .activated = g.activate(Self.key) else {
+            Issue.record("a valid key must activate")
+            return
+        }
+        #expect(g.checkBeforeStart())
+        try FileManager.default.removeItem(at: g.keeper.file.url)
+        #expect(g.allowsStart, "the cached status has not seen the removal yet")
+        #expect(!g.checkBeforeStart())
+        #expect(g.status == .unlicensed)
+    }
+
     @Test func aGateFromAPlainBuildAllowsStart() {
         let g = LicenseGate(keeper: LicenseKeeper(publicKey: nil, inAppBundle: false))
         #expect(g.status == .notRequired)
