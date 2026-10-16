@@ -265,6 +265,11 @@ plist() { plutil -extract "$1" raw -o - "$PLIST" 2>/dev/null; }
 codesign --verify --deep --strict "$APP" || die "the signature of the app is not valid"
 spool_dr_is_team "$(codesign -d -r - "$APP" 2>&1)" "$BUNDLE_ID" "$TEAM" \
     || die "the app is not signed with the Developer ID of team $TEAM"
+# The app checks this requirement on itself before it trusts its license public key. If the built app does
+# not meet it, no buyer can activate it.
+TRUST=$(spool_license_trust_requirement "$TEAM")
+codesign --verify -R="$TRUST" "$APP" \
+    || die "the app does not meet the requirement of its license check ($TRUST): no license key would activate it"
 # Notarization refuses an app without the hardened runtime.
 [[ "$(codesign -d --verbose=2 "$APP" 2>&1)" == *"(runtime)"* ]] || die "the app does not have the hardened runtime"
 for arch in arm64 x86_64; do

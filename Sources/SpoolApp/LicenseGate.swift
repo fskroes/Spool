@@ -42,7 +42,7 @@ final class LicenseGate: ObservableObject {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(bundle.bundleURL as CFURL, [], &code) == errSecSuccess, let code else { return false }
         var requirement: SecRequirement?
-        let text = "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"" as CFString
+        let text = LicenseKeeper.trustRequirement(team: team) as CFString
         guard SecRequirementCreateWithString(text, [], &requirement) == errSecSuccess, let requirement else { return false }
         return SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess
     }

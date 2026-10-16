@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SpoolCore
 
 /// Tests for scripts/release-lib.sh (used by release.sh and build-app.sh). Each test calls one shell
 /// function. No network, no keychain, no build.
@@ -255,6 +256,15 @@ import Testing
         #expect(try Self.call("spool_license_key_valid", key).status == status, "\(key.debugDescription)")
     }
 
+    // The app and release.sh must check the same requirement: a release that does not meet the app's text
+    // would accept no license key at all.
+    @Test func theTrustRequirementIsTheSameInTheAppAndInTheReleaseScript() throws {
+        let shell = try Self.call("spool_license_trust_requirement", "98L4368F9K")
+        #expect(shell.status == 0)
+        #expect(shell.output == LicenseKeeper.trustRequirement(team: "98L4368F9K"))
+        #expect(shell.output == #"anchor apple generic and certificate leaf[subject.OU] = "98L4368F9K""#)
+    }
+
     // Every test key has a public seed: release.sh refuses all of them, not only key A.
     @Test func licenseTestKeysComeFromTheVectorsFile() throws {
         let vectors = Self.root.appendingPathComponent("docs/license-test-vectors.json").path
@@ -406,6 +416,28 @@ import Testing
         p.waitUntilExit()
         #expect(p.terminationStatus == 1, "\(text)")
         #expect(text.contains("error: SPOOL_LICENSE_PUBLIC_KEY is not a 32-byte public key in base64: \(key)"), "\(text)")
+        #expect(!text.contains("Building Spool"))
+    }
+
+    // An E2E build trusts its Info.plist key without the team signature: only with a public test key.
+    @Test func anE2EBuildWithTheRealKeyStopsBeforeTheBuild() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [Self.root.appendingPathComponent("scripts/build-app.sh").path]
+        p.currentDirectoryURL = Self.root
+        var env = ProcessInfo.processInfo.environment
+        env["SPOOL_LICENSE_PUBLIC_KEY"] = Data(repeating: 7, count: 32).base64EncodedString()
+        env["SPOOL_E2E_BUILD"] = "1"
+        env.removeValue(forKey: "SIGN_IDENTITY")
+        p.environment = env
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = Pipe()
+        try p.run()
+        let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        #expect(p.terminationStatus == 1, "\(text)")
+        #expect(text.contains("SPOOL_E2E_BUILD=1 needs a public test key of docs/license-test-vectors.json"), "\(text)")
         #expect(!text.contains("Building Spool"))
     }
 

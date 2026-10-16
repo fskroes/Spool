@@ -11,8 +11,13 @@ struct LicenseView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Activate Spool").font(.title2.bold())
-            Text("Spool costs EUR 0.99, one time. Paste the license key from your email.")
-                .fixedSize(horizontal: false, vertical: true)
+            if let email = gate.licensedEmail {
+                Text("This copy is licensed to \(email). A new key replaces the current one.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Spool costs EUR 0.99, one time. Paste the license key from your email.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             TextEditor(text: $text)
                 .font(.system(.callout, design: .monospaced))
                 .frame(height: 96)

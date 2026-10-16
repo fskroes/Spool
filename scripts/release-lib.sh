@@ -137,6 +137,10 @@ spool_license_test_keys() {
     [[ $found -eq 1 ]]
 }
 
+# The code requirement that the app checks on its own bundle before it trusts its license public key
+# (LicenseKeeper.trustRequirement in Swift; a test keeps the two equal). $1: the Team ID.
+spool_license_trust_requirement() { printf 'anchor apple generic and certificate leaf[subject.OU] = "%s"\n' "$1"; }
+
 # Status 0 when the app $1 has a public test key of the vectors file $2 as SpoolLicensePublicKey: a build
 # of `make e2e`. Anyone can make license keys for it, so it must not be installed or put in a DMG.
 spool_app_has_test_license_key() {

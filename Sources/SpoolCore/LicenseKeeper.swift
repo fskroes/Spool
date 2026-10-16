@@ -103,6 +103,12 @@ public struct LicenseKeeper: Sendable {
     /// the same). It is compiled in: a value in Info.plist could be edited.
     public static let releaseTeam = "98L4368F9K"
 
+    /// The code requirement the app checks on its own bundle before it trusts its public key. release.sh
+    /// checks the built app against the same text (`spool_license_trust_requirement`; a test keeps the two equal).
+    public static func trustRequirement(team: String) -> String {
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\""
+    }
+
     /// The public key a release build may use. Any change to the app (another key in Info.plist, a patched
     /// binary) breaks the signature of the team, and the re-signed copy is not signed by the team: then there
     /// is no trusted key, and the copy stays unlicensed. Nil also when Info.plist has no key.

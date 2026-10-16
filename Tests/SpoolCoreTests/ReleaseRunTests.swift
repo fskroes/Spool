@@ -392,7 +392,13 @@ import Testing
                 if [ "$1" = -d ] && [ "$2" = -r ] && [ -n "${FAKE_DMG_APP_TEAM:-}" ]; then dr "$FAKE_DMG_APP_TEAM"; exit 0; fi ;;
             esac
             case "$1" in
-              --verify) [ -f "$sig/team" ] && [ ! -e "$sig/invalid" ] || { echo "$app: invalid signature" >&2; exit 1; } ;;
+              --verify)
+                [ -f "$sig/team" ] && [ ! -e "$sig/invalid" ] || { echo "$app: invalid signature" >&2; exit 1; }
+                case "$2" in
+                  -R=*)
+                    want="-R=anchor apple generic and certificate leaf[subject.OU] = \"$(cat "$sig/team")\""
+                    [ -z "${FAKE_TRUST_FAIL:-}" ] && [ "$2" = "$want" ] || { echo "$app: does not satisfy its designated Requirement" >&2; exit 3; } ;;
+                esac ;;
               -d) echo "Executable=$app/Contents/MacOS/Spool" >&2
                   if [ "$2" = -r ]; then dr "$(cat "$sig/team")"
                   elif [ -n "${FAKE_NO_RUNTIME:-}" ]; then echo "CodeDirectory v=20500 size=1 flags=0x0(none) hashes=1+0 location=embedded" >&2
@@ -666,6 +672,7 @@ import Testing
         (["FAKE_BAD_SIGNATURE": "1"], "the signature of the app is not valid"),
         (["FAKE_SIGNED_TEAM": otherTeam], "the app is not signed with the Developer ID of team \(team)"),
         (["FAKE_NO_RUNTIME": "1"], "the app does not have the hardened runtime"),
+        (["FAKE_TRUST_FAIL": "1"], "the app does not meet the requirement of its license check"),
         (["FAKE_ARCHS": "arm64"], "the app has no x86_64 slice"),
         (["FAKE_ARCHS": "x86_64"], "the app has no arm64 slice"),
     ])

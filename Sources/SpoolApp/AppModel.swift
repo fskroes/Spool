@@ -80,8 +80,9 @@ final class AppModel: ObservableObject {
         switch outcome {
         case .activated:
             licenseWindow.close()
-            // A refused start (`.unlicensed`) goes on now. Otherwise the auto-start setting decides, as at launch.
-            if engine.status == .unlicensed || store.config.behavior.autoStart { engine.start() }
+            // Only the start the license refused goes on now (an unlicensed copy always tries at launch).
+            // A new key for a licensed copy does not start an engine that the user stopped.
+            if engine.status == .unlicensed { engine.start() }
             openGuideIfNeeded()
         case .invalid, .saveFailed, .notRequired:
             break

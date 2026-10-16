@@ -78,6 +78,14 @@ else
     warn "that it cannot accept. Fix: make the key pair once with spool-license keygen, then put the public key in"
     warn "Packaging/updates.env (docs/RELEASING.md, \"License keys\")."
 fi
+# An E2E app trusts its Info.plist key without the signature of the team. With the real key it would be a
+# team-signed app that any edited Info.plist unlocks. Checked before any keychain call.
+if [[ "${SPOOL_E2E_BUILD:-}" == 1 ]]; then
+    TEST_KEYS=$(spool_license_test_keys "$ROOT/docs/license-test-vectors.json") \
+        || die "cannot read the test keys of docs/license-test-vectors.json"
+    [[ -n "$LICENSE_KEY" ]] && grep -qxF -- "$LICENSE_KEY" <<< "$TEST_KEYS" \
+        || die "SPOOL_E2E_BUILD=1 needs a public test key of docs/license-test-vectors.json as SPOOL_LICENSE_PUBLIC_KEY (make e2e sets it)"
+fi
 
 # Signing identity. Packaging/updates.env names the team of the releases (SPOOL_TEAM_ID). A
 # "Developer ID Application" identity of that team signs like a release: the Accessibility permission
@@ -108,6 +116,13 @@ esac
 SIGN_FLAGS=(--force --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" && $LOCAL -eq 0 && "$IDENTITY" != "$SPOOL_SIGNING_NAME" ]]; then
     SIGN_FLAGS+=(--options runtime --timestamp)
+fi
+
+# A release build trusts its license public key only with a signature of the team of the releases
+# (LicenseKeeper.trustRequirement). Signed another way, it asks for a license that no key can open.
+if [[ $RELEASE -eq 0 && "${SPOOL_E2E_BUILD:-}" != 1 ]]; then
+    warn "this app is not signed with the Developer ID of team ${TEAM:-?}: it cannot be licensed and its window"
+    warn "manager does not start. Only a build signed by the team of the releases accepts a license key."
 fi
 
 # Build. Both products in one configuration so they share one build directory.
