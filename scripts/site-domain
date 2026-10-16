@@ -27,7 +27,8 @@ REPO = "fskroes/Spool"
 RESOLVER = "1.1.1.1"
 CF_API = "https://api.cloudflare.com/client/v4"
 GITHUB_IPS = {"185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153"}
-# Certificate states after which GitHub does not try again by itself: saving the domain again starts a new try.
+# Certificate states after which GitHub does not try again by itself. A save of the same domain changes nothing
+# (seen 2026-10-16: no certificate 30 minutes after it), so a new try removes the domain and adds it again.
 CERT_RETRY = {None, "", "errored", "bad_authz", "authorization_revoked", "dns_changed", "destroy_pending"}
 TOKEN_ENV = "CLOUDFLARE_API_TOKEN"
 STEPS = ["dns", "pages", "certificate", "https", "live"]
@@ -149,7 +150,7 @@ def pages(repo):
 def pages_put(repo, *fields):
     args = ["gh", "api", "-X", "PUT", f"repos/{repo}/pages"]
     for f in fields:
-        args += ["-F" if f.endswith(("=true", "=false")) else "-f", f]
+        args += ["-F" if f.endswith(("=true", "=false", "=null")) else "-f", f]
     code, out, err = run(args)
     if code != 0:
         raise RuntimeError(f"{' '.join(args[1:])}: {err.strip() or out.strip()}")
@@ -235,6 +236,7 @@ def steps(args, host, zone, target):
     state = cert_state(info)
     if state != "approved" and apply:
         if state in CERT_RETRY and not saved:
+            pages_put(args.repo, "cname=null")
             pages_put(args.repo, f"cname={host}")
 
         def approved():
