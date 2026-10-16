@@ -14,6 +14,7 @@ other launcher. It sends one request to the app over a Unix socket and prints th
 ```
 spool <command> [<n>] [--json] [--socket <path>]
 spool report [--days <n>] [--json]
+spool license [<key>] [--json]
 ```
 
 Examples:
@@ -26,6 +27,7 @@ spool state
 spool stats --json
 spool mark Safari jumped to the left
 spool report --days 30
+spool license
 spool list
 spool help focus-index
 spool --version
@@ -40,6 +42,7 @@ spool --version
 | `spool stats --json` | Shows the performance counters as JSON. |
 | `spool mark Safari jumped to the left` | Saves a mark with the note "Safari jumped to the left". |
 | `spool report --days 30` | Shows the local metrics of the last 30 days. |
+| `spool license` | Shows who the license is for: `Licensed to <email> (order <id>)`. |
 | `spool list` | Shows all commands with a short description. |
 | `spool help focus-index` | Shows the help for one command. |
 | `spool --version` | Shows the version. |
@@ -106,6 +109,7 @@ See [METRICS.md](METRICS.md#marks).
 | `spool state` | Engine status, the focused window, and the columns of each display. |
 | `spool stats` | Uptime, frame and window write counts, AX errors, timings, restarts and the slowest apps. |
 | `spool report [--days <n>]` | The local metrics of the last &lt;n&gt; days (1 to 90, default 7). See "Metrics report". |
+| `spool license [<key>]` | The license of this copy of Spool, or activates a key. See "License". |
 
 Example output of `spool state`:
 
@@ -176,6 +180,28 @@ spool report --json
 - `--json`: the full report as JSON (pretty printed, keys sorted).
 
 [METRICS.md](METRICS.md) tells what each number means, and how to turn the metrics off.
+
+## License
+
+Spool costs EUR 0.99, one time. The format of the key is in [LICENSE-KEYS.md](LICENSE-KEYS.md).
+
+```sh
+spool license
+spool license "$KEY"
+```
+
+`$KEY` is the license key from your email.
+
+- `spool license` prints `Licensed to <email> (order <id>)` and exits with 0. Without a valid key it prints
+  `Not licensed.` and exits with 1.
+- `spool license <key>` sends the key to the running app. The app checks it with its own public key, stores it
+  in `license.key` in its data folder and starts the window manager. Use this on a Mac where you cannot click.
+  A key that is not valid prints `This license key is not valid.` and exits with 1. White space in the key is
+  ignored, so a key that your email client wrapped works.
+- Both work while Spool is waiting for a license. Every window command then prints
+  "Spool needs a license key. Open Spool, or run spool license <key>." and exits with 1.
+- A build from `swift build` has no license check. `spool license` prints `This build of Spool needs no license.`
+- `--json` prints the answer of the app with the fields `state`, `email` and `order`. It never holds the key.
 
 ## JSON output
 
@@ -250,6 +276,10 @@ open -g "spool://focus-index/3"
 The last URL is the same as `spool focus-index 3`.
 
 A URL opens Spool if it is not running. Queries (`ping`, `state`, `stats`) and `report` are not available as URLs.
+
+`spool://license?key=<key>` activates a license key, for example from the link in the email with the key. The key
+has only URL-safe characters, so the link needs no encoding. A key that is not valid, or no key, opens the license
+window with the error.
 
 `spool://settings/<page>` opens a page of the settings window, for example `open "spool://settings/shortcuts"`.
 The pages are `general`, `layout`, `appearance`, `trackpad` (Mouse & Trackpad), `displays`, `rules`, `shortcuts`,

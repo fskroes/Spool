@@ -102,6 +102,7 @@ Spool is a clean-room app. It follows the public descriptions of niri, PaperWM a
 | F22 | Every shortcut can be changed | Settings > Shortcuts, [docs/SHORTCUTS.md](docs/SHORTCUTS.md) |
 | F23 | Every setting applies at once; `config.json` edits load automatically | always on |
 | F24 | Local metrics: speed, cost, problems and use on this Mac only, `spool report`, and marks of bad moments | Settings > General, [docs/METRICS.md](docs/METRICS.md) |
+| F25 | License key: Spool costs EUR 0.99, one time, with no trial. The key comes by email and works with no network | the window at the first start, `spool license`, [docs/LICENSE-KEYS.md](docs/LICENSE-KEYS.md) |
 
 ## Performance
 

@@ -208,6 +208,30 @@ test in `Tests/`.
 - On by default. Settings > General turns it off at once (F23). Off: nothing is recorded or written.
   Details: `docs/METRICS.md`.
 
+### F25 License key
+- Spool costs EUR 0.99, one time, with no trial. The buyer gets a license key by email. The format and the check
+  are in `docs/LICENSE-KEYS.md`. The check runs on the Mac, with no network call.
+- A copy of Spool without a valid key does not start the window manager. This holds on every path: the start at
+  launch, the menu, the shortcut, `spool start`, `spool://start` and the Start button in Settings. The engine
+  status is "Spool needs a license key".
+- At launch without a valid key, Spool shows the license window before the first-launch guide (F21). The window
+  has a field for the key (a key wrapped by an email client is accepted), Activate, Buy Spool
+  (https://1yc.dev/spool) and Lost your key? (https://1yc.dev/spool/restore). Every key that is not valid gets the
+  one text "This license key is not valid."
+- A valid key is stored in `license.key` in the data folder. Then the window closes, the window manager starts,
+  and the guide shows when the first run is not done. The key stays valid for every later version.
+- The menu bar menu has "Activate Spool…" while there is no valid key, and no Start or Restart. Settings >
+  General shows "Licensed to <email>".
+- `spool://license?key=<key>` activates a valid key. A key that is not valid, or no key, opens the license window
+  with the error.
+- `spool license` prints "Licensed to <email> (order <id>)" and exits with 0, or prints "Not licensed." and exits
+  with 1. `spool license <key>` sends the key to the running app, which checks it with its own public key, stores
+  it and starts the window manager. A key that is not valid prints "This license key is not valid." and exits with 1.
+  These two work while the window manager is gated. A window command while gated prints "Spool needs a license key.
+  Open Spool, or run `spool license <key>`." and exits with 1. Queries (`ping`, `state`, `stats`) answer as usual.
+- A build from `swift build` outside an app bundle needs no license: `spool license` prints "This build of Spool
+  needs no license." and exits with 0. An app bundle without a public key in `Info.plist` stays unlicensed.
+
 ## Performance budget
 
 | Metric | Budget | How it is measured |

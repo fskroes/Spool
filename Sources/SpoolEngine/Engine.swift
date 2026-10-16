@@ -14,7 +14,19 @@ public final class Engine: ObservableObject {
         case running
         /// Accessibility permission is missing. The engine starts by itself once it is granted.
         case noPermission
+        /// There is no valid license key (`Engine.licenseCheck`). The engine does not start until there is one.
+        case unlicensed
     }
+
+    /// The text of every refused command while `status` is `.unlicensed`.
+    public static let unlicensedMessage = "Spool needs a license key. Open Spool, or run `spool license <key>`."
+
+    /// The app sets this. `start()` refuses while it answers false. The default allows every start, so tests and
+    /// tools that build an engine need no license.
+    public var licenseCheck: @MainActor () -> Bool = { true }
+
+    /// Tests set this to start the engine without the real Accessibility permission.
+    var isTrusted: () -> Bool = { Permissions.isTrusted }
 
     @Published public internal(set) var status: Status = .stopped
     /// Shortcuts that macOS refused because another app or the system already uses them.
@@ -194,7 +206,13 @@ public final class Engine: ObservableObject {
 
     public func start() {
         guard status != .running else { return }
-        guard Permissions.isTrusted else {
+        guard licenseCheck() else {
+            if status != .unlicensed { log.log("engine: not started, there is no valid license key") }
+            stopWaitingForPermission()
+            status = .unlicensed
+            return
+        }
+        guard isTrusted() else {
             status = .noPermission
             waitForPermission()
             return
@@ -225,7 +243,7 @@ public final class Engine: ObservableObject {
 
     public func stop() {
         switch status {
-        case .stopped: return
+        case .stopped, .unlicensed: return
         case .noPermission:
             stopWaitingForPermission()
             status = .stopped
@@ -316,7 +334,7 @@ public final class Engine: ObservableObject {
         start()
     }
 
-    public func toggle() { status == .stopped ? start() : stop() }
+    public func toggle() { status == .stopped || status == .unlicensed ? start() : stop() }
 
     /// Forgets every window and app in the applier and the per-app stats. Apps can quit while the engine is stopped,
     /// and a new app can then get the same pid: it must not inherit the old app's samples.
@@ -498,6 +516,9 @@ public final class Engine: ObservableObject {
             case .flushMetrics:
                 metricsFlusher?.flush(sync: true, force: true)
                 return IPCResponse(ok: true)
+            case .license:
+                // The app answers `license` before the request reaches the engine, since only it knows the public key.
+                return IPCResponse(ok: false, error: "The engine does not hold the license.")
             }
         }
         guard let command = request.command else { return IPCResponse(ok: false, error: "empty request") }
@@ -510,6 +531,7 @@ public final class Engine: ObservableObject {
             return IPCResponse(ok: true)
         case .start, .stop, .toggleEngine, .restart:
             perform(command, source: .cli)
+            if status == .unlicensed { return IPCResponse(ok: false, error: Self.unlicensedMessage) }
             if status == .noPermission {
                 return IPCResponse(ok: false, error: "Spool needs the Accessibility permission. It starts when you allow it.")
             }
@@ -518,8 +540,11 @@ public final class Engine: ObservableObject {
             return IPCResponse(ok: false, error: "No window \(id) in Spool. Run: spool state")
         default:
             guard status == .running else {
-                let why = status == .noPermission ? "Spool needs the Accessibility permission" : "Spool is stopped (run: spool start)"
-                return IPCResponse(ok: false, error: why)
+                switch status {
+                case .unlicensed: return IPCResponse(ok: false, error: Self.unlicensedMessage)
+                case .noPermission: return IPCResponse(ok: false, error: "Spool needs the Accessibility permission")
+                case .stopped, .running: return IPCResponse(ok: false, error: "Spool is stopped (run: spool start)")
+                }
             }
             perform(command, source: .cli)
             return IPCResponse(ok: true)

@@ -3,6 +3,7 @@ import ServiceManagement
 import Testing
 @testable import SpoolApp
 import SpoolCore
+import SpoolEngine
 
 @Suite struct RecorderRulesTests {
     @Test func appShortcutsAreRefused() {
@@ -149,6 +150,63 @@ import SpoolCore
         #expect(URLRoute(URL(string: "spool://open")!) == .settings(nil))
         #expect(URLRoute(URL(string: "spool://rm-rf")!) == .unknown)
         #expect(URLRoute(URL(string: "https://focus-right")!) == .unknown)
+    }
+
+    @Test func licenseRoutes() {
+        #expect(URLRoute(URL(string: "spool://license?key=SPOOL-abc.def")!) == .license("SPOOL-abc.def"))
+        #expect(URLRoute(URL(string: "spool://license?key=SPOOL-abc%0A.def")!) == .license("SPOOL-abc.def"))
+        // No key: the window opens.
+        #expect(URLRoute(URL(string: "spool://license")!) == .license(""))
+        #expect(URLRoute(URL(string: "https://license?key=SPOOL-abc.def")!) == .unknown)
+        // `license` is not a command, so the route cannot start the engine without the license check.
+        #expect(URLRoute(URL(string: "spool://command?name=license")!) == .unknown)
+    }
+}
+
+@MainActor
+@Suite struct LicenseGateTests {
+    static let seed = Data(0..<32)
+    static var publicKey: String { try! LicenseKey.publicKey(seed: seed).base64EncodedString() }
+    static var key: String { try! LicenseKey.issue(id: "cs_test_1", email: "buyer@example.com", issued: "2026-01-02", seed: seed) }
+
+    private func gate() -> LicenseGate {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("spool-gate-test-\(UUID().uuidString)")
+        return LicenseGate(keeper: LicenseKeeper(publicKey: Self.publicKey, inAppBundle: true,
+                                                 file: LicenseFile(url: dir.appendingPathComponent("license.key"))))
+    }
+
+    @Test func aBadKeyShowsTheOneErrorText() {
+        let g = gate()
+        #expect(g.status == .unlicensed)
+        #expect(!g.allowsStart)
+        #expect(g.activate("SPOOL-nope") == .invalid)
+        #expect(g.error == "This license key is not valid.")
+        #expect(g.status == .unlicensed)
+        #expect(g.licensedEmail == nil)
+    }
+
+    @Test func aGoodKeyLicensesTheGateAndClearsTheError() {
+        let g = gate()
+        _ = g.activate("SPOOL-nope")
+        guard case .activated = g.activate(Self.key) else {
+            Issue.record("a valid key must activate")
+            return
+        }
+        #expect(g.error == nil)
+        #expect(g.allowsStart)
+        #expect(g.licensedEmail == "buyer@example.com")
+    }
+
+    @Test func aGateFromAPlainBuildAllowsStart() {
+        let g = LicenseGate(keeper: LicenseKeeper(publicKey: nil, inAppBundle: false))
+        #expect(g.status == .notRequired)
+        #expect(g.allowsStart)
+        #expect(g.licensedEmail == nil)
+    }
+
+    @Test func theStatusTextAndIcon() {
+        #expect(Engine.Status.unlicensed.summary == "Spool needs a license key")
+        #expect(StatusIcon.symbolName(.unlicensed) == "lock")
     }
 }
 

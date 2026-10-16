@@ -400,3 +400,90 @@ private func distance(_ a: CGRect, _ b: CGRect) -> CGFloat { hypot(a.minX - b.mi
         }
     }
 }
+
+/// The license gate (F25): while `licenseCheck` answers false the engine does not start, on any path, and a
+/// command says how to activate.
+@MainActor
+@Suite struct EngineLicenseGateTests {
+    private func gated() -> TestEngine {
+        let t = TestEngine()
+        t.engine.status = .stopped
+        t.engine.licenseCheck = { false }
+        t.engine.isTrusted = { false }
+        return t
+    }
+
+    @Test func startIsRefusedWhileUnlicensed() {
+        let t = gated()
+        defer { t.stop() }
+        t.engine.start()
+        #expect(t.engine.status == .unlicensed)
+        t.engine.toggle()
+        #expect(t.engine.status == .unlicensed)
+        t.engine.restart()
+        #expect(t.engine.status == .unlicensed)
+        t.engine.perform(.start, source: .menu)
+        #expect(t.engine.status == .unlicensed)
+    }
+
+    @Test func everyStartCommandOfTheCLIAnswersWithTheLicenseMessage() {
+        let t = gated()
+        defer { t.stop() }
+        for command: Command in [.start, .toggleEngine, .restart] {
+            let response = t.engine.handle(IPCRequest(command: command))
+            #expect(response == IPCResponse(ok: false, error: Engine.unlicensedMessage), "\(command.name)")
+            #expect(t.engine.status == .unlicensed)
+        }
+    }
+
+    @Test func aWindowCommandAnswersWithTheLicenseMessage() {
+        let t = gated()
+        defer { t.stop() }
+        t.engine.start()
+        for command: Command in [.focusRight, .cycleWidth, .focusWindow(1), .moveLeft] {
+            #expect(t.engine.handle(IPCRequest(command: command)) == IPCResponse(ok: false, error: Engine.unlicensedMessage),
+                    "\(command.name)")
+        }
+        #expect(Engine.unlicensedMessage.contains("spool license <key>"))
+    }
+
+    @Test func queriesAnswerWhileUnlicensed() {
+        let t = gated()
+        defer { t.stop() }
+        t.engine.start()
+        #expect(t.engine.handle(IPCRequest(query: .ping)) == IPCResponse(ok: true))
+        #expect(t.engine.handle(IPCRequest(query: .state)).state?.running == false)
+    }
+
+    @Test func startGoesOnAfterTheCheckPasses() {
+        let t = gated()
+        defer { t.stop() }
+        t.engine.start()
+        #expect(t.engine.status == .unlicensed)
+        // The check passes. The test has no Accessibility permission, so the engine waits for it: it is past the
+        // gate, and it started no tracker.
+        t.engine.licenseCheck = { true }
+        t.engine.start()
+        #expect(t.engine.status == .noPermission)
+        t.engine.stop()
+        #expect(t.engine.status == .stopped)
+    }
+
+    @Test func theDefaultCheckAllowsEveryStart() {
+        let t = TestEngine()
+        defer { t.stop() }
+        t.engine.status = .stopped
+        t.engine.isTrusted = { false }
+        t.engine.start()
+        #expect(t.engine.status == .noPermission)
+        t.engine.stop()
+    }
+
+    @Test func stoppingAnUnlicensedEngineChangesNothing() {
+        let t = gated()
+        defer { t.stop() }
+        t.engine.start()
+        t.engine.stop()
+        #expect(t.engine.status == .unlicensed)
+    }
+}

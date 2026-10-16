@@ -298,6 +298,8 @@ public struct IPCClient: Sendable {
     public static let lifecycleTimeout: TimeInterval = 10
 
     public static func timeout(for request: IPCRequest, base: TimeInterval) -> TimeInterval {
+        // A license key starts the engine, which can take as long as `start`.
+        if request.licenseKey != nil { return max(base, lifecycleTimeout) }
         switch request.command {
         case .start?, .stop?, .toggleEngine?, .restart?: return max(base, lifecycleTimeout)
         default: return base
@@ -393,12 +395,15 @@ public enum SpoolCLI {
         Entry(name: "stats", usage: "stats", title: "Show performance counters", url: nil),
     ]
 
-    static let metaWords = ["help", "list", "commands", "version", "command", "report"]
+    static let metaWords = ["help", "list", "commands", "version", "command", "report", "license"]
 
     /// `spool report` runs in the CLI: it reads the metrics files, so it also works when Spool is not running.
     /// Spool writes the mark after it answers (off the main thread), so the CLI cannot name the folder.
     public static let markReply = "Saving a mark (see engine.log for the folder)\n"
     public static let reportEntry = Entry(name: "report", usage: "report [--days <n>]", title: "Show the local metrics report", url: nil)
+
+    /// `spool license` shows the license of the running app. `spool license <key>` activates a key.
+    public static let licenseEntry = Entry(name: "license", usage: "license [<key>]", title: "Show the license, or activate a license key", url: "spool://license?key=<key>")
 
     /// Days in a report: `--days` must be in this range.
     public static let reportDays = 1...90
@@ -508,6 +513,8 @@ public enum SpoolCLI {
             }
         case "mark":
             action = markAction(rest)
+        case "license":
+            action = licenseAction(rest)
         case "command":
             if rest.isEmpty {
                 action = .error("command needs a command name. Example: spool command focus-left")
@@ -530,6 +537,13 @@ public enum SpoolCLI {
     static func markAction(_ noteWords: [String]) -> Action {
         let note = noteWords.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         return .send(IPCRequest(command: .mark, note: note.isEmpty ? nil : note))
+    }
+
+    /// `spool license [<key>...]`: the words after `license` are the key. An email client can wrap the key, and a
+    /// shell then splits it into several words, so they join without white space.
+    static func licenseAction(_ keyWords: [String]) -> Action {
+        let key = LicenseKey.normalized(keyWords.joined())
+        return .send(key.isEmpty ? IPCRequest(query: .license) : IPCRequest(licenseKey: key))
     }
 
     static func parseCommand(_ words: [String]) -> Action {
@@ -667,7 +681,7 @@ public enum SpoolCLI {
             return Output(stdout: helpText(topic: topic))
         case .listCommands:
             if json {
-                return Output(stdout: ((try? IPCWire.prettyJSON(commandEntries + queries + [reportEntry])) ?? "[]") + "\n")
+                return Output(stdout: ((try? IPCWire.prettyJSON(commandEntries + queries + [reportEntry, licenseEntry])) ?? "[]") + "\n")
             }
             return Output(stdout: listText())
         case .version:
@@ -708,7 +722,10 @@ public enum SpoolCLI {
             return Output(stdout: format(stats: stats))
         case .flushMetrics:
             return Output()
+        case .license:
+            return Output(stdout: (response.license?.text ?? LicenseReport.notLicensedText) + "\n")
         case nil:
+            if request.licenseKey != nil { return Output(stdout: (response.license?.text ?? "Licensed.") + "\n") }
             if request.command == .mark { return Output(stdout: markReply) }
             return Output()
         }
@@ -736,6 +753,7 @@ public enum SpoolCLI {
           spool stats               Show performance counters.
           spool report              Show speed, use and problems of the last 7 days.
           spool mark [<note>]       Save the state of this moment, with a note.
+          spool license [<key>]     Show the license, or activate a license key.
           spool command <name>      Run a command by name (same as spool <name>).
           spool --version           Show the version.
 
@@ -760,6 +778,21 @@ public enum SpoolCLI {
             You can also write \(p.name)-\(p.example).
 
             URL: spool://\(p.name)/\(p.example)
+
+            """
+        }
+        if topic == "license" {
+            return """
+            Usage: spool license [<key>] [--json]
+
+            Without a key: show who the license of this copy of Spool is for. Prints "Not licensed." and
+            exits with 1 when there is no valid license.
+            With a key: send the key to the running Spool, which checks it, stores it in:
+              \(SpoolPaths.supportDirectory.appendingPathComponent("license.key").path)
+            and starts the window manager. A key that is not valid prints "\(LicenseKey.invalidMessage)" and exits with 1.
+            A build from swift build needs no license.
+
+            URL: spool://license?key=<key>
 
             """
         }
@@ -809,7 +842,7 @@ public enum SpoolCLI {
     public static func listText() -> String {
         let width = (commandEntries + queries).map(\.usage.count).max()! + 2
         func line(_ e: Entry) -> String { "  " + e.usage.padding(toLength: width, withPad: " ", startingAt: 0) + e.title }
-        return (["Commands:"] + commandEntries.map(line) + ["", "Queries:"] + (queries + [reportEntry]).map(line))
+        return (["Commands:"] + commandEntries.map(line) + ["", "Queries:"] + (queries + [reportEntry, licenseEntry]).map(line))
             .joined(separator: "\n") + "\n"
     }
 

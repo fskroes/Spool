@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     let store: ConfigStore
     let engine: Engine
     let recorder: ShortcutRecorder
+    let license: LicenseGate
     /// Which place groups are open on the Shortcuts page. Kept here so a group you closed stays closed when you
     /// change page or close Settings.
     let placeFolds = PlaceFoldState()
@@ -41,10 +42,22 @@ final class AppModel: ObservableObject {
         return window
     }()
 
-    init(store: ConfigStore, engine: Engine) {
+    private lazy var licenseWindow: HostedWindow = {
+        let window = HostedWindow(title: "Activate Spool", autosaveName: "SpoolLicense", resizable: false) { [unowned self] in
+            AnyView(LicenseView(gate: license).environmentObject(self))
+        }
+        window.onShow = { [weak self] in self?.windowOpened("license") }
+        window.onClose = { [weak self] in self?.windowClosed("license") }
+        return window
+    }()
+
+    init(store: ConfigStore, engine: Engine, license: LicenseGate? = nil) {
         self.store = store
         self.engine = engine
+        let license = license ?? LicenseGate()
+        self.license = license
         self.recorder = ShortcutRecorder(engine: engine, store: store)
+        engine.licenseCheck = { [unowned license] in license.allowsStart }
     }
 
     func openSettings(_ tab: SettingsTab? = nil) {
@@ -57,16 +70,52 @@ final class AppModel: ObservableObject {
 
     func closeGuide() { guideWindow.close() }
 
+    func openLicenseWindow() { licenseWindow.show() }
+
+    /// Checks and stores a key from the window, a URL or the CLI. On success: closes the window, starts the
+    /// engine, and shows the guide when the first run is not done. On failure `license.error` holds the text.
+    @discardableResult
+    func activateLicense(_ text: String) -> LicenseKeeper.Outcome {
+        let outcome = license.activate(text)
+        switch outcome {
+        case .activated:
+            licenseWindow.close()
+            // A refused start (`.unlicensed`) goes on now. Otherwise the auto-start setting decides, as at launch.
+            if engine.status == .unlicensed || store.config.behavior.autoStart { engine.start() }
+            openGuideIfNeeded()
+        case .invalid, .saveFailed, .notRequired:
+            break
+        }
+        return outcome
+    }
+
+    /// `spool://license?key=<key>`. A URL without a key opens the window.
+    func activateLicense(fromURL key: String) {
+        guard license.status == .unlicensed else { return }
+        if key.isEmpty { return openLicenseWindow() }
+        // A key that fails opens the window, which shows the error.
+        switch activateLicense(key) {
+        case .invalid, .saveFailed: openLicenseWindow()
+        case .activated, .notRequired: break
+        }
+    }
+
+    /// With a broken config.json the guide would save over the user's file when it closes.
+    func openGuideIfNeeded() {
+        if !store.config.behavior.onboardingDone, !store.fileHasError { openGuide() }
+    }
+
     /// A click on the Dock icon, or Spool opened again: the open windows come to the front, the guide above
     /// Settings and an update window above all. A minimized window comes back from the Dock.
     /// With no window open, Settings opens.
     func reopen() {
-        guard dock.hasOpenWindow else { return openSettings() }
+        guard dock.hasOpenWindow else { return license.status == .unlicensed ? openLicenseWindow() : openSettings() }
         App.activate()
         // Also About and the Sparkle windows, which Spool does not own as a HostedWindow.
         for window in NSApp.windows where window.isMiniaturized { window.deminiaturize(nil) }
         if settingsWindow.isOpen { settingsWindow.show() }
         if guideWindow.isOpen { guideWindow.show() }
+        if licenseWindow.isOpen { licenseWindow.show() }
         if dock.open.contains(UpdateWindows.window) { Updater.shared.showPendingUpdate() }
     }
 
@@ -178,6 +227,7 @@ extension Engine.Status {
         case .running: return "Spool is running"
         case .stopped: return "Spool is stopped"
         case .noPermission: return "Accessibility permission needed"
+        case .unlicensed: return "Spool needs a license key"
         }
     }
 }
