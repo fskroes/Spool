@@ -196,7 +196,8 @@ prompt, and `DocsTests` fails. Put the explanation after the block.
   `/Applications/Spool.app` and the `~/.local/bin/spool` link.
   `make run` starts the built app with the owner's settings, and it then
   tiles the owner's windows. `make app`, `make dmg`, `make run` and
-  `make e2e` sign with the keychain identity "Striple Local Signing"
+  `make e2e` sign with a keychain identity: the Developer ID of the
+  releases, else "Striple Local Signing"
   (`scripts/build-app.sh`). Use `scripts/verify smoke`, which isolates its
   copy. For the live test use `scripts/verify e2e`, not `make e2e`: it runs
   the same test, signed ad hoc, so it uses no keychain. Both start a real

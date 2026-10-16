@@ -159,9 +159,9 @@ import Testing
         #expect(!r.output.contains("rm -rf"))
     }
 
-    // MARK: the pinned identity
+    // MARK: the team of the releases
 
-    static let pinWarning = "is not signed with the pinned identity"
+    static let pinWarning = "is not signed by the team"
 
     /// A fake app, signed ad hoc, in a source folder outside the install prefix.
     static func adHocSource(in home: URL) throws -> URL {
@@ -172,19 +172,20 @@ import Testing
     }
 
     // An ad hoc app loses the Accessibility permission. The install says so, and goes on.
-    @Test func anAppWithoutThePinnedIdentityGivesAWarning() throws {
+    @Test func anAppWithoutTheSignatureOfTheReleasesGivesAWarning() throws {
         let home = Self.tempHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let app = try Self.adHocSource(in: home)
-        let env = try Self.temp(home, "updates.env", "SPOOL_SIGNING_CERT_SHA1=B608FA4F3D9A1FC14CDBAB47421A660E429053DC\n")
+        let env = try Self.temp(home, "updates.env", "SPOOL_TEAM_ID=98L4368F9K\n")
 
         let r = try Self.runWithStatus(["--dry-run", "--app", app.path], home: home, env: ["SPOOL_UPDATES_ENV": env.path])
 
         #expect(r.status == 0, "\(r.output)")
         #expect(!r.output.contains(Self.pinWarning), "\(r.output)")
-        #expect(r.output.contains("is signed ad hoc, not with the pinned identity B608FA4F3D9A1FC14CDBAB47421A660E429053DC"), "\(r.output)")
+        #expect(r.output.contains("is signed ad hoc, not by the team 98L4368F9K of the releases"), "\(r.output)")
         #expect(r.output.contains("Reset Permission"), "\(r.output)")
-        #expect(r.output.contains("Other builders sign with an Apple Development"), "\(r.output)")
+        #expect(r.output.contains("run scripts/make-signing-cert.sh once"), "\(r.output)")
+        #expect(r.output.contains("install the notarized release"), "\(r.output)")
         #expect(r.output.contains("Installing \(app.path)"))
         // The reported case: the switch is on, so Spool does not ask. Next steps must name the reset.
         #expect(r.output.contains("If the switch is on already, but Spool says \"Accessibility permission needed\""), "\(r.output)")
@@ -195,13 +196,13 @@ import Testing
         let home = Self.tempHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let app = try Self.adHocSource(in: home)
-        let path = settings == "/dev/null" ? settings : try Self.temp(home, "updates.env", "SPOOL_SIGNING_CERT_SHA1=\n").path
+        let path = settings == "/dev/null" ? settings : try Self.temp(home, "updates.env", "SPOOL_TEAM_ID=\n").path
 
         let r = try Self.runWithStatus(["--dry-run", "--app", app.path], home: home, env: ["SPOOL_UPDATES_ENV": path])
 
         #expect(r.status == 0, "\(r.output)")
         #expect(!r.output.contains(Self.pinWarning), "\(r.output)")
-        #expect(!r.output.contains("not with the pinned identity"), "\(r.output)")
+        #expect(!r.output.contains("not by the team"), "\(r.output)")
     }
 
     // A wrong SPOOL_UPDATES_ENV must not turn off the check without a word.

@@ -61,9 +61,14 @@ import Testing
         let feed = try Self.call("spool_updates_value", env, "SPOOL_FEED_URL").output
         let key = try Self.call("spool_updates_value", env, "SPOOL_ED_PUBLIC_KEY").output
         let account = try Self.call("spool_updates_value", env, "SPOOL_ED_KEY_ACCOUNT").output
-        let cert = try Self.call("spool_updates_value", env, "SPOOL_SIGNING_CERT_SHA1").output
-        #expect(try Self.call("spool_sha1_equal", cert, cert).status == 0, "a 40 digit SHA-1, got '\(cert)'")
-        #expect(repo.split(separator: "/").count == 2)
+        let team = try Self.call("spool_updates_value", env, "SPOOL_TEAM_ID").output
+        let profile = try Self.call("spool_updates_value", env, "SPOOL_NOTARY_PROFILE").output
+        #expect(try Self.call("spool_team_id_valid", team).status == 0, "a Team ID, got '\(team)'")
+        #expect(!profile.isEmpty && !profile.contains(" "), "a notarytool profile name, got '\(profile)'")
+        // The old pin of a self-signed certificate is gone: releases are signed by the team.
+        #expect(try Self.call("spool_updates_value", env, "SPOOL_SIGNING_CERT_SHA1").output.isEmpty)
+        // The source is public: the releases, the feed and the downloads are in the same repository.
+        #expect(repo == "fskroes/Spool")
         #expect(feed == (try Self.call("spool_feed_url_for_repo", repo).output))
         #expect(feed.hasPrefix("https://"))
         #expect(Data(base64Encoded: key)?.count == 32, "an Ed25519 public key is 32 bytes")
@@ -200,71 +205,178 @@ import Testing
         #expect(try Self.call("spool_dr_is_local", local, "com.fskroes.Spool", "").status == 1)
     }
 
-    // build-app.sh signs with the pinned identity only. Another local identity stops the build.
-    // A missing identity with a pin also stops it: an ad hoc build there gets a cdhash grant that no
-    // later build matches. SIGN_IDENTITY=- still makes an ad hoc build on purpose.
-    @Test func buildIdentityFollowsThePin() throws {
-        let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
-        let other = "0123456789ABCDEF0123456789ABCDEF01234567"
-        #expect(try Self.call("spool_build_identity", pin, other, "Developer ID").output == "explicit")
-        #expect(try Self.call("spool_build_identity", pin, other, "-").output == "explicit")
-        #expect(try Self.call("spool_build_identity", pin, "", "-").output == "explicit")
-        #expect(try Self.call("spool_build_identity", pin, "", "").output == "missing")
-        #expect(try Self.call("spool_build_identity", "", "", "").output == "adhoc")
-        #expect(try Self.call("spool_build_identity", "", other, "").output == "local")
-        #expect(try Self.call("spool_build_identity", pin, pin.lowercased(), "").output == "local")
-        #expect(try Self.call("spool_build_identity", pin, other, "").output == "refuse")
+    /// The requirement of a Developer ID signature, as `codesign -d -r -` prints it on macOS 26
+    /// (measured on a binary signed with the Developer ID of team 98L4368F9K).
+    static func teamDR(_ bundle: String = "com.fskroes.Spool", team: String = "98L4368F9K") -> String {
+        "Executable=/x/Spool.app/Contents/MacOS/Spool\ndesignated => identifier \"\(bundle)\" and anchor apple generic and "
+            + "certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and "
+            + "certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"\(team)\""
     }
 
-    // With a pin, make-signing-cert.sh stops without the backup. Only the maintainer has it, so the
-    // hint must not send other builders there.
-    @Test func stableIdentityHintFollowsThePin() throws {
-        let noPin = try Self.call("spool_stable_identity_hint", "").output
-        #expect(noPin.contains("run scripts/make-signing-cert.sh once"))
-        let pinned = try Self.call("spool_stable_identity_hint", "B608FA4F3D9A1FC14CDBAB47421A660E429053DC").output
-        #expect(!pinned.contains("make-signing-cert.sh once"), "\(pinned)")
-        #expect(pinned.contains("make-signing-cert.sh --import <backup file>"), "\(pinned)")
-        #expect(pinned.contains("Apple Development"), "\(pinned)")
-    }
-
-    // The stop for a missing pinned identity is the first thing a builder who is not the maintainer sees.
-    @Test func missingIdentityMessageGivesEveryBuilderAPath() throws {
-        let m = try Self.call("spool_missing_identity_message", "B608FA4F3D9A1FC14CDBAB47421A660E429053DC").output
-        #expect(m.contains("pins the identity B608FA4F3D9A1FC14CDBAB47421A660E429053DC"), "\(m)")
-        #expect(m.contains("The maintainer: check it"), "\(m)")
-        #expect(m.contains("--import <backup file>"), "\(m)")
-        #expect(m.contains("Other builders: SIGN_IDENTITY=\"<name or SHA-1>\" make install, with an Apple Development"), "\(m)")
-        #expect(m.contains("SIGN_IDENTITY=- make app (or make e2e)"), "\(m)")
-        #expect(!m.contains("make-signing-cert.sh once"), "\(m)")
-    }
-
-    // build-app.sh gives the pin to both messages, so a pinned checkout gets the pinned advice.
-    @Test func buildAppPassesThePinToItsAdvice() throws {
-        let text = try String(contentsOf: Self.lib.deletingLastPathComponent().appendingPathComponent("build-app.sh"), encoding: .utf8)
-        #expect(text.contains("missing) die \"$(spool_missing_identity_message \"$PIN\")\" ;;"))
-        #expect(text.contains("warn \"$(spool_stable_identity_hint \"$PIN\")\""))
-        #expect(text.contains("\nPIN=$(spool_updates_value \"$UPDATES_ENV\" SPOOL_SIGNING_CERT_SHA1)\n"))
-    }
-
-    @Test func installSignatureComparesTheAppWithThePin() throws {
-        let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+    @Test func designatedRequirementMustNameTheBundleAndTheDeveloperIDOfTheTeam() throws {
         let bundle = "com.fskroes.Spool"
-        let pinned = "designated => identifier \"\(bundle)\" and certificate leaf = H\"b608fa4f3d9a1fc14cdbab47421a660e429053dc\""
-        let other = "designated => identifier \"\(bundle)\" and certificate leaf = H\"0123456789abcdef0123456789abcdef01234567\""
+        #expect(try Self.call("spool_dr_is_team", Self.teamDR(), bundle, "98L4368F9K").status == 0)
+        // codesign may print a Team ID without quotes.
+        let unquoted = Self.teamDR(team: "ABCDE12345").replacingOccurrences(of: "\"ABCDE12345\"", with: "ABCDE12345")
+        #expect(try Self.call("spool_dr_is_team", unquoted, bundle, "ABCDE12345").status == 0)
+        #expect(try Self.call("spool_dr_is_team", Self.teamDR(), bundle, "ABCDE12345").status == 1, "another team")
+        #expect(try Self.call("spool_dr_is_team", Self.teamDR(), "com.fskroes.Other", "98L4368F9K").status == 1)
+        #expect(try Self.call("spool_dr_is_team", Self.teamDR(), bundle, "").status == 1)
+        #expect(try Self.call("spool_dr_is_team", Self.teamDR(), bundle, "98l4368f9k").status == 1, "not a Team ID")
+        // An Apple Development signature of the same team has another leaf OID: it is not a release signature.
+        let development = Self.teamDR().replacingOccurrences(of: "100.6.1.13", with: "100.6.1.12")
+        #expect(try Self.call("spool_dr_is_team", development, bundle, "98L4368F9K").status == 1)
+        #expect(try Self.call("spool_dr_is_team", "# designated => cdhash H\"2d50fa83aa\"", bundle, "98L4368F9K").status == 1)
+        let local = "designated => identifier \"\(bundle)\" and certificate leaf = H\"b608fa4f3d9a1fc14cdbab47421a660e429053dc\""
+        #expect(try Self.call("spool_dr_is_team", local, bundle, "98L4368F9K").status == 1)
+    }
+
+    @Test(arguments: [("98L4368F9K", Int32(0)), ("ABCDE12345", 0), ("98L4368F9", 1), ("98L4368F9KK", 1),
+                      ("98l4368f9k", 1), ("98L4368F-K", 1), ("", 1)])
+    func teamIDIsTenCapitalLettersAndDigits(_ team: String, _ status: Int32) throws {
+        #expect(try Self.call("spool_team_id_valid", team).status == status)
+    }
+
+    /// `security find-identity -v -p codesigning` on a Mac with Apple identities of two teams.
+    static let identities = """
+      1) E0E98E390F0DCC017A6FFCE9C146C52635A1201F "Apple Development: Some Person (78QD42U3HQ)"
+      2) 71C0377EB02894A231E18C93DE9CF22209EDFF2B "Apple Distribution: Some Person (98L4368F9K)"
+      3) 865EFF976B9B2D153AEA020771A313E2E889F7C6 "Developer ID Application: Some Person (98L4368F9K)"
+      4) 1111111111111111111111111111111111111111 "Developer ID Installer: Some Person (98L4368F9K)"
+         4 valid identities found
+    """
+
+    @Test func developerIDIsTheApplicationIdentityOfTheTeam() throws {
+        let r = try Self.call("spool_developer_id_in", Self.identities, "98L4368F9K")
+        #expect(r.status == 0 && r.output == "865EFF976B9B2D153AEA020771A313E2E889F7C6", "\(r)")
+        // Apple Development, Apple Distribution and Developer ID Installer cannot sign a release.
+        #expect(try Self.call("spool_developer_id_in", Self.identities, "78QD42U3HQ").status == 1)
+        #expect(try Self.call("spool_developer_id_in", Self.identities, "ABCDE12345").status == 1)
+        #expect(try Self.call("spool_developer_id_in", "     0 valid identities found", "98L4368F9K").status == 1)
+        #expect(try Self.call("spool_developer_id_in", Self.identities, "").status == 1)
+        // A Team ID must match whole: a shorter one is not a Team ID and finds nothing.
+        #expect(try Self.call("spool_developer_id_in", Self.identities, "8L4368F9K").status == 1)
+    }
+
+    // spool_developer_id asks the keychain tool for the valid code signing identities, and finds nothing
+    // when the tool fails. The fake has a neutral name (signing-env.sh says why).
+    @Test func developerIDAsksTheKeychainForValidCodeSigningIdentities() throws {
+        let bin = try Self.tempDir("keychain")
+        try Self.tool(bin, "fake-keychain-tool", """
+        [ -n "${FAKE_KEYCHAIN_FAILS:-}" ] && exit 1
+        [ "$*" = "find-identity -v -p codesigning" ] || { echo "unexpected: $*" >&2; exit 2; }
+        cat <<'EOF'
+        \(Self.identities)
+        EOF
+        """)
+        let find = "source scripts/signing-env.sh && spool_developer_id 98L4368F9K"
+        let env = ["SPOOL_SECURITY": bin.appendingPathComponent("fake-keychain-tool").path]
+        let r = try Self.call(in: Self.root, env: env, "eval", find)
+        #expect(r.status == 0 && r.output == "865EFF976B9B2D153AEA020771A313E2E889F7C6", "\(r)")
+        var failing = env
+        failing["FAKE_KEYCHAIN_FAILS"] = "1"
+        let none = try Self.call(in: Self.root, env: failing, "eval", find)
+        #expect(none.status == 1 && none.output.isEmpty, "\(none)")
+    }
+
+    // build-app.sh signs like a release when the Developer ID of the team is on the Mac. Without it, the
+    // self-signed identity keeps the permission between builds. With a team and no identity at all, the
+    // build stops: an ad hoc build there gets a cdhash grant that no later build matches.
+    // SIGN_IDENTITY=- still makes an ad hoc build on purpose.
+    @Test func buildIdentityPrefersTheDeveloperIDOfTheTeam() throws {
+        let team = "98L4368F9K"
+        let devid = "865EFF976B9B2D153AEA020771A313E2E889F7C6"
+        let local = "0123456789ABCDEF0123456789ABCDEF01234567"
+        #expect(try Self.call("spool_build_identity", team, devid, local, "Some Identity").output == "explicit")
+        #expect(try Self.call("spool_build_identity", team, "", "", "-").output == "explicit")
+        #expect(try Self.call("spool_build_identity", team, devid, local, "").output == "release")
+        #expect(try Self.call("spool_build_identity", team, devid, "", "").output == "release")
+        #expect(try Self.call("spool_build_identity", team, "", local, "").output == "local")
+        #expect(try Self.call("spool_build_identity", team, "", "", "").output == "missing")
+        #expect(try Self.call("spool_build_identity", "", "", local, "").output == "local")
+        #expect(try Self.call("spool_build_identity", "", devid, "", "").output == "adhoc", "a Developer ID without a team is not used")
+        #expect(try Self.call("spool_build_identity", "", "", "", "").output == "adhoc")
+    }
+
+    @Test func stableIdentityHintGivesEveryBuilderAPath() throws {
+        let noTeam = try Self.call("spool_stable_identity_hint", "").output
+        #expect(noTeam.contains("run scripts/make-signing-cert.sh once"), "\(noTeam)")
+        #expect(noTeam.contains("Apple Development"), "\(noTeam)")
+        #expect(!noTeam.contains("notarized release"), "\(noTeam)")
+        let team = try Self.call("spool_stable_identity_hint", "98L4368F9K").output
+        #expect(team.contains("run scripts/make-signing-cert.sh once"), "\(team)")
+        #expect(team.contains("install the notarized release"), "\(team)")
+    }
+
+    // The stop for a missing identity is the first thing a builder who is not the maintainer sees.
+    @Test func missingIdentityMessageGivesEveryBuilderAPath() throws {
+        let m = try Self.call("spool_missing_identity_message", "98L4368F9K").output
+        #expect(m.contains("names the team 98L4368F9K of the releases"), "\(m)")
+        #expect(m.contains("To use Spool: install the notarized release"), "\(m)")
+        #expect(m.contains("scripts/make-signing-cert.sh, then make install"), "\(m)")
+        #expect(m.contains("SIGN_IDENTITY=\"<name or SHA-1>\" make install"), "\(m)")
+        #expect(m.contains("The maintainer: install the Developer ID certificate of team 98L4368F9K"), "\(m)")
+        #expect(m.contains("SIGN_IDENTITY=- make app (or make e2e)"), "\(m)")
+    }
+
+    // build-app.sh reads the team and gives it to both messages and to the requirement check.
+    @Test func buildAppUsesTheTeamOfTheReleases() throws {
+        let text = try String(contentsOf: Self.lib.deletingLastPathComponent().appendingPathComponent("build-app.sh"), encoding: .utf8)
+        #expect(text.contains("\nTEAM=$(spool_updates_value \"$UPDATES_ENV\" SPOOL_TEAM_ID)\n"))
+        #expect(text.contains("DEVID=$(spool_developer_id \"$TEAM\")"))
+        #expect(text.contains("missing) die \"$(spool_missing_identity_message \"$TEAM\")\" ;;"))
+        #expect(text.contains("warn \"$(spool_stable_identity_hint \"$TEAM\")\""))
+        #expect(text.contains("spool_dr_is_team \"$DR\" \"$BUNDLE_ID\" \"$TEAM\" || die"))
+        #expect(!text.contains("SPOOL_SIGNING_CERT_SHA1"))
+    }
+
+    @Test func installSignatureComparesTheAppWithTheTeam() throws {
+        let team = "98L4368F9K"
+        let bundle = "com.fskroes.Spool"
+        let other = Self.teamDR(team: "ABCDE12345")
+        let local = "designated => identifier \"\(bundle)\" and certificate leaf = H\"0123456789abcdef0123456789abcdef01234567\""
         let adHoc = "designated => cdhash H\"2d50fa83aa\""
         #expect(try Self.call("spool_install_signature", "", adHoc, bundle).output == "nopin")
-        #expect(try Self.call("spool_install_signature", pin, pinned, bundle).output == "pinned")
-        #expect(try Self.call("spool_install_signature", pin, other, bundle).output == "other")
-        #expect(try Self.call("spool_install_signature", pin, adHoc, bundle).output == "adhoc")
+        #expect(try Self.call("spool_install_signature", team, Self.teamDR(), bundle).output == "pinned")
+        #expect(try Self.call("spool_install_signature", team, other, bundle).output == "other")
+        #expect(try Self.call("spool_install_signature", team, local, bundle).output == "other")
+        #expect(try Self.call("spool_install_signature", team, adHoc, bundle).output == "adhoc")
         // The real codesign output of an ad hoc app: the requirement is a comment.
-        #expect(try Self.call("spool_install_signature", pin, "Executable=/x/Spool\n# designated => cdhash H\"a7ca7a79\"", bundle).output == "adhoc")
-        #expect(try Self.call("spool_install_signature", pin, "Executable=/x/Spool\n# designated => cdhash H\"aa\" or cdhash H\"bb\"", bundle).output == "adhoc")
-        #expect(try Self.call("spool_install_signature", pin, pinned, "com.fskroes.Other").output == "other")
+        #expect(try Self.call("spool_install_signature", team, "Executable=/x/Spool\n# designated => cdhash H\"a7ca7a79\"", bundle).output == "adhoc")
+        #expect(try Self.call("spool_install_signature", team, "Executable=/x/Spool\n# designated => cdhash H\"aa\" or cdhash H\"bb\"", bundle).output == "adhoc")
+        #expect(try Self.call("spool_install_signature", team, Self.teamDR(), "com.fskroes.Other").output == "other")
+    }
+
+    // MARK: notarization
+
+    @Test func notaryStatusAndIDComeFromTheJSONOfNotarytool() throws {
+        let json = #"{"id":"2efe2717-52ef-43a5-96dc-0797e4ca1041","status":"Invalid","message":"Processing complete"}"#
+        #expect(try Self.call("spool_notary_status", json).output == "Invalid")
+        #expect(try Self.call("spool_notary_id", json).output == "2efe2717-52ef-43a5-96dc-0797e4ca1041")
+        let accepted = #"{"id":"a","status":"Accepted","message":"Processing complete"}"#
+        #expect(try Self.call("spool_notary_status", accepted).output == "Accepted")
+        for bad in ["", "Error: HTTP status code: 401", #"{"message":"no status"}"#] {
+            let r = try Self.call("spool_notary_status", bad)
+            #expect(r.status != 0 && r.output.isEmpty, "\(bad): \(r)")
+        }
+    }
+
+    // The real answers of spctl on macOS 26. Only "accepted" with "source=Notarized Developer ID" passes.
+    @Test func gatekeeperMustSayNotarizedDeveloperID() throws {
+        let accepted = "/x/Spool.app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: Some Person (98L4368F9K)"
+        #expect(try Self.call("spool_gatekeeper_notarized", accepted).status == 0)
+        let unstapled = "/x/Spool.app: rejected\nsource=Unnotarized Developer ID\norigin=Developer ID Application: Some Person (98L4368F9K)"
+        #expect(try Self.call("spool_gatekeeper_notarized", unstapled).status == 1)
+        let adHoc = "/x/Spool.app: rejected\nsource=no usable signature"
+        #expect(try Self.call("spool_gatekeeper_notarized", adHoc).status == 1)
+        let mixed = "/x/Spool.app: rejected\nsource=Notarized Developer ID"
+        #expect(try Self.call("spool_gatekeeper_notarized", mixed).status == 1, "a rejection is never a pass")
+        #expect(try Self.call("spool_gatekeeper_notarized", "").status == 1)
     }
 
     // /dev/null is the way to say "no settings" (no pin). A path that does not exist is a mistake.
     @Test func updatesEnvIsAFileOrDevNull() throws {
-        let file = try Self.temp("updates.env", "SPOOL_SIGNING_CERT_SHA1=\n")
+        let file = try Self.temp("updates.env", "SPOOL_TEAM_ID=\n")
         #expect(try Self.call("spool_updates_env_usable", file.path).status == 0)
         #expect(try Self.call("spool_updates_env_usable", "/dev/null").status == 0)
         #expect(try Self.call("spool_updates_env_usable", file.path + ".missing").status == 1)
@@ -461,9 +573,64 @@ import Testing
           norepo) echo "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)" >&2; exit 1 ;;
           zero) echo 0 ;;
           one) echo 1 ;;
+          identical|ahead|behind|diverged) echo "$FAKE_GH" ;;
+          sha) echo 0123456789abcdef0123456789abcdef01234567 ;;
+          http404) echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+          http422) echo '{"message":"No commit found for SHA: refs/tags/v1.2.3","status":"422"}'
+                   echo "gh: No commit found for SHA: refs/tags/v1.2.3 (HTTP 422)" >&2; exit 1 ;;
         esac
         """)
         return bin
+    }
+
+    // GitHub makes the release tag from the commit: it must be on main there. "Cannot tell" stops the run.
+    @Test func theCommitMustBeOnMainOnGitHub() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        func ask(_ mode: String) throws -> Result {
+            try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": mode], "spool_release_commit_on_main", "o/r", "abc123")
+        }
+        for mode in ["identical", "ahead"] {
+            let r = try ask(mode)
+            #expect(r.status == 0 && r.output.isEmpty, "\(mode): \(r)")
+        }
+        for mode in ["behind", "diverged"] {
+            let r = try ask(mode)
+            #expect(r.status == 1, "\(mode)")
+            #expect(r.output == "the commit abc123 is not on main of o/r (\(mode)). Push main first: git push origin main")
+        }
+        let missing = try ask("http404")
+        #expect(missing.status == 1)
+        #expect(missing.output == "the commit abc123 is not on GitHub. Push main first: git push origin main")
+        let net = try ask("network")
+        #expect(net.status == 2)
+        #expect(net.output == "cannot compare abc123 with main of o/r: error connecting to api.github.com")
+        let odd = try ask("odd")
+        #expect(odd.status == 2 && odd.output.hasPrefix("unexpected answer from gh api compare"), "\(odd)")
+        let log = try String(contentsOf: bin.appendingPathComponent("gh.log"), encoding: .utf8)
+        #expect(log.hasPrefix("api repos/o/r/compare/abc123...main --jq .status\n"))
+    }
+
+    // A tag that does not exist on GitHub is 422 ("No commit found"), a missing repository 404: both are free.
+    @Test func theRemoteTagIsItsCommitOrNothing() throws {
+        let bin = try Self.fakeGh()
+        defer { try? FileManager.default.removeItem(at: bin) }
+        func ask(_ mode: String) throws -> Result {
+            try Self.call(in: Self.root, bin: bin, env: ["FAKE_GH": mode], "spool_release_remote_tag", "o/r", "v1.2.3")
+        }
+        let found = try ask("sha")
+        #expect(found.status == 0 && found.output == "0123456789abcdef0123456789abcdef01234567", "\(found)")
+        for mode in ["http422", "http404"] {
+            let r = try ask(mode)
+            #expect(r.status == 0 && r.output.isEmpty, "\(mode): \(r)")
+        }
+        let net = try ask("network")
+        #expect(net.status == 2)
+        #expect(net.output == "cannot read the tag v1.2.3 of o/r: error connecting to api.github.com")
+        let odd = try ask("odd")
+        #expect(odd.status == 2 && odd.output.hasPrefix("unexpected answer from gh api for the tag v1.2.3"), "\(odd)")
+        let log = try String(contentsOf: bin.appendingPathComponent("gh.log"), encoding: .utf8)
+        #expect(log.hasPrefix("api repos/o/r/commits/refs/tags/v1.2.3 --jq .sha\n"))
     }
 
     // A feed that returns 404: only a missing repository or an empty release list lets the run go on.
@@ -573,13 +740,14 @@ import Testing
     @Test func theTagGoesOnTheBuiltCommitNotOnHead() throws {
         let (dir, first, _) = try Self.repo()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let r = try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", first, "Spool 1.0.0")
+        let r = try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", first)
         #expect(r.status == 0, "\(r.error)")
         #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "rev-parse", "v1.0.0^{commit}").output == first)
-        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "cat-file", "-t", "v1.0.0").output == "tag")
-        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "tag", "-l", "--format=%(contents:subject)", "v1.0.0").output == "Spool 1.0.0")
+        // GitHub makes a lightweight tag when it publishes. The same kind here: `git fetch --tags` does
+        // not refuse it as "would clobber existing tag".
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "cat-file", "-t", "v1.0.0").output == "commit")
         // An existing tag is not moved.
-        #expect(try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", "HEAD", "x").status != 0)
+        #expect(try Self.call(in: dir, env: Self.gitEnv, "spool_release_tag", "v1.0.0", "HEAD").status != 0)
         #expect(try Self.call(in: dir, env: Self.gitEnv, "git", "rev-parse", "v1.0.0^{commit}").output == first)
     }
 
@@ -660,6 +828,22 @@ import Testing
 
         #expect(line("printf '%s\\n' \"$COMMIT\" > \"$OUT/commit.txt\"") != nil)
         #expect(line("spool_release_tag \"$TAG\" \"$COMMIT\"") != nil)
+        // The app is notarized and stapled before the archive is made: the archive must carry the ticket.
+        let notarizeApp = try #require(line("notarize \"$TMP/notarize/Spool.zip\" Spool.app"))
+        let stapleApp = try #require(line("staple \"$APP\" Spool.app"))
+        let gatekeeperApp = try #require(line("gatekeeper \"$APP\" Spool.app execute"))
+        let archive = try #require(line("--keepParent \"$APP\" \"$OUT/$ZIP_NAME\""))
+        #expect(notarizeApp < stapleApp && stapleApp < gatekeeperApp && gatekeeperApp < archive)
+        #expect(head < notarizeApp && gatekeeperApp < wipe, "a failed notarization keeps the files of the last run")
+        let dmg = try #require(line("SIGN_IDENTITY=\"$DEVID\" \"$ROOT/scripts/make-dmg.sh\""))
+        let notarizeDMG = try #require(line("notarize \"$OUT/Spool.dmg\" Spool.dmg"))
+        let stapleDMG = try #require(line("staple \"$OUT/Spool.dmg\" Spool.dmg"))
+        let gatekeeperDMG = try #require(line("gatekeeper \"$OUT/Spool.dmg\" Spool.dmg open"))
+        #expect(dmg < notarizeDMG && notarizeDMG < stapleDMG && stapleDMG < gatekeeperDMG && gatekeeperDMG < upload)
+        // The tag on GitHub comes from the commit of the build.
+        let onMain = try #require(line("ONMAIN=$(spool_release_commit_on_main \"$REPO\" \"$COMMIT\") || die"))
+        #expect(onMain < runBuild)
+        #expect(lines[upload].contains("--target \"$COMMIT\""))
         #expect(line("git tag") == nil, "only spool_release_tag makes the tag")
         #expect(line("git rev-parse HEAD", after: commit + 1) == nil, "HEAD is read once")
         #expect(line("OUT=\"$ROOT/dist/release/dry-run/$VERSION\"") != nil, "a dry run does not replace a real run")

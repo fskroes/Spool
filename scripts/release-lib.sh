@@ -59,6 +59,9 @@ spool_changelog_section() {
 # The appcast URL for a GitHub releases repository "owner/name".
 spool_feed_url_for_repo() { printf 'https://github.com/%s/releases/latest/download/appcast.xml\n' "$1"; }
 
+# The download prefix for the files of the latest release. README.md and the website link Spool.dmg there.
+spool_latest_download() { printf 'https://github.com/%s/releases/latest/download/\n' "$1"; }
+
 # The download prefix for the files of one release.
 spool_download_prefix() { printf 'https://github.com/%s/releases/download/v%s/\n' "$1" "$2"; }
 
@@ -105,6 +108,51 @@ spool_dr_is_local() {
     local dr=$1 bundle=$2 hash
     hash=$(tr 'A-F' 'a-f' <<<"$3")
     [[ -n "$hash" && "$dr" == *"identifier \"$bundle\" and certificate leaf = H\"$hash\""* ]]
+}
+
+# Status 0 when $1 looks like an Apple Team ID: 10 capital letters and digits.
+spool_team_id_valid() { [[ "$1" =~ ^[A-Z0-9]{10}$ ]]; }
+
+# Status 0 when a designated requirement (the output of `codesign -d -r -`) is the one of a Developer ID
+# signature of team $3 for the bundle ID $2. macOS stores the Accessibility permission with this requirement.
+# It names the team, not one certificate, so it stays the same when the certificate is renewed.
+# The real form (codesign on macOS 26):
+#   designated => identifier "B" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6]
+#   /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and
+#   certificate leaf[subject.OU] = "TEAMID"
+# The two OIDs are the Developer ID intermediate and the Developer ID Application leaf. An Apple
+# Development signature has other OIDs, so it fails here.
+spool_dr_is_team() {
+    local dr=$1 bundle=$2 team=$3
+    spool_team_id_valid "$team" || return 1
+    [[ "$dr" == *"designated => identifier \"$bundle\" and anchor apple generic and "* ]] || return 1
+    [[ "$dr" == *"certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */"* ]] || return 1
+    [[ "$dr" == *"certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */"* ]] || return 1
+    [[ "$dr" == *"certificate leaf[subject.OU] = \"$team\""* || "$dr" == *"certificate leaf[subject.OU] = $team"* ]]
+}
+
+# Prints the SHA-1 of the first "Developer ID Application" identity of team $2 in $1, the output of
+# `security find-identity -v -p codesigning`. Status 1 when there is none.
+spool_developer_id_in() {
+    local list=$1 team=$2
+    spool_team_id_valid "$team" || return 1
+    awk -v team="($team)\"" '
+        $2 ~ /^[0-9A-F]{40}$/ && index($0, "\"Developer ID Application: ") && index($0, team) { print $2; found = 1; exit }
+        END { exit !found }' <<<"$list"
+}
+
+# The status of a notarization from the JSON of `xcrun notarytool submit --output-format json`, for
+# example "Accepted" or "Invalid". Status 1 when the JSON has no status.
+spool_notary_status() { printf '%s' "$1" | plutil -extract status raw -o - - 2>/dev/null; }
+
+# The submission ID from the same JSON, for `xcrun notarytool log <id>`. Status 1 when it has none.
+spool_notary_id() { printf '%s' "$1" | plutil -extract id raw -o - - 2>/dev/null; }
+
+# Status 0 when $1, the output of `spctl --assess -vv` (stdout and stderr), says Gatekeeper accepts the
+# file as notarized. "Unnotarized Developer ID" means the ticket is not on the file: macOS on another
+# Mac does not open it.
+spool_gatekeeper_notarized() {
+    [[ "$1" == *": accepted"* && $'\n'"$1"$'\n' == *$'\n'"source=Notarized Developer ID"$'\n'* ]]
 }
 
 # Prints each file under DIR that contains one of the other arguments as bytes (for example $HOME
@@ -205,8 +253,56 @@ spool_release_head_is() {
     fi
 }
 
-# Tags COMMIT (not HEAD) with an annotated tag TAG and MESSAGE.
-spool_release_tag() { git tag -a "$1" -m "$3" "$2"; }
+# Tags COMMIT (not HEAD) with TAG in this repository. GitHub makes the same tag when it publishes the
+# release, as a lightweight tag on COMMIT. The local tag is lightweight too, so `git fetch --tags`
+# finds the same object and does not refuse it as "would clobber existing tag".
+spool_release_tag() { git tag "$1" "$2"; }
+
+# Status 0 when COMMIT is on the branch main of REPO on GitHub. GitHub makes the release tag from the
+# commit, so it must be pushed. Status 1 with advice on stdout when it is not on main;
+# status 2 with a message on stdout when gh cannot tell.
+spool_release_commit_on_main() {
+    local repo=$1 commit=$2 out err status=0 msg
+    err=$(mktemp "${TMPDIR:-/tmp}/spool-gh.XXXXXX") || return 2
+    # base...head: "identical" or "ahead" means main has COMMIT.
+    out=$(gh api "repos/$repo/compare/$commit...main" --jq .status 2>"$err") || status=$?
+    msg=$(<"$err")
+    rm -f "$err"
+    if [[ $status -ne 0 ]]; then
+        if [[ "$msg" == *"HTTP 404"* ]]; then
+            printf 'the commit %s is not on GitHub. Push main first: git push origin main\n' "$commit"
+            return 1
+        fi
+        printf 'cannot compare %s with main of %s: %s\n' "$commit" "$repo" "$msg"
+        return 2
+    fi
+    case "$out" in
+        identical|ahead) return 0 ;;
+        behind|diverged)
+            printf 'the commit %s is not on main of %s (%s). Push main first: git push origin main\n' "$commit" "$repo" "$out"
+            return 1 ;;
+        *)
+            printf 'unexpected answer from gh api compare for %s: %s\n' "$repo" "$out"
+            return 2 ;;
+    esac
+}
+
+# Prints the commit of the tag TAG in REPO on GitHub. Prints nothing (status 0) when the tag does not
+# exist. Status 2 with a message on stdout when gh cannot tell.
+spool_release_remote_tag() {
+    local repo=$1 tag=$2 out err status=0 msg
+    err=$(mktemp "${TMPDIR:-/tmp}/spool-gh.XXXXXX") || return 2
+    out=$(gh api "repos/$repo/commits/refs/tags/$tag" --jq .sha 2>"$err") || status=$?
+    msg=$(<"$err")
+    rm -f "$err"
+    if [[ $status -ne 0 ]]; then
+        [[ "$msg" == *"HTTP 404"* || "$msg" == *"HTTP 422"* ]] && return 0
+        printf 'cannot read the tag %s of %s: %s\n' "$tag" "$repo" "$msg"
+        return 2
+    fi
+    [[ "$out" =~ ^[0-9a-f]{40}$ ]] || { printf 'unexpected answer from gh api for the tag %s: %s\n' "$tag" "$out"; return 2; }
+    printf '%s\n' "$out"
+}
 
 # Status 0 when the files in DIR were built from the commit HEAD. The release writes
 # DIR/commit.txt; the build number alone does not identify a commit (two branches can have the same count).
@@ -260,65 +356,69 @@ spool_sha1_equal() {
 # without a word.
 spool_updates_env_usable() { [[ -f "$1" || "$1" == /dev/null ]]; }
 
-# Which identity a build signs with. $1: the pinned SHA-1 (empty: no pin). $2: the SHA-1 of the local
-# identity (empty: there is none). $3: SIGN_IDENTITY (empty: not set). Prints one word:
-#   explicit  SIGN_IDENTITY is set: sign with it. The pin does not apply.
-#   local     sign with the local identity: it is the pinned one, or there is no pin.
-#   adhoc     there is no local identity and no pin: sign ad hoc.
-#   missing   a pin is set, but the local identity is not found (not made, not imported, or its
-#             keychain does not unlock). An ad hoc build here is a trap: a grant given to it stores
-#             cdhashes, and turning the switch off and on keeps them, so no later build matches.
-#   refuse    the local identity is not the pinned one. A build with it loses the Accessibility
-#             permission of the installed copies, and release.sh refuses it.
+# Which identity a build signs with. $1: the Team ID of the releases (SPOOL_TEAM_ID, empty: none).
+# $2: the SHA-1 of a Developer ID Application identity of that team in the keychain (empty: none).
+# $3: the SHA-1 of the self-signed identity of make-signing-cert.sh (empty: none).
+# $4: SIGN_IDENTITY (empty: not set). Prints one word:
+#   explicit  SIGN_IDENTITY is set: sign with it.
+#   release   sign with the Developer ID of the team: the identity of the releases. The Accessibility
+#             permission stays after every update.
+#   local     sign with the self-signed identity. The permission stays after a rebuild, but not after
+#             an update to a release (another signature).
+#   missing   a team is set, but this Mac has neither identity. An ad hoc build here is a trap: a grant
+#             given to it stores cdhashes, and turning the switch off and on keeps them, so no later
+#             build matches.
+#   adhoc     no team and no identity: sign ad hoc.
 spool_build_identity() {
-    local pin=$1 hash=$2 explicit=$3
+    local team=$1 devid=$2 hash=$3 explicit=$4
     if [[ -n "$explicit" ]]; then echo explicit
-    elif [[ -z "$hash" && -n "$pin" ]]; then echo missing
-    elif [[ -z "$hash" ]]; then echo adhoc
-    elif [[ -z "$pin" ]] || spool_sha1_equal "$hash" "$pin"; then echo local
-    else echo refuse
+    elif [[ -n "$team" && -n "$devid" ]]; then echo release
+    elif [[ -n "$hash" ]]; then echo local
+    elif [[ -n "$team" ]]; then echo missing
+    else echo adhoc
     fi
 }
 
-# How to get a signature that keeps the Accessibility permission after a rebuild. $1: the pinned SHA-1
-# (empty: no pin). With a pin, make-signing-cert.sh stops without the backup of the pinned identity, so
-# it is advice only for the maintainer.
+# How to get a signature that keeps the Accessibility permission after a rebuild. $1: the Team ID of the
+# releases (empty: none).
 spool_stable_identity_hint() {
-    if [[ -z "$1" ]]; then
-        echo "To keep the permission after a rebuild: run scripts/make-signing-cert.sh once (see docs/INSTALL.md)."
-    else
-        echo "To keep the permission after a rebuild: the maintainer imports the pinned identity
-(scripts/make-signing-cert.sh --import <backup file>). Other builders sign with an Apple Development
-or Developer ID identity: SIGN_IDENTITY=\"<name or SHA-1>\" make install. See docs/INSTALL.md."
-    fi
+    local text="To keep the permission after a rebuild: run scripts/make-signing-cert.sh once, or sign with
+your own Apple Development or Developer ID identity: SIGN_IDENTITY=\"<name or SHA-1>\" make install."
+    [[ -z "$1" ]] || text+="
+To use Spool without a build: install the notarized release."
+    echo "$text See docs/INSTALL.md."
 }
 
-# The message when Packaging/updates.env pins an identity and build-app.sh does not find it. $1: the pin.
-# An ad hoc build is not the default here: a grant for it stops working after the next build.
+# The message when Packaging/updates.env names the team of the releases and build-app.sh finds no
+# identity to sign with. $1: the Team ID. An ad hoc build is not the default here: a grant for it stops
+# working after the next build.
 spool_missing_identity_message() {
-    echo "Packaging/updates.env pins the identity $1, but the local signing identity is not found.
-The maintainer: check it with scripts/make-signing-cert.sh (it changes nothing when the identity works),
-or restore it with scripts/make-signing-cert.sh --import <backup file>.
-Other builders: SIGN_IDENTITY=\"<name or SHA-1>\" make install, with an Apple Development or Developer ID identity.
+    echo "No signing identity. Packaging/updates.env names the team $1 of the releases, but this Mac has no
+\"Developer ID Application\" identity of that team, and no identity from scripts/make-signing-cert.sh.
+To use Spool: install the notarized release. It updates itself (docs/INSTALL.md).
+To build Spool yourself, make a free identity once: scripts/make-signing-cert.sh, then make install.
+Or sign with your own Apple identity: SIGN_IDENTITY=\"<name or SHA-1>\" make install.
+The maintainer: install the Developer ID certificate of team $1 (Xcode > Settings > Accounts > Manage Certificates).
 Do not use an ad hoc build as your normal build: when you give it the Accessibility permission, macOS
 stores its cdhash, and no later build matches, even when the switch shows on. See docs/INSTALL.md.
 For a test build or the E2E test only: SIGN_IDENTITY=- make app (or make e2e)."
 }
 
-# How an app to install is signed, against the pin. $1: the pinned SHA-1 (empty: no pin). $2: the
-# designated requirement of the app (the output of `codesign -d -r -`). $3: the bundle ID. Prints one word:
-#   nopin   no pin is set.
-#   pinned  the app is signed with the pinned identity.
+# How an app to install is signed, against the team of the releases. $1: the Team ID (empty: none).
+# $2: the designated requirement of the app (the output of `codesign -d -r -`). $3: the bundle ID.
+# Prints one word:
+#   nopin   no team is set.
+#   pinned  the app has the Developer ID signature of the team, like the releases.
 #   adhoc   the app is signed ad hoc (its requirement is only cdhashes): an Accessibility entry for it
 #           stops working after the next build, while the switch still shows on.
 #   other   the app is signed with another identity: an Accessibility entry for it stops working after
-#           an update (releases are signed with the pin), while the switch still shows on.
+#           an update (releases are signed by the team), while the switch still shows on.
 spool_install_signature() {
     local dr
     # codesign prints an ad hoc requirement as a comment: "# designated => cdhash H\"...\"".
     dr=$(sed -n 's/^#* *designated => //p' <<<"$2")
     if [[ -z "$1" ]]; then echo nopin
-    elif spool_dr_is_local "$2" "$3" "$1"; then echo pinned
+    elif spool_dr_is_team "$2" "$3" "$1"; then echo pinned
     elif [[ "$dr" == "cdhash "* ]]; then echo adhoc
     else echo other
     fi

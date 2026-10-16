@@ -30,9 +30,10 @@ bench:
 release:
 	swift build -c release
 
-# Builds dist/Spool.app. Signs with "Striple Local Signing" when that identity exists
-# (scripts/make-signing-cert.sh), else ad hoc. With a pin in Packaging/updates.env, a missing
-# identity stops the build. SIGN_IDENTITY overrides (SIGN_IDENTITY=- for ad hoc). See docs/INSTALL.md.
+# Builds dist/Spool.app. Signs with the Developer ID of the team in Packaging/updates.env when it
+# is in the keychain, else with "Striple Local Signing" (scripts/make-signing-cert.sh). With a team
+# and neither identity, the build stops. SIGN_IDENTITY overrides (SIGN_IDENTITY=- for ad hoc).
+# See docs/INSTALL.md.
 app:
 	./scripts/build-app.sh
 

@@ -7,18 +7,25 @@ import Testing
 ///
 /// Every tool that would build, sign, read a keychain or use the network is a fake, so a run takes about a
 /// second. PATH has only the fakes and the system folders: the real `gh` (Homebrew) cannot run.
-/// - scripts/signing-env.sh: a fake. release.sh uses only `spool_signing_identity` from it, which prints
-///   FAKE_HASH. The real function is tested in SigningScriptTests; a fake here means no `security` call at all.
+/// - scripts/signing-env.sh: a fake. release.sh uses only `spool_developer_id` from it, which prints
+///   FAKE_HASH (the SHA-1 of the Developer ID identity). The real parser is tested in ReleaseScriptTests; a
+///   fake here means no `security` call at all.
 /// - scripts/build-app.sh, scripts/make-dmg.sh: write a small Spool.app with a real Info.plist (FAKE_* change
 ///   its values) and a "DMG" that is a zip. `hdiutil attach` unpacks it at the mount point.
 /// - Sparkle tools: generate_keys prints the key, generate_appcast writes a real one-item appcast.
 /// - gh: logs each call to gh.log. `release create` copies the assets into the fake web folder, `release edit`
 ///   makes that appcast the latest one. curl serves the web folder (404 for a missing file).
-/// - codesign: the requirement names the SHA-1 in Contents/_CodeSignature/hash of the app.
+/// - codesign: the requirement is the Developer ID form, for the team in Contents/_CodeSignature/team.
+/// - xcrun: notarytool accepts each file (FAKE_NOTARY_* change the answer) and logs to xcrun.log; stapler
+///   writes Contents/CodeResources into an app, or a marker in the state folder for a DMG.
+/// - spctl: accepts the file as "Notarized Developer ID" (FAKE_GATEKEEPER_* reject it).
 /// Real tools: git, ditto, shasum, plutil, xmllint, unzip, stat, cmp.
 @Suite struct ReleaseRunTests {
-    static let pin = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
-    static let otherHash = "0123456789ABCDEF0123456789ABCDEF01234567"
+    /// The SHA-1 of the Developer ID identity, and the team of the releases.
+    static let devid = "B608FA4F3D9A1FC14CDBAB47421A660E429053DC"
+    static let team = "A1B2C3D4E5"
+    static let otherTeam = "Z9Y8X7W6V5"
+    static let profile = "spool-test-notary"
     static let key = Data(repeating: 7, count: 32).base64EncodedString()
     static let otherKey = Data(repeating: 9, count: 32).base64EncodedString()
     static let releases = "fskroes/spool-test"
@@ -42,6 +49,7 @@ import Testing
         var web: URL { base.appendingPathComponent("web") }
         var state: URL { base.appendingPathComponent("state") }
         var ghLog: URL { base.appendingPathComponent("gh.log") }
+        var xcrunLog: URL { base.appendingPathComponent("xcrun.log") }
         var out: URL { repo.appendingPathComponent("dist/release/\(ReleaseRunTests.version)") }
 
         init() throws {
@@ -57,13 +65,13 @@ import Testing
             try writeFakes()
             try write("VERSION", ReleaseRunTests.version + "\n")
             try write("CHANGELOG.md", "# Changelog\n\n## 1.2.0\n\n- A test release.\n\n## 1.1.0\n\n- Older.\n")
-            try write("Packaging/releases-README.md", "# Spool releases\n")
             try write("Packaging/updates.env", """
             SPOOL_RELEASES_REPO=\(ReleaseRunTests.releases)
             SPOOL_FEED_URL=\(ReleaseRunTests.feed)
             SPOOL_ED_PUBLIC_KEY=\(ReleaseRunTests.key)
             SPOOL_ED_KEY_ACCOUNT=com.fskroes.Striple
-            SPOOL_SIGNING_CERT_SHA1=\(ReleaseRunTests.pin)
+            SPOOL_TEAM_ID=\(ReleaseRunTests.team)
+            SPOOL_NOTARY_PROFILE=\(ReleaseRunTests.profile)
 
             """)
             try write(".gitignore", ".build/\ndist/\n")
@@ -89,7 +97,7 @@ import Testing
                 "USER": "spool-test-user",
                 "TMPDIR": base.appendingPathComponent("tmp").path + "/",
                 "LANG": "en_US.UTF-8",
-                "FAKE_HASH": ReleaseRunTests.pin,
+                "FAKE_HASH": ReleaseRunTests.devid,
             ].merging(ReleaseScriptTests.gitEnv) { $1 }
         }
 
@@ -131,16 +139,17 @@ import Testing
         func head() throws -> String { try sh("git rev-parse HEAD") }
         func tags() throws -> String { try sh("git tag -l") }
         var ghCalls: String { (try? String(contentsOf: ghLog, encoding: .utf8)) ?? "" }
+        var xcrunCalls: String { (try? String(contentsOf: xcrunLog, encoding: .utf8)) ?? "" }
         var uploaded: Bool { ghCalls.contains("release create") }
 
         /// A published release `version` in the fake web: its appcast is the latest, and its archive has an app
-        /// signed with `hash` and the update key `key`.
-        func publish(version: String, build: Int, hash: String = ReleaseRunTests.pin, key: String = ReleaseRunTests.key) throws {
+        /// signed by `team` and the update key `key`.
+        func publish(version: String, build: Int, team: String = ReleaseRunTests.team, key: String = ReleaseRunTests.key) throws {
             let dir = base.appendingPathComponent("published-\(UUID().uuidString)")
             let app = dir.appendingPathComponent("Spool.app/Contents")
             try write(app.appendingPathComponent("Info.plist"),
                       Fixture.plist(version: version, build: "\(build)", feed: ReleaseRunTests.feed, key: key))
-            try write(app.appendingPathComponent("_CodeSignature/hash"), hash + "\n")
+            try write(app.appendingPathComponent("_CodeSignature/team"), team + "\n")
             try write(app.appendingPathComponent("MacOS/Spool"), "fake app binary\n")
             let url = "https://github.com/\(ReleaseRunTests.releases)/releases/download/v\(version)/Spool-\(version).zip"
             let zip = web.appendingPathComponent(String(url.dropFirst("https://".count)))
@@ -190,8 +199,8 @@ import Testing
         private func writeFakes() throws {
             let webPath = web.path, statePath = state.path
             try write("scripts/signing-env.sh", #"""
-            # Fake for ReleaseRunTests: no keychain. The SHA-1 of the local identity is FAKE_HASH.
-            spool_signing_identity() { [ -n "${FAKE_HASH:-}" ] || return 1; printf '%s\n' "$FAKE_HASH"; }
+            # Fake for ReleaseRunTests: no keychain. The SHA-1 of the Developer ID identity is FAKE_HASH.
+            spool_developer_id() { [ -n "${FAKE_HASH:-}" ] || return 1; printf '%s\n' "$FAKE_HASH"; }
 
             """#)
             let plist = Fixture.plist(version: "${FAKE_APP_VERSION:-$(tr -d '[:space:]' < VERSION)}",
@@ -209,13 +218,15 @@ import Testing
             cat > "$APP/Contents/Info.plist" <<PLIST
             \#(plist)PLIST
             printf 'fake app binary\n' > "$APP/Contents/MacOS/Spool"
-            printf '%s\n' "${FAKE_SIGNED_HASH:-$FAKE_HASH}" > "$APP/Contents/_CodeSignature/hash"
+            printf '%s\n' "${FAKE_SIGNED_TEAM:-\#(ReleaseRunTests.team)}" > "$APP/Contents/_CodeSignature/team"
             [ -z "${FAKE_BAD_SIGNATURE:-}" ] || : > "$APP/Contents/_CodeSignature/invalid"
             [ -z "${FAKE_BUILD_COMMITS:-}" ] || git commit -q --allow-empty -m "a commit during the build"
             [ -z "${FAKE_BUILD_DIRTIES:-}" ] || echo x > stray.txt
             [ -z "${FAKE_APP_MACOSX:-}" ] || mkdir -p "$APP/Contents/__MACOSX"
             [ -z "${FAKE_APP_PRIVATE:-}" ] || { mkdir -p "$APP/Contents/Resources"; printf 'built in %s\n' "$HOME" > "$APP/Contents/Resources/where.txt"; }
             [ -z "${FAKE_BUILD_MAKES_DRAFT:-}" ] || echo true > '\#(statePath)/v'"$(tr -d '[:space:]' < VERSION)"
+            [ -z "${FAKE_BUILD_MAKES_TAG:-}" ] || echo 0123456789abcdef0123456789abcdef01234567 > '\#(statePath)/remote-v'"$(tr -d '[:space:]' < VERSION)"
+            [ -z "${FAKE_APP_USER_PATH:-}" ] || { mkdir -p "$APP/Contents/Resources"; printf 'built in /Users/%s/dev/Spool\n' "$USER" > "$APP/Contents/Resources/where.txt"; }
             echo "==> Built $APP"
 
             """#, executable: true)
@@ -225,6 +236,7 @@ import Testing
             cd "$(dirname "$0")/.."
             V=$(plutil -extract CFBundleShortVersionString raw -o - dist/Spool.app/Contents/Info.plist)
             rm -f "dist/Spool-$V.dmg"
+            printf '%s\n' "${SIGN_IDENTITY:-}" > '\#(statePath)/dmg-identity'
             if [ -n "${FAKE_DMG_EMPTY:-}" ]; then
               mkdir -p dist/empty && echo readme > dist/empty/README && ditto -c -k dist/empty "dist/Spool-$V.dmg"
             else
@@ -278,7 +290,10 @@ import Testing
             case "$1 $2" in
               "auth status") [ -z "${FAKE_GH_NO_AUTH:-}" ] ;;
               "api user") echo "${FAKE_GH_LOGIN:-fskroes}" ;;
-              "api -X") exit 0 ;;
+              "api repos/"*"/compare/"*) echo "${FAKE_GH_COMPARE:-identical}" ;;
+              "api repos/"*"/commits/refs/tags/"*)
+                if [ -f "$S/remote-${2##*/}" ]; then cat "$S/remote-${2##*/}"
+                else echo "gh: No commit found for SHA: refs/tags/${2##*/} (HTTP 422)" >&2; exit 1; fi ;;
               "repo view") [ -z "${FAKE_GH_NO_REPO:-}" ] ;;
               "release list")
                 case "${FAKE_GH_LIST:-zero}" in
@@ -295,7 +310,7 @@ import Testing
                 d="$W/$repo/releases/download/$tag"
                 mkdir -p "$d"
                 while [ $# -gt 0 ]; do
-                  case "$1" in --title|--notes-file) shift ;; --*) ;; *) cp "$1" "$d/" ;; esac
+                  case "$1" in --target) echo "$2" > "$S/target-$tag"; shift ;; --title|--notes-file) shift ;; --*) ;; *) cp "$1" "$d/" ;; esac
                   shift
                 done
                 [ -z "${FAKE_GH_CORRUPT_UPLOAD:-}" ] || for z in "$d"/*.zip; do printf x >> "$z"; done
@@ -303,9 +318,13 @@ import Testing
               "release edit")
                 tag=$3 repo=$5
                 echo false > "$S/$tag"
+                # GitHub makes the tag on the target commit when it publishes.
+                if [ -n "${FAKE_GH_TAG_ELSEWHERE:-}" ]; then echo 0123456789abcdef0123456789abcdef01234567 > "$S/remote-$tag"
+                else cp "$S/target-$tag" "$S/remote-$tag"; fi
                 [ -z "${FAKE_GH_NO_LATEST:-}" ] || exit 0
                 mkdir -p "$W/$repo/releases/latest/download"
-                cp "$W/$repo/releases/download/$tag/appcast.xml" "$W/$repo/releases/latest/download/" ;;
+                cp "$W/$repo/releases/download/$tag/appcast.xml" "$W/$repo/releases/download/$tag/Spool.dmg" "$W/$repo/releases/latest/download/"
+                [ -z "${FAKE_GH_CORRUPT_DMG:-}" ] || printf x >> "$W/$repo/releases/latest/download/Spool.dmg" ;;
               *) echo "fake gh: unexpected: $*" >&2; exit 1 ;;
             esac
             """#, executable: true)
@@ -338,17 +357,22 @@ import Testing
             #!/bin/sh
             for a; do app=$a; done
             sig="$app/Contents/_CodeSignature"
+            dr() {
+              echo "designated => identifier \"com.fskroes.Spool\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"$1\""
+            }
             case "$app" in
               */unpacked/*)
                 [ "$1" != --verify ] || [ -z "${FAKE_ZIP_BAD_SIGNATURE:-}" ] || { echo "$app: invalid signature" >&2; exit 1; }
-                if [ "$1" = -d ] && [ -n "${FAKE_ZIP_SIGNED_HASH:-}" ]; then
-                  echo "designated => identifier \"com.fskroes.Spool\" and certificate leaf = H\"$FAKE_ZIP_SIGNED_HASH\""; exit 0
-                fi ;;
+                if [ "$1" = -d ] && [ "$2" = -r ] && [ -n "${FAKE_ZIP_SIGNED_TEAM:-}" ]; then dr "$FAKE_ZIP_SIGNED_TEAM"; exit 0; fi ;;
+              */dmg/*)
+                if [ "$1" = -d ] && [ "$2" = -r ] && [ -n "${FAKE_DMG_APP_TEAM:-}" ]; then dr "$FAKE_DMG_APP_TEAM"; exit 0; fi ;;
             esac
             case "$1" in
-              --verify) [ -f "$sig/hash" ] && [ ! -e "$sig/invalid" ] || { echo "$app: invalid signature" >&2; exit 1; } ;;
+              --verify) [ -f "$sig/team" ] && [ ! -e "$sig/invalid" ] || { echo "$app: invalid signature" >&2; exit 1; } ;;
               -d) echo "Executable=$app/Contents/MacOS/Spool" >&2
-                  echo "designated => identifier \"com.fskroes.Spool\" and certificate leaf = H\"$(tr 'A-F' 'a-f' < "$sig/hash")\"" ;;
+                  if [ "$2" = -r ]; then dr "$(cat "$sig/team")"
+                  elif [ -n "${FAKE_NO_RUNTIME:-}" ]; then echo "CodeDirectory v=20500 size=1 flags=0x0(none) hashes=1+0 location=embedded" >&2
+                  else echo "CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+0 location=embedded" >&2; fi ;;
               *) echo "fake codesign: unexpected: $*" >&2; exit 1 ;;
             esac
             """#, executable: true)
@@ -369,6 +393,42 @@ import Testing
               detach) rm -rf "$2" ;;
               *) echo "fake hdiutil: unexpected: $*" >&2; exit 1 ;;
             esac
+            """#, executable: true)
+            try write(bin.appendingPathComponent("xcrun"), #"""
+            #!/bin/sh
+            printf '%s\n' "$*" >> '\#(xcrunLog.path)'
+            S='\#(statePath)'
+            case "$1 $2" in
+              "notarytool history")
+                [ -z "${FAKE_NO_NOTARY_PROFILE:-}" ] || { echo "Error: No Keychain password item found for profile: $4" >&2; exit 1; } ;;
+              "notarytool submit")
+                case "$3" in *.dmg) st=${FAKE_NOTARY_DMG:-Accepted} ;; *) st=${FAKE_NOTARY_APP:-Accepted} ;; esac
+                [ "$st" != none ] || { echo "Error: HTTP status code: 401. Unable to authenticate." >&2; exit 1; }
+                echo "{\"id\":\"11111111-2222-3333-4444-555555555555\",\"status\":\"$st\",\"message\":\"Processing complete\"}"
+                [ "$st" = Accepted ] ;;
+              "notarytool log") echo '{"issues":[{"message":"The binary is not signed with a valid Developer ID certificate."}]}' ;;
+              "stapler staple")
+                [ -z "${FAKE_STAPLE_FAIL:-}" ] || { echo "CloudKit query failed" >&2; exit 65; }
+                if [ -d "$3" ]; then : > "$3/Contents/CodeResources"; else : > "$S/stapled-$(basename "$3")"; fi ;;
+              "stapler validate")
+                case "$3" in
+                  */unpacked/*) [ -z "${FAKE_ZIP_NO_TICKET:-}" ] || exit 65 ;;
+                  */dmg/*) [ -z "${FAKE_DMG_APP_NO_TICKET:-}" ] || exit 65 ;;
+                esac
+                if [ -d "$3" ]; then [ -f "$3/Contents/CodeResources" ]; else [ -f "$S/stapled-$(basename "$3")" ]; fi ;;
+              *) echo "fake xcrun: unexpected: $*" >&2; exit 1 ;;
+            esac
+            """#, executable: true)
+            try write(bin.appendingPathComponent("spctl"), #"""
+            #!/bin/sh
+            for a; do f=$a; done
+            case "$f" in
+              *.dmg) want="--assess --type open --context context:primary-signature -vv $f"; v=${FAKE_GATEKEEPER_DMG:-ok} ;;
+              *) want="--assess --type execute -vv $f"; v=${FAKE_GATEKEEPER_APP:-ok} ;;
+            esac
+            [ "$*" = "$want" ] || { printf '%s: rejected (fake spctl: expected "%s", got "%s")\n' "$f" "$want" "$*" >&2; exit 3; }
+            if [ "$v" = ok ]; then printf '%s: accepted\nsource=Notarized Developer ID\n' "$f" >&2
+            else printf '%s: rejected\nsource=Unnotarized Developer ID\n' "$f" >&2; exit 3; fi
             """#, executable: true)
         }
     }
@@ -402,19 +462,38 @@ import Testing
         #expect(try f.tags().isEmpty)
     }
 
-    // The first release: no feed, no repository. The run makes the repository, uploads, publishes and tags.
-    @Test func aFirstReleaseMakesTheRepositoryPublishesAndTags() throws {
+    // A dry run checks the whole chain: the app and the DMG are notarized, stapled and accepted by Gatekeeper.
+    @Test func aRunNotarizesStaplesAndChecksTheAppAndTheDMG() throws {
+        let f = try Fixture()
+        let r = try f.release("--dry-run")
+        #expect(r.status == 0, "\(r.all)")
+        let calls = f.xcrunCalls
+        #expect(calls.contains("notarytool history --keychain-profile \(Self.profile) --output-format json"))
+        #expect(calls.contains("/notarize/Spool.zip --keychain-profile \(Self.profile) --wait --output-format json"), "\(calls)")
+        #expect(calls.contains("Spool.dmg --keychain-profile \(Self.profile) --wait --output-format json"), "\(calls)")
+        #expect(calls.contains("stapler staple \(f.repo.path)/dist/Spool.app"), "\(calls)")
+        #expect(calls.contains("stapler validate ") && calls.contains("/unpacked/Spool.app"), "the archive carries the ticket: \(calls)")
+        #expect(r.output.contains("==> Apple notarized Spool.app"))
+        #expect(r.output.contains("==> Apple notarized Spool.dmg"))
+        // The DMG is signed with the Developer ID, like the app.
+        let identity = try String(contentsOf: f.state.appendingPathComponent("dmg-identity"), encoding: .utf8)
+        #expect(identity == Self.devid + "\n")
+    }
+
+    // The first release: no feed yet. The run uploads, publishes and tags the commit of the build.
+    @Test func aFirstReleasePublishesAndTagsTheCommitOfTheBuild() throws {
         let f = try Fixture()
         let head = try f.head()
-        let r = try f.release(env: ["FAKE_GH_LIST": "norepo", "FAKE_GH_NO_REPO": "1"])
+        let r = try f.release()
         #expect(r.status == 0, "\(r.all)")
         #expect(r.output.contains("No release published yet. New: \(Self.version) (\(Self.build))"))
         #expect(r.output.contains("Published Spool \(Self.version): https://github.com/\(Self.releases)/releases/tag/v\(Self.version)"))
-        #expect(f.ghCalls.contains("api -X POST user/repos -f name=spool-test"))
-        #expect(f.ghCalls.contains("release create v\(Self.version) --repo \(Self.releases) --draft"))
+        #expect(f.ghCalls.contains("api repos/\(Self.releases)/compare/\(head)...main --jq .status"))
+        #expect(f.ghCalls.contains("release create v\(Self.version) --repo \(Self.releases) --draft --target \(head)"))
         #expect(f.ghCalls.contains("release edit v\(Self.version) --repo \(Self.releases) --draft=false --latest"))
+        #expect(!f.ghCalls.contains("user/repos"), "the run never makes a repository")
         #expect(try f.sh("git rev-parse 'v\(Self.version)^{commit}'") == head)
-        #expect(try f.sh("git cat-file -t v\(Self.version)") == "tag")
+        #expect(try f.sh("git cat-file -t v\(Self.version)") == "commit", "the same lightweight tag as on GitHub")
         let commit = try String(contentsOf: f.out.appendingPathComponent("commit.txt"), encoding: .utf8)
         #expect(commit == head + "\n")
     }
@@ -425,7 +504,7 @@ import Testing
         let r = try f.release()
         #expect(r.status == 0, "\(r.all)")
         #expect(r.output.contains("Published now: 1.1.0 (2). New: \(Self.version) (\(Self.build))"))
-        #expect(r.output.contains("The published 1.1.0 has the same signing identity and update key"))
+        #expect(r.output.contains("The published 1.1.0 has the same signing team and update key"))
         #expect(try f.sh("git rev-parse 'v\(Self.version)^{commit}'") == (try f.head()))
         #expect(!f.ghCalls.contains("user/repos"), "the repository exists")
     }
@@ -433,11 +512,12 @@ import Testing
     // MARK: checks before the build
 
     @Test(arguments: [
-        (["SIGN_IDENTITY": "Someone"], "unset SIGN_IDENTITY: releases are signed with the local identity only"),
+        (["SIGN_IDENTITY": "Someone"], "unset SIGN_IDENTITY: releases are signed with the Developer ID of team \(team) only"),
         (["SPOOL_UPDATES": "off"], "unset SPOOL_UPDATES: a release must have updates on"),
         (["FAKE_SPARKLE_KEY": otherKey], "does not match SPOOL_ED_PUBLIC_KEY"),
-        (["FAKE_HASH": ""], "no local signing identity. Restore it from your backup"),
-        (["FAKE_HASH": otherHash], "the local signing identity is \(otherHash), but Packaging/updates.env pins \(pin)"),
+        (["FAKE_HASH": ""], "this Mac has no \"Developer ID Application\" identity of team \(team)"),
+        (["FAKE_NO_NOTARY_PROFILE": "1"], "the notarytool profile \(profile) does not work. Make it once"),
+        (["FAKE_GH_COMPARE": "behind"], "is not on main of \(releases) (behind). Push main first"),
     ])
     func aWrongSettingStopsTheRunBeforeTheBuild(_ env: [String: String], _ message: String) throws {
         let f = try Fixture()
@@ -446,11 +526,28 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: f.repo.appendingPathComponent("dist/Spool.app").path))
     }
 
-    // A pinned SHA-1 in other case is the same pin.
-    @Test func thePinIgnoresCase() throws {
+    // A dry run builds from a task branch: it does not ask GitHub where the commit is.
+    @Test func aDryRunDoesNotNeedTheCommitOnGitHub() throws {
         let f = try Fixture()
-        let r = try f.release("--dry-run", env: ["FAKE_HASH": Self.pin.lowercased()])
+        let r = try f.release("--dry-run", env: ["FAKE_GH_COMPARE": "behind"])
         #expect(r.status == 0, "\(r.all)")
+    }
+
+    @Test func aTeamIDThatIsNotATeamIDStopsTheRun() throws {
+        let f = try Fixture()
+        let file = f.repo.appendingPathComponent("Packaging/updates.env")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        try f.write("Packaging/updates.env", text.replacingOccurrences(of: "SPOOL_TEAM_ID=\(Self.team)", with: "SPOOL_TEAM_ID=a1b2"))
+        try f.sh("git commit -qam 'bad team'")
+        try Self.expectRefused(try f.release(), "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got 'a1b2'", f)
+    }
+
+    // A release on an existing tag ignores --target: GitHub would publish it on the commit of the old tag.
+    @Test func aTagOnGitHubStopsTheRunBeforeTheBuild() throws {
+        let f = try Fixture()
+        try f.write(f.state.appendingPathComponent("remote-v\(Self.version)"), "0123456789abcdef0123456789abcdef01234567\n")
+        try Self.expectRefused(try f.release(), "the tag v\(Self.version) exists on GitHub (on 0123456789abcdef0123456789abcdef01234567). Increase VERSION.", f)
+        #expect(!FileManager.default.fileExists(atPath: f.repo.appendingPathComponent("dist/Spool.app").path))
     }
 
     @Test func aChangedTreeStopsARealRunAndWarnsInADryRun() throws {
@@ -491,16 +588,16 @@ import Testing
     // MARK: the published feed
 
     @Test(arguments: [
-        (version, 2, pin, key, "\(version) is published already. If its run stopped before the tag"),
-        ("1.3.0", 2, pin, key, "VERSION \(version) is not higher than the published 1.3.0"),
-        ("1.1.0", build, pin, key, "build \(build) is not higher than the published build \(build)"),
-        ("1.1.0", 2, otherHash, key, "the published 1.1.0 is not signed with \(pin)"),
-        ("1.1.0", 2, pin, otherKey, "the published 1.1.0 has another SUPublicEDKey than Packaging/updates.env"),
+        (version, 2, team, key, "\(version) is published already. If its run stopped before the tag"),
+        ("1.3.0", 2, team, key, "VERSION \(version) is not higher than the published 1.3.0"),
+        ("1.1.0", build, team, key, "build \(build) is not higher than the published build \(build)"),
+        ("1.1.0", 2, otherTeam, key, "the published 1.1.0 is not signed by team \(team)"),
+        ("1.1.0", 2, team, otherKey, "the published 1.1.0 has another SUPublicEDKey than Packaging/updates.env"),
     ])
-    func aPublishedReleaseThatDoesNotFitStopsTheRun(_ version: String, _ build: Int, _ hash: String, _ key: String,
+    func aPublishedReleaseThatDoesNotFitStopsTheRun(_ version: String, _ build: Int, _ team: String, _ key: String,
                                                     _ message: String) throws {
         let f = try Fixture()
-        try f.publish(version: version, build: build, hash: hash, key: key)
+        try f.publish(version: version, build: build, team: team, key: key)
         try Self.expectRefused(try f.release(), message, f)
     }
 
@@ -539,7 +636,8 @@ import Testing
         (["FAKE_APP_FEED": "https://example.com/appcast.xml"], "the app has the wrong SUFeedURL"),
         (["FAKE_APP_KEY": otherKey], "the app has the wrong SUPublicEDKey"),
         (["FAKE_BAD_SIGNATURE": "1"], "the signature of the app is not valid"),
-        (["FAKE_SIGNED_HASH": otherHash], "the app is not signed with the local identity \(pin)"),
+        (["FAKE_SIGNED_TEAM": otherTeam], "the app is not signed with the Developer ID of team \(team)"),
+        (["FAKE_NO_RUNTIME": "1"], "the app does not have the hardened runtime"),
         (["FAKE_ARCHS": "arm64"], "the app has no x86_64 slice"),
         (["FAKE_ARCHS": "x86_64"], "the app has no arm64 slice"),
     ])
@@ -549,6 +647,43 @@ import Testing
         try Self.expectRefused(r, message, f)
         #expect(r.output.contains("==> Building the app"), "the check comes after the build")
         #expect(!FileManager.default.fileExists(atPath: f.out.path))
+    }
+
+    // MARK: notarization
+
+    // Each failure stops the run before the upload. Those of the app come before the files are made, so
+    // the files of the last run stay.
+    @Test(arguments: [
+        (["FAKE_NOTARY_APP": "Invalid"], "Apple did not notarize Spool.app: Invalid"),
+        (["FAKE_NOTARY_APP": "none"], "Apple did not notarize Spool.app: no answer. Error: HTTP status code: 401"),
+        (["FAKE_STAPLE_FAIL": "1"], "cannot staple the ticket to Spool.app"),
+        (["FAKE_GATEKEEPER_APP": "reject"], "Gatekeeper does not accept Spool.app as notarized"),
+    ])
+    func anAppThatAppleOrGatekeeperRefusesStopsTheRun(_ env: [String: String], _ message: String) throws {
+        let f = try Fixture()
+        let r = try f.release(env: env)
+        try Self.expectRefused(r, message, f)
+        #expect(!FileManager.default.fileExists(atPath: f.out.path), "no files are made")
+    }
+
+    @Test(arguments: [
+        (["FAKE_NOTARY_DMG": "Invalid"], "Apple did not notarize Spool.dmg: Invalid"),
+        (["FAKE_GATEKEEPER_DMG": "reject"], "Gatekeeper does not accept Spool.dmg as notarized"),
+    ])
+    func aDMGThatAppleOrGatekeeperRefusesStopsTheRun(_ env: [String: String], _ message: String) throws {
+        let f = try Fixture()
+        let r = try f.release(env: env)
+        try Self.expectRefused(r, message, f)
+        #expect(r.output.contains("==> Apple notarized Spool.app"))
+        #expect(!FileManager.default.fileExists(atPath: f.out.appendingPathComponent("SHA256SUMS.txt").path))
+    }
+
+    // An invalid notarization shows Apple's log: the reason is in it, not in the status.
+    @Test func anInvalidNotarizationShowsTheLogOfApple() throws {
+        let f = try Fixture()
+        let r = try f.release(env: ["FAKE_NOTARY_APP": "Invalid"])
+        #expect(r.error.contains("The binary is not signed with a valid Developer ID certificate."), "\(r.all)")
+        #expect(r.error.contains("Read why: xcrun notarytool log 11111111-2222-3333-4444-555555555555 --keychain-profile \(Self.profile)"))
     }
 
     @Test func aCommitDuringTheBuildStopsADryRun() throws {
@@ -582,7 +717,7 @@ import Testing
 
     // Each value is needed: without one, the run cannot check the feed, the update key or the identity.
     @Test(arguments: ["SPOOL_RELEASES_REPO", "SPOOL_FEED_URL", "SPOOL_ED_PUBLIC_KEY", "SPOOL_ED_KEY_ACCOUNT",
-                      "SPOOL_SIGNING_CERT_SHA1"])
+                      "SPOOL_TEAM_ID", "SPOOL_NOTARY_PROFILE"])
     func aSettingThatIsMissingStopsTheRun(_ key: String) throws {
         let f = try Fixture()
         let file = f.repo.appendingPathComponent("Packaging/updates.env")
@@ -668,11 +803,11 @@ import Testing
 
     @Test func newIdentityPublishesOverAReleaseWithAnotherIdentity() throws {
         let f = try Fixture()
-        try f.publish(version: "1.1.0", build: 2, hash: Self.otherHash)
+        try f.publish(version: "1.1.0", build: 2, team: Self.otherTeam)
         let r = try f.release("--new-identity")
         #expect(r.status == 0, "\(r.all)")
-        #expect(r.error.contains("warning: the published 1.1.0 has another signing identity than \(Self.pin) (--new-identity)"), "\(r.all)")
-        #expect(r.output.contains("The published 1.1.0 has the same update key, and another signing identity (--new-identity)"))
+        #expect(r.error.contains("warning: the published 1.1.0 is not signed by team \(Self.team) (--new-identity)"), "\(r.all)")
+        #expect(r.output.contains("The published 1.1.0 has the same update key, and another signing team (--new-identity)"))
         #expect(try f.sh("git rev-parse 'v\(Self.version)^{commit}'") == (try f.head()))
     }
 
@@ -681,9 +816,9 @@ import Testing
         let f = try Fixture()
         try f.publish(version: "1.1.0", build: 2)
         try Self.expectRefused(try f.release("--new-identity"),
-                               "the published 1.1.0 is signed with \(Self.pin) already. Run without --new-identity.", f)
+                               "the published 1.1.0 is signed by team \(Self.team) already. Run without --new-identity.", f)
         let g = try Fixture()
-        try g.publish(version: "1.1.0", build: 2, hash: Self.otherHash, key: Self.otherKey)
+        try g.publish(version: "1.1.0", build: 2, team: Self.otherTeam, key: Self.otherKey)
         try Self.expectRefused(try g.release("--new-identity"), "the published 1.1.0 has another SUPublicEDKey", g)
     }
 
@@ -694,10 +829,14 @@ import Testing
         (["FAKE_BAD_EDDSA": "1"], "the EdDSA signature of Spool-\(version).zip is not valid"),
         (["FAKE_APP_MACOSX": "1"], "Spool-\(version).zip has __MACOSX entries"),
         (["FAKE_ZIP_BAD_SIGNATURE": "1"], "the app in Spool-\(version).zip has no valid signature"),
-        (["FAKE_ZIP_SIGNED_HASH": otherHash.lowercased()], "the app in Spool-\(version).zip is not signed with the local identity"),
+        (["FAKE_ZIP_SIGNED_TEAM": otherTeam], "the app in Spool-\(version).zip is not signed with the Developer ID of team \(team)"),
+        (["FAKE_ZIP_NO_TICKET": "1"], "the app in Spool-\(version).zip has no notarization ticket"),
         (["FAKE_APP_PRIVATE": "1"], "files in Spool-\(version).zip contain your home path, user name or Git email"),
+        (["FAKE_APP_USER_PATH": "1"], "files in Spool-\(version).zip contain your home path, user name or Git email"),
         (["FAKE_DMG_ATTACH_FAIL": "1"], "cannot open Spool.dmg"),
         (["FAKE_DMG_EMPTY": "1"], "Spool.dmg has no Spool.app"),
+        (["FAKE_DMG_APP_NO_TICKET": "1"], "the app in Spool.dmg has no notarization ticket"),
+        (["FAKE_DMG_APP_TEAM": otherTeam], "the app in Spool.dmg is not signed with the Developer ID of team \(team)"),
     ])
     func aWrongArchiveStopsTheRunBeforeTheUpload(_ env: [String: String], _ message: String) throws {
         let f = try Fixture()
@@ -707,7 +846,25 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: f.out.appendingPathComponent("SHA256SUMS.txt").path))
     }
 
+    // The user name of the maintainer is also the GitHub owner: the bundle ID and the feed URL have it.
+    // Only a path with it is a leak.
+    @Test func aUserNameThatIsAlsoTheGitHubOwnerDoesNotStopTheRun() throws {
+        let f = try Fixture()
+        let owner = String(Self.releases.split(separator: "/")[0])
+        let r = try f.release("--dry-run", env: ["USER": owner])
+        #expect(r.status == 0, "\(r.all)")
+        let leak = try f.release("--dry-run", env: ["USER": owner, "FAKE_APP_USER_PATH": "1"])
+        #expect(leak.status != 0)
+        #expect(leak.error.contains("contain your home path, user name or Git email"), "\(leak.all)")
+    }
+
     // MARK: the publish
+
+    @Test func aMissingRepositoryStopsTheRunBeforeTheUpload() throws {
+        let f = try Fixture()
+        try Self.expectRefused(try f.release(env: ["FAKE_GH_NO_REPO": "1"]),
+                               "the releases repository \(Self.releases) does not exist, or gh cannot read it", f)
+    }
 
     @Test func aGhLoginThatDoesNotOwnTheRepositoryStopsTheRun() throws {
         let f = try Fixture()
@@ -716,6 +873,14 @@ import Testing
     }
 
     // Another run can make the release during this build: the check runs again before the upload.
+    // Notarization takes minutes. A tag pushed in that time would make GitHub ignore --target.
+    @Test func aTagMadeDuringTheBuildStopsTheRunBeforeTheUpload() throws {
+        let f = try Fixture()
+        let r = try f.release(env: ["FAKE_BUILD_MAKES_TAG": "1"])
+        try Self.expectRefused(r, "the tag v\(Self.version) exists on GitHub (on 0123456789abcdef0123456789abcdef01234567)", f)
+        #expect(r.output.contains("==> Apple notarized Spool.dmg"), "the check runs again after the notarization")
+    }
+
     @Test func aDraftMadeDuringTheBuildStopsTheRunBeforeTheUpload() throws {
         let f = try Fixture()
         let r = try f.release(env: ["FAKE_BUILD_MAKES_DRAFT": "1"])
@@ -727,6 +892,8 @@ import Testing
     @Test(arguments: [
         (["FAKE_GH_NO_LATEST": "1"], "\(feed) does not return the new appcast"),
         (["FAKE_GH_CORRUPT_UPLOAD": "1"], "the downloaded Spool-\(version).zip is not the same as the uploaded one"),
+        (["FAKE_GH_CORRUPT_DMG": "1"], "the downloaded Spool.dmg is not the same as the uploaded one"),
+        (["FAKE_GH_TAG_ELSEWHERE": "1"], "the tag v\(version) on GitHub is on '0123456789abcdef0123456789abcdef01234567', not on the commit of the build"),
     ])
     func aPublishedReleaseThatIsNotTheUploadedOneIsNotTagged(_ env: [String: String], _ message: String) throws {
         let f = try Fixture()

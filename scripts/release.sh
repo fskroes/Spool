@@ -4,26 +4,34 @@
 #
 #   1. Checks: a clean tree on main, a VERSION higher than the published one, no release
 #      v<version> in the releases repository (also no draft), a CHANGELOG.md section for
-#      VERSION, the Sparkle private key matches Packaging/updates.env, and the local signing
-#      identity is the one Packaging/updates.env pins (SPOOL_SIGNING_CERT_SHA1).
-#      The published archive must have the same signing identity and update key.
-#   2. Builds dist/Spool.app (universal, updates on) and checks its Info.plist and signature.
-#   3. Makes dist/release/<version>/ (a dry run: dist/release/dry-run/<version>/):
-#      Spool-<version>.zip (the Sparkle archive), Spool.dmg, appcast.xml (one item, EdDSA
-#      signed), SHA256SUMS.txt, notes.md and commit.txt (the commit of the build).
-#   4. Verifies the EdDSA signature of the archive, and that no file in the zip or the DMG has
-#      your home path, user name or Git email in it.
-#   5. Not with --dry-run: makes the releases repository if it is missing, uploads a draft
-#      release, publishes it, downloads the feed and the archive again and compares them,
-#      then tags the commit of the build v<version> in this repository (local tag, nothing is pushed).
+#      VERSION, the Sparkle private key matches Packaging/updates.env, this Mac has a
+#      "Developer ID Application" identity of the team in Packaging/updates.env (SPOOL_TEAM_ID),
+#      and the notarytool profile SPOOL_NOTARY_PROFILE works. A real run also needs the commit
+#      on main on GitHub and no tag v<version> there yet.
+#      The published archive must have the same signing team and update key.
+#   2. Builds dist/Spool.app (universal, updates on, hardened runtime) and checks its Info.plist
+#      and signature.
+#   3. Notarizes the app with Apple, staples the ticket to it, and asks Gatekeeper.
+#   4. Makes dist/release/<version>/ (a dry run: dist/release/dry-run/<version>/):
+#      Spool-<version>.zip (the Sparkle archive), Spool.dmg (signed, notarized and stapled),
+#      appcast.xml (one item, EdDSA signed), SHA256SUMS.txt, notes.md and commit.txt (the
+#      commit of the build).
+#   5. Verifies the EdDSA signature of the archive, the ticket of the app in it, and that no file
+#      in the zip or the DMG has your home path, user name or Git email in it.
+#   6. Not with --dry-run: uploads a draft release, publishes it (GitHub makes the tag v<version> on
+#      the commit of the build), downloads the feed and the archive again and compares them, checks
+#      the tag on GitHub, then makes the same tag in this repository.
+#
+# A dry run sends the app and the DMG to Apple's notary service too (not public), so it checks the
+# whole chain. Notarization takes some minutes. Run it in the foreground: notarytool reads its
+# profile from the login keychain.
 #
 # Usage: scripts/release.sh [--dry-run] [--new-identity] | --finish
-#   --finish        only step 5 after the publish: when a run published the release but stopped
+#   --finish        only step 6 after the publish: when a run published the release but stopped
 #                   before the tag. It uses the files in dist/release/<version>/ of that run.
-#   --new-identity  the published release has another signing identity, and this is on purpose
-#                   (the pinned identity was lost, see docs/RELEASING.md). Installed copies lose
-#                   the Accessibility permission after this update, while the switch still
-#                   shows on. Tell the users to click Settings > Mac Setup > Reset Permission.
+#   --new-identity  the published release is signed by another team, and this is on purpose.
+#                   Installed copies lose the Accessibility permission after this update, while the
+#                   switch still shows on. Tell the users to click Settings > Mac Setup > Reset Permission.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -51,14 +59,14 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY=1 ;;
         --finish) FINISH=1 ;;
         --new-identity) NEW_IDENTITY=1 ;;
-        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
     shift
 done
 [[ $FINISH -eq 0 || ( $DRY -eq 0 && $NEW_IDENTITY -eq 0 ) ]] || die "--finish takes no other option"
 
-for tool in git curl ditto shasum plutil codesign xmllint lipo hdiutil; do
+for tool in git curl ditto shasum plutil codesign xmllint lipo hdiutil xcrun spctl; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 if [[ $DRY -eq 0 ]]; then
@@ -75,12 +83,14 @@ REPO=$(spool_updates_value "$UPDATES_ENV" SPOOL_RELEASES_REPO)
 FEED=$(spool_updates_value "$UPDATES_ENV" SPOOL_FEED_URL)
 KEY=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_PUBLIC_KEY)
 ACCOUNT=$(spool_updates_value "$UPDATES_ENV" SPOOL_ED_KEY_ACCOUNT)
-CERT=$(spool_updates_value "$UPDATES_ENV" SPOOL_SIGNING_CERT_SHA1)
-[[ -n "$REPO" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$CERT" ]] \
-    || die "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_FEED_URL, SPOOL_ED_PUBLIC_KEY, SPOOL_ED_KEY_ACCOUNT and SPOOL_SIGNING_CERT_SHA1"
+TEAM=$(spool_updates_value "$UPDATES_ENV" SPOOL_TEAM_ID)
+PROFILE=$(spool_updates_value "$UPDATES_ENV" SPOOL_NOTARY_PROFILE)
+[[ -n "$REPO" && -n "$FEED" && -n "$KEY" && -n "$ACCOUNT" && -n "$TEAM" && -n "$PROFILE" ]] \
+    || die "Packaging/updates.env needs SPOOL_RELEASES_REPO, SPOOL_FEED_URL, SPOOL_ED_PUBLIC_KEY, SPOOL_ED_KEY_ACCOUNT, SPOOL_TEAM_ID and SPOOL_NOTARY_PROFILE"
 [[ "$FEED" == "$(spool_feed_url_for_repo "$REPO")" ]] \
     || die "SPOOL_FEED_URL must be $(spool_feed_url_for_repo "$REPO")"
-[[ -z "${SIGN_IDENTITY:-}" ]] || die "unset SIGN_IDENTITY: releases are signed with the local identity only"
+spool_team_id_valid "$TEAM" || die "SPOOL_TEAM_ID must be a Team ID of 10 capital letters and digits, got '$TEAM'"
+[[ -z "${SIGN_IDENTITY:-}" ]] || die "unset SIGN_IDENTITY: releases are signed with the Developer ID of team $TEAM only"
 [[ "${SPOOL_UPDATES:-on}" == on ]] || die "unset SPOOL_UPDATES: a release must have updates on"
 
 VERSION=$(tr -d '[:space:]' < VERSION)
@@ -102,13 +112,17 @@ ACTUAL_KEY=$("$SPARKLE_BIN/generate_keys" --account "$ACCOUNT" -p 2>/dev/null | 
 [[ "$ACTUAL_KEY" == "$KEY" ]] || die "the Sparkle key in your keychain (account $ACCOUNT) does not match SPOOL_ED_PUBLIC_KEY.
 Import your backup: $SPARKLE_BIN/generate_keys --account $ACCOUNT -f <private-key-file>"
 
-HASH=$(spool_signing_identity) || die "no local signing identity. Restore it from your backup:
-scripts/make-signing-cert.sh --import <backup file>
-After an update with another signature, every installed copy loses the Accessibility permission
-while the switch still shows on."
-spool_sha1_equal "$HASH" "$CERT" || die "the local signing identity is $HASH, but Packaging/updates.env pins $CERT.
-Releases must keep one identity, else every installed copy loses its Accessibility permission.
-Restore the pinned identity: scripts/make-signing-cert.sh --remove --yes, then --import <backup file>"
+DEVID=$(spool_developer_id "$TEAM") || die "this Mac has no \"Developer ID Application\" identity of team $TEAM.
+Install it: Xcode > Settings > Accounts > Manage Certificates, or import its .p12 backup into the login keychain.
+Check with: security find-identity -v -p codesigning"
+
+# notarytool reads the profile from the login keychain. It fails here, before the build, and not
+# after some minutes of building.
+xcrun notarytool history --keychain-profile "$PROFILE" --output-format json >/dev/null 2>&1 \
+    || die "the notarytool profile $PROFILE does not work. Make it once, in your own terminal:
+xcrun notarytool store-credentials $PROFILE --apple-id <your Apple ID> --team-id $TEAM
+The password it asks for is an app-specific password from https://account.apple.com, not your Apple ID password.
+If the profile exists: run this script in the foreground, with the login keychain unlocked."
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/spool-release.XXXXXX")
 trap 'spool_release_cleanup "$TMP"' EXIT
@@ -132,7 +146,16 @@ verify_published_and_tag() {
 then run: scripts/release.sh --finish"
     curl -fsSL --max-time 300 -o "$TMP/$ZIP_NAME" "$PREFIX$ZIP_NAME" || die "cannot download $PREFIX$ZIP_NAME"
     cmp -s "$TMP/$ZIP_NAME" "$OUT/$ZIP_NAME" || die "the downloaded $ZIP_NAME is not the same as the uploaded one"
-    spool_release_tag "$TAG" "$COMMIT" "Spool $VERSION (build $BUILD)" || die "cannot tag $COMMIT as $TAG"
+    # The download link of the website and the README points to the DMG of the latest release.
+    curl -fsSL --max-time 300 -o "$TMP/Spool.dmg" "$(spool_latest_download "$REPO")Spool.dmg" \
+        || die "cannot download $(spool_latest_download "$REPO")Spool.dmg"
+    cmp -s "$TMP/Spool.dmg" "$OUT/Spool.dmg" || die "the downloaded Spool.dmg is not the same as the uploaded one"
+    # GitHub made the tag when it published the release. It must be on the commit of the build.
+    local remote
+    remote=$(spool_release_remote_tag "$REPO" "$TAG") || die "$remote"
+    [[ "$remote" == "$COMMIT" ]] || die "the tag $TAG on GitHub is on '${remote:-no commit}', not on the commit of the build $COMMIT.
+Check https://github.com/$REPO/releases/tag/$TAG"
+    spool_release_tag "$TAG" "$COMMIT" || die "cannot tag $COMMIT as $TAG"
     log "Published Spool $VERSION: https://github.com/$REPO/releases/tag/$TAG"
     log "Feed: $FEED"
 }
@@ -170,24 +193,24 @@ run: scripts/release.sh --finish. Else increase VERSION."
         mkdir "$TMP/published"
         ditto -x -k "$TMP/published.zip" "$TMP/published" || die "cannot unpack $PREV_URL"
         PREV_APP="$TMP/published/Spool.app"
-        if spool_dr_is_local "$(codesign -d -r - "$PREV_APP" 2>&1)" "$BUNDLE_ID" "$HASH"; then
-            [[ $NEW_IDENTITY -eq 0 ]] || die "the published $PREV_VERSION is signed with $HASH already. Run without --new-identity."
+        if spool_dr_is_team "$(codesign -d -r - "$PREV_APP" 2>&1)" "$BUNDLE_ID" "$TEAM"; then
+            [[ $NEW_IDENTITY -eq 0 ]] || die "the published $PREV_VERSION is signed by team $TEAM already. Run without --new-identity."
         elif [[ $NEW_IDENTITY -eq 1 ]]; then
-            warn "the published $PREV_VERSION has another signing identity than $HASH (--new-identity).
+            warn "the published $PREV_VERSION is not signed by team $TEAM (--new-identity).
 After this update, every installed copy loses the Accessibility permission while the switch still shows on.
 Tell the users in the release notes: click Settings > Mac Setup > Reset Permission in Spool, then turn Spool on."
         else
-            die "the published $PREV_VERSION is not signed with $HASH. Restore its identity from your backup
-(scripts/make-signing-cert.sh --import <file>), else every installed copy loses its Accessibility permission.
-If the backup is lost: docs/RELEASING.md, \"The pinned identity is lost\"."
+            die "the published $PREV_VERSION is not signed by team $TEAM. A release with another signature makes
+every installed copy lose its Accessibility permission. If the change is on purpose: docs/RELEASING.md,
+\"Change the signing team\"."
         fi
         [[ "$(plutil -extract SUPublicEDKey raw -o - "$PREV_APP/Contents/Info.plist" 2>/dev/null)" == "$KEY" ]] \
             || die "the published $PREV_VERSION has another SUPublicEDKey than Packaging/updates.env.
 Installed copies would refuse this update. Use the key of the published release."
         if [[ $NEW_IDENTITY -eq 1 ]]; then
-            log "The published $PREV_VERSION has the same update key, and another signing identity (--new-identity)"
+            log "The published $PREV_VERSION has the same update key, and another signing team (--new-identity)"
         else
-            log "The published $PREV_VERSION has the same signing identity and update key"
+            log "The published $PREV_VERSION has the same signing team and update key"
         fi
         ;;
     404)
@@ -204,6 +227,11 @@ esac
 # Before the build: a second run must not delete the files that --finish needs.
 if [[ $DRY -eq 0 ]]; then
     EXISTING=$(spool_release_existing "$TAG" "$REPO") || die "$EXISTING"
+    # GitHub makes the tag from the commit when it publishes: the commit must be on main there, and
+    # the tag must not exist (a release on an existing tag ignores the commit).
+    ONMAIN=$(spool_release_commit_on_main "$REPO" "$COMMIT") || die "$ONMAIN"
+    REMOTE_TAG=$(spool_release_remote_tag "$REPO" "$TAG") || die "$REMOTE_TAG"
+    [[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists on GitHub (on $REMOTE_TAG). Increase VERSION."
 fi
 
 # --- 2. Build --------------------------------------------------------------------------------
@@ -219,8 +247,10 @@ plist() { plutil -extract "$1" raw -o - "$PLIST" 2>/dev/null; }
 [[ "$(plist SUFeedURL)" == "$FEED" ]] || die "the app has the wrong SUFeedURL"
 [[ "$(plist SUPublicEDKey)" == "$KEY" ]] || die "the app has the wrong SUPublicEDKey"
 codesign --verify --deep --strict "$APP" || die "the signature of the app is not valid"
-spool_dr_is_local "$(codesign -d -r - "$APP" 2>&1)" "$BUNDLE_ID" "$HASH" \
-    || die "the app is not signed with the local identity $HASH"
+spool_dr_is_team "$(codesign -d -r - "$APP" 2>&1)" "$BUNDLE_ID" "$TEAM" \
+    || die "the app is not signed with the Developer ID of team $TEAM"
+# Notarization refuses an app without the hardened runtime.
+[[ "$(codesign -d --verbose=2 "$APP" 2>&1)" == *"(runtime)"* ]] || die "the app does not have the hardened runtime"
 for arch in arm64 x86_64; do
     [[ " $(lipo -archs "$APP/Contents/MacOS/Spool") " == *" $arch "* ]] || die "the app has no $arch slice"
 done
@@ -229,15 +259,57 @@ if [[ $DRY -eq 0 ]]; then
     spool_release_head_is "$COMMIT" clean || die "the app is not a build of $COMMIT. Run again."
 fi
 
-# --- 3. Files ---------------------------------------------------------------------------------
+# --- 3. Notarize the app ----------------------------------------------------------------------
+# Sends FILE to Apple's notary service and waits for the answer. LABEL names it in the messages.
+notarize() {
+    local file=$1 label=$2 json status id
+    log "Notarizing $label (this takes some minutes)"
+    json=$(xcrun notarytool submit "$file" --keychain-profile "$PROFILE" --wait --output-format json 2>"$TMP/notary.err") || true
+    status=$(spool_notary_status "$json") || status=""
+    if [[ "$status" != Accepted ]]; then
+        id=$(spool_notary_id "$json") || id=""
+        [[ -z "$id" ]] || xcrun notarytool log "$id" --keychain-profile "$PROFILE" >&2 || true
+        die "Apple did not notarize $label: ${status:-no answer}. $(tr '\n' ' ' < "$TMP/notary.err")
+${id:+Read why: xcrun notarytool log $id --keychain-profile $PROFILE}"
+    fi
+    log "Apple notarized $label"
+}
+# Staples the ticket to FILE and checks it. Gatekeeper then accepts FILE also without a network.
+staple() {
+    xcrun stapler staple "$1" >/dev/null 2>&1 || die "cannot staple the ticket to $2"
+    xcrun stapler validate "$1" >/dev/null 2>&1 || die "the ticket on $2 is not valid"
+}
+# Asks Gatekeeper, as on the Mac of a user. KIND: execute (an app) or open (a DMG).
+gatekeeper() {
+    local file=$1 label=$2 kind=$3 out
+    if [[ "$kind" == execute ]]; then
+        out=$(spctl --assess --type execute -vv "$file" 2>&1) || true
+    else
+        out=$(spctl --assess --type open --context context:primary-signature -vv "$file" 2>&1) || true
+    fi
+    spool_gatekeeper_notarized "$out" || die "Gatekeeper does not accept $label as notarized:
+$out"
+}
+mkdir "$TMP/notarize"
+ditto -c -k --norsrc --noextattr --noqtn --keepParent "$APP" "$TMP/notarize/Spool.zip"
+notarize "$TMP/notarize/Spool.zip" Spool.app
+staple "$APP" Spool.app
+gatekeeper "$APP" Spool.app execute
+
+# --- 4. Files ---------------------------------------------------------------------------------
 case "$OUT" in */dist/release/*) rm -rf "$OUT" ;; *) die "unexpected output path: $OUT" ;; esac
 mkdir -p "$OUT"
 log "Making $ZIP_NAME and Spool.dmg"
+# The archive is made after the staple, so the app in it has its ticket.
 # No extended attributes: macOS adds com.apple.provenance to built files, and the signature
 # does not need it (a signed bundle keeps its signature in _CodeSignature).
 ditto -c -k --norsrc --noextattr --noqtn --keepParent "$APP" "$OUT/$ZIP_NAME"
-env -u SIGN_IDENTITY "$ROOT/scripts/make-dmg.sh" >/dev/null
+SIGN_IDENTITY="$DEVID" "$ROOT/scripts/make-dmg.sh" >/dev/null
 mv "$ROOT/dist/Spool-$VERSION.dmg" "$OUT/Spool.dmg"
+# A DMG is its own file for Gatekeeper: a notarized app in a DMG without a ticket still warns.
+notarize "$OUT/Spool.dmg" Spool.dmg
+staple "$OUT/Spool.dmg" Spool.dmg
+gatekeeper "$OUT/Spool.dmg" Spool.dmg open
 printf '%s\n' "$NOTES" > "$OUT/notes.md"
 
 log "Making appcast.xml"
@@ -247,7 +319,7 @@ cp "$OUT/notes.md" "$TMP/archives/Spool-$VERSION.md"
 "$SPARKLE_BIN/generate_appcast" --account "$ACCOUNT" --download-url-prefix "$PREFIX" \
     --embed-release-notes --link "https://github.com/$REPO" -o "$OUT/appcast.xml" "$TMP/archives" >/dev/null
 
-# --- 4. Verify --------------------------------------------------------------------------------
+# --- 5. Verify --------------------------------------------------------------------------------
 LENGTH=$(stat -f %z "$OUT/$ZIP_NAME")
 SIG=$(spool_appcast_check "$OUT/appcast.xml" "$VERSION" "$BUILD" "$PREFIX$ZIP_NAME" "$LENGTH") \
     || die "the appcast is not correct"
@@ -258,11 +330,14 @@ mkdir "$TMP/unpacked"
 ditto -x -k "$OUT/$ZIP_NAME" "$TMP/unpacked"
 [[ -z "$(find "$TMP/unpacked" -name __MACOSX -print -quit)" ]] || die "$ZIP_NAME has __MACOSX entries"
 codesign --verify --deep --strict "$TMP/unpacked/Spool.app" || die "the app in $ZIP_NAME has no valid signature"
-spool_dr_is_local "$(codesign -d -r - "$TMP/unpacked/Spool.app" 2>&1)" "$BUNDLE_ID" "$HASH" \
-    || die "the app in $ZIP_NAME is not signed with the local identity"
+spool_dr_is_team "$(codesign -d -r - "$TMP/unpacked/Spool.app" 2>&1)" "$BUNDLE_ID" "$TEAM" \
+    || die "the app in $ZIP_NAME is not signed with the Developer ID of team $TEAM"
+xcrun stapler validate "$TMP/unpacked/Spool.app" >/dev/null 2>&1 || die "the app in $ZIP_NAME has no notarization ticket"
 # The files are public: nothing may name this Mac's user.
 log "Checking the zip and the DMG for your home path, user name and Git email"
-PRIVATE=("$HOME" "$USER" "$(git config user.email || true)")
+# The user name only as a folder of a path: alone it is also the GitHub owner, and the bundle ID and the
+# feed URL have it (com.fskroes.Spool, github.com/fskroes/Spool), so every release would stop.
+PRIVATE=("$HOME" "/Users/$USER/" "$(git config user.email || true)")
 check_private() {
     local msg
     msg=$(spool_release_private_check "$1" "$2" "${PRIVATE[@]}") || die "$msg"
@@ -273,6 +348,10 @@ hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$TMP/dmg" "$OUT/Spoo
 # A die from here on leaves the DMG mounted; the EXIT trap detaches it.
 check_private "$TMP/dmg" Spool.dmg
 [[ -d "$TMP/dmg/Spool.app" ]] || die "Spool.dmg has no Spool.app"
+# The app in the DMG is what a user drags to Applications: it needs its own ticket, also when the DMG has one.
+xcrun stapler validate "$TMP/dmg/Spool.app" >/dev/null 2>&1 || die "the app in Spool.dmg has no notarization ticket"
+spool_dr_is_team "$(codesign -d -r - "$TMP/dmg/Spool.app" 2>&1)" "$BUNDLE_ID" "$TEAM" \
+    || die "the app in Spool.dmg is not signed with the Developer ID of team $TEAM"
 hdiutil detach "$TMP/dmg" -quiet
 (cd "$OUT" && shasum -a 256 "$ZIP_NAME" Spool.dmg appcast.xml > SHA256SUMS.txt)
 # Not uploaded. --finish uses it to put the tag on this commit.
@@ -285,32 +364,27 @@ if [[ $DRY -eq 1 ]]; then
     exit 0
 fi
 
-# --- 5. Publish -------------------------------------------------------------------------------
+# --- 6. Publish -------------------------------------------------------------------------------
 LOGIN=$(gh api user --jq .login)
 [[ "${REPO%%/*}" == "$LOGIN" ]] || die "gh is logged in as $LOGIN, but the releases repository is $REPO"
-NOREPLY="$LOGIN@users.noreply.github.com"
-if ! gh repo view "$REPO" >/dev/null 2>&1; then
-    log "Making the public repository $REPO"
-    gh api -X POST user/repos -f name="${REPO#*/}" -F private=false -F has_issues=false \
-        -F has_wiki=false -F has_projects=false \
-        -f description="Spool builds and the update feed. Source is private." >/dev/null
-    # The first commit through the API, with the noreply address: no local Git identity is used.
-    gh api -X PUT "repos/$REPO/contents/README.md" -f message="Say what this repository holds" \
-        -f content="$(base64 < "$ROOT/Packaging/releases-README.md")" \
-        -f "committer[name]=$LOGIN" -f "committer[email]=$NOREPLY" \
-        -f "author[name]=$LOGIN" -f "author[email]=$NOREPLY" >/dev/null
-fi
-# Checked in step 1 too. Again here: another run can have made the release during this build.
+gh repo view "$REPO" >/dev/null 2>&1 || die "the releases repository $REPO does not exist, or gh cannot read it"
+# Checked in step 1 too. Again here: the build and the notarization take minutes, and in that time
+# another run can make the release, or someone can push the tag (GitHub then ignores --target).
 EXISTING=$(spool_release_existing "$TAG" "$REPO") || die "$EXISTING"
+REMOTE_TAG=$(spool_release_remote_tag "$REPO" "$TAG") || die "$REMOTE_TAG"
+[[ -z "$REMOTE_TAG" ]] || die "the tag $TAG exists on GitHub (on $REMOTE_TAG). Increase VERSION."
 
 {
     printf '# Spool %s, build %s\n\n%s\n\n' "$VERSION" "$BUILD" "$NOTES"
+    printf '**Install:** download `Spool.dmg`, open it, and drag Spool to Applications. '
+    printf 'The app is signed with a Developer ID and notarized by Apple.\n\n'
     printf 'Spool updates itself: **Check for Updates…** in the menu bar menu.\n'
     printf 'Checksums: `SHA256SUMS.txt`.\n'
 } > "$TMP/body.md"
 
 log "Uploading the draft release $TAG"
-gh release create "$TAG" --repo "$REPO" --draft --title "Spool $VERSION" --notes-file "$TMP/body.md" \
+# --target: GitHub makes the tag on the commit of the build when it publishes, not on the newest main.
+gh release create "$TAG" --repo "$REPO" --draft --target "$COMMIT" --title "Spool $VERSION" --notes-file "$TMP/body.md" \
     "$OUT/$ZIP_NAME" "$OUT/Spool.dmg" "$OUT/SHA256SUMS.txt" "$OUT/appcast.xml" >/dev/null
 log "Publishing $TAG"
 gh release edit "$TAG" --repo "$REPO" --draft=false --latest >/dev/null

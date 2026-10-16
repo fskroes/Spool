@@ -4,6 +4,7 @@ Each release has a section here. `scripts/release.sh` copies the section into th
 
 ## Unreleased
 
+- Spool is now signed with a Developer ID and notarized by Apple. Download `Spool.dmg` from the releases of github.com/fskroes/Spool, open it and drag Spool to Applications: macOS opens it with no "Open Anyway" step. Updates come from the same page, and the Accessibility permission stays after each update. If your copy was a build from source or an earlier test build, click Settings > Mac Setup > Reset Permission once after this update, then turn Spool on.
 - Striple is now Spool. The app, the `spool` CLI, the `spool://` URL scheme and the Raycast scripts have the new name. `make install` removes Striple, and Spool moves your settings, layout and logs from the Striple folders at its first start. If Launch at login was on, it stays on. Give Spool the Accessibility permission once. See "Upgrade from Striple" in docs/INSTALL.md.
 - The settings window looks like System Settings. The sidebar goes to the top of the window, each page has a coloured icon, and the page name shows above the page.
 - The General page is now four pages: General, Layout, Appearance, and Mouse & Trackpad. Each page fits on the screen with less scrolling.

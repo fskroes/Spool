@@ -337,7 +337,8 @@ elif [[ -n "$PIN" ]]; then
      loses the Accessibility permission while the switch still shows on. Tell the users in the
      release notes: click Settings > Mac Setup > Reset Permission, then turn Spool on."
 else
-    STEP1="Set SPOOL_SIGNING_CERT_SHA1=$HASH in $UPDATES_ENV if releases use this identity."
+    STEP1="For your own builds, nothing to change. Set SPOOL_SIGNING_CERT_SHA1=$HASH in $UPDATES_ENV
+     only if releases use this identity (a fork: the releases of fskroes/Spool use a Developer ID)."
 fi
 cat <<NEXT
 
